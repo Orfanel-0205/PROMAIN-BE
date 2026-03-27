@@ -1,0 +1,8 @@
+{
+    "nesbot/carbon": {
+        "Ignore PHP2447 trait conflict": {
+            "url": "https://github.com/nesbot/carbon/pull/3123.patch"
+        }
+    }
+}
+

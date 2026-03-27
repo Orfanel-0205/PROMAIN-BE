@@ -1,0 +1,6 @@
+{
+    "require": {
+        "laravel/sanctum": "^3.3",
+        "predis/predis": "^3.4"
+    }
+}
