@@ -6,20 +6,21 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('consultations', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('user_id')->constrained('users', 'user_id')->cascadeOnDelete();
+            $table->foreignId('attended_by')->nullable()->constrained('users', 'user_id')->nullOnDelete();
+            $table->date('consultation_date');
+            $table->text('chief_complaint')->nullable();
+            $table->text('diagnosis')->nullable();
+            $table->text('treatment')->nullable();
+            $table->enum('status', ['open', 'completed'])->default('open');
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('consultations');

@@ -6,20 +6,21 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('appointments', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('user_id')->constrained('users', 'user_id')->cascadeOnDelete();
+            $table->foreignId('handled_by')->nullable()->constrained('users', 'user_id')->nullOnDelete();
+            $table->date('appointment_date');
+            $table->time('appointment_time')->nullable();
+            $table->string('purpose')->nullable();
+            $table->enum('status', ['pending', 'confirmed', 'completed', 'cancelled'])->default('pending');
+            $table->text('notes')->nullable();
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('appointments');
