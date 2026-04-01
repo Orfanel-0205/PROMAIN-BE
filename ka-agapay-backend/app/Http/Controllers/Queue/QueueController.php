@@ -1,12 +1,11 @@
 <?php
-// app/Http/Controllers/Api/Queue/QueueController.php
 
 namespace App\Http\Controllers\Api\Queue;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Queue\IssueQueueTicketRequest;
-use App\Http\Requests\Queue\UpdateQueueStatusRequest;
 use App\Http\Requests\Queue\QueueListRequest;
+use App\Http\Requests\Queue\UpdateQueueStatusRequest;
 use App\Http\Resources\Queue\QueueTicketResource;
 use App\Models\QueueTicket;
 use App\Services\Queue\QueueService;
@@ -16,7 +15,9 @@ use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class QueueController extends Controller
 {
-    public function __construct(private readonly QueueService $queueService) {}
+    public function __construct(private readonly QueueService $queueService)
+    {
+    }
 
     /**
      * GET /api/v1/queue
@@ -24,12 +25,28 @@ class QueueController extends Controller
      */
     public function index(QueueListRequest $request): AnonymousResourceCollection
     {
-        $tickets = QueueTicket::with(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy'])
-            ->forRhu($request->integer('rhu_id'))
-            ->when($request->filled('service_type'), fn($q) => $q->byServiceType($request->service_type))
-            ->when($request->filled('status'),       fn($q) => $q->where('status', $request->status))
-            ->when($request->filled('date'),         fn($q) => $q->whereDate('issued_at', $request->date),
-                                                     fn($q) => $q->forToday())
+        $query = QueueTicket::with([
+            'residentProfile.barangay',
+            'rhu',
+            'issuedBy',
+            'servedBy',
+        ])->forRhu($request->integer('rhu_id'));
+
+        if ($request->filled('service_type')) {
+            $query->byServiceType((string) $request->input('service_type'));
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', (string) $request->input('status'));
+        }
+
+        if ($request->filled('date')) {
+            $query->whereDate('issued_at', (string) $request->input('date'));
+        } else {
+            $query->forToday();
+        }
+
+        $tickets = $query
             ->prioritized()
             ->paginate($request->integer('per_page', 20));
 
@@ -46,7 +63,7 @@ class QueueController extends Controller
 
         return response()->json([
             'message' => 'Queue ticket issued successfully.',
-            'data'    => new QueueTicketResource($ticket),
+            'data' => new QueueTicketResource($ticket),
         ], 201);
     }
 
@@ -58,7 +75,13 @@ class QueueController extends Controller
     {
         $this->authorize('view', $ticket);
 
-        $ticket->load(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy', 'logs.performedBy']);
+        $ticket->load([
+            'residentProfile.barangay',
+            'rhu',
+            'issuedBy',
+            'servedBy',
+            'logs.performedBy',
+        ]);
 
         return response()->json([
             'data' => new QueueTicketResource($ticket),
@@ -67,7 +90,7 @@ class QueueController extends Controller
 
     /**
      * PATCH /api/v1/queue/{ticket}/status
-     * Update the status of a queue ticket (call, serve, complete, cancel, etc.)
+     * Update the status of a queue ticket.
      */
     public function updateStatus(UpdateQueueStatusRequest $request, QueueTicket $ticket): JsonResponse
     {
@@ -79,42 +102,50 @@ class QueueController extends Controller
             ], 422);
         }
 
-        $ticket = $this->queueService->transitionStatus($ticket, $request->status, $request->validated());
+        $updatedTicket = $this->queueService->transitionStatus(
+            $ticket,
+            (string) $request->input('status'),
+            $request->validated()
+        );
 
         return response()->json([
-            'message' => "Ticket status updated to [{$request->status}].",
-            'data'    => new QueueTicketResource($ticket),
+            'message' => 'Ticket status updated successfully.',
+            'data' => new QueueTicketResource($updatedTicket),
         ]);
     }
 
     /**
      * POST /api/v1/queue/call-next
-     * Call the next highest-priority waiting ticket for a given service.
+     * Call the next highest-priority waiting ticket.
      */
     public function callNext(Request $request): JsonResponse
     {
         $this->authorize('callNext', QueueTicket::class);
 
-        $request->validate([
-            'rhu_id'       => ['required', 'integer', 'exists:barangays,id'],
-            'service_type' => ['required', 'string', 'in:opd_consultation,prenatal_checkup,immunization,family_planning,tb_dots,laboratory,dental,emergency,medicine_release,bhw_assisted'],
+        $validated = $request->validate([
+            'rhu_id' => ['required', 'integer', 'exists:barangays,barangay_id'],
+            'service_type' => [
+                'required',
+                'string',
+                'in:opd_consultation,prenatal_checkup,immunization,family_planning,tb_dots,laboratory,dental,emergency,medicine_release,bhw_assisted',
+            ],
         ]);
 
         $ticket = $this->queueService->callNext(
-            $request->integer('rhu_id'),
-            $request->service_type
+            (int) $validated['rhu_id'],
+            (string) $validated['service_type']
         );
 
         if (!$ticket) {
             return response()->json([
                 'message' => 'No patients currently waiting for this service.',
-                'data'    => null,
+                'data' => null,
             ]);
         }
 
         return response()->json([
             'message' => "Now calling: {$ticket->ticket_number}",
-            'data'    => new QueueTicketResource($ticket),
+            'data' => new QueueTicketResource($ticket),
         ]);
     }
 
@@ -124,20 +155,20 @@ class QueueController extends Controller
      */
     public function live(Request $request): JsonResponse
     {
-        $request->validate([
-            'rhu_id'       => ['required', 'integer', 'exists:barangays,id'],
+        $validated = $request->validate([
+            'rhu_id' => ['required', 'integer', 'exists:barangays,barangay_id'],
             'service_type' => ['nullable', 'string'],
         ]);
 
         $live = $this->queueService->getLiveQueue(
-            $request->integer('rhu_id'),
-            $request->service_type
+            (int) $validated['rhu_id'],
+            $validated['service_type'] ?? null
         );
 
         return response()->json([
             'data' => [
-                'waiting'    => QueueTicketResource::collection($live['waiting']),
-                'called'     => QueueTicketResource::collection($live['called']),
+                'waiting' => QueueTicketResource::collection($live['waiting']),
+                'called' => QueueTicketResource::collection($live['called']),
                 'in_service' => QueueTicketResource::collection($live['in_service']),
             ],
         ]);
@@ -151,32 +182,36 @@ class QueueController extends Controller
     {
         $this->authorize('viewSummary', QueueTicket::class);
 
-        $request->validate([
-            'rhu_id' => ['required', 'integer', 'exists:barangays,id'],
-            'date'   => ['nullable', 'date', 'date_format:Y-m-d'],
+        $validated = $request->validate([
+            'rhu_id' => ['required', 'integer', 'exists:barangays,barangay_id'],
+            'date' => ['nullable', 'date', 'date_format:Y-m-d'],
         ]);
 
         $summary = $this->queueService->getDailySummary(
-            $request->integer('rhu_id'),
-            $request->date
+            (int) $validated['rhu_id'],
+            $validated['date'] ?? null
         );
 
-        return response()->json(['data' => $summary]);
+        return response()->json([
+            'data' => $summary,
+        ]);
     }
 
     /**
      * GET /api/v1/queue/my-ticket
-     * Allow a resident to check their own ticket status.
+     * Allow a resident to check their own active ticket.
      */
     public function myTicket(Request $request): JsonResponse
     {
-        $resident = $request->user()->residentProfile;
+        $resident = $request->user()?->residentProfile;
 
         if (!$resident) {
-            return response()->json(['message' => 'No resident profile linked to your account.'], 404);
+            return response()->json([
+                'message' => 'No resident profile linked to your account.',
+            ], 404);
         }
 
-        $ticket = QueueTicket::with(['rhu', 'logs'])
+        $ticket = QueueTicket::with(['rhu', 'logs.performedBy'])
             ->where('resident_profile_id', $resident->id)
             ->forToday()
             ->whereIn('status', ['waiting', 'called', 'in_service'])
@@ -184,9 +219,14 @@ class QueueController extends Controller
             ->first();
 
         if (!$ticket) {
-            return response()->json(['message' => 'You have no active queue ticket today.', 'data' => null]);
+            return response()->json([
+                'message' => 'You have no active queue ticket today.',
+                'data' => null,
+            ]);
         }
 
-        return response()->json(['data' => new QueueTicketResource($ticket)]);
+        return response()->json([
+            'data' => new QueueTicketResource($ticket),
+        ]);
     }
 }
