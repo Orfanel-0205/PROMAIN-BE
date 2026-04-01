@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\ConsultationController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\MedicalReportController;
 use App\Http\Controllers\Api\ResidentProfileController;
+use App\Http\Controllers\Api\Queue\QueueController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public Auth Routes ───────────────────────────────────────────────────────
@@ -18,6 +19,18 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me',      [AuthController::class, 'me']);
+
+    // ── Queue Routes ──────────────────────────────────────────────────────────
+    Route::prefix('v1/queue')->name('queue.')->group(function () {
+        Route::get('/',                  [QueueController::class, 'index'])->name('index');
+        Route::get('/live',              [QueueController::class, 'live'])->name('live');
+        Route::get('/summary',           [QueueController::class, 'summary'])->name('summary');
+        Route::post('/issue',            [QueueController::class, 'issue'])->name('issue');
+        Route::post('/call-next',        [QueueController::class, 'callNext'])->name('callNext');
+        Route::get('/my-ticket',         [QueueController::class, 'myTicket'])->name('myTicket');
+        Route::get('/{ticket}',          [QueueController::class, 'show'])->name('show');
+        Route::patch('/{ticket}/status', [QueueController::class, 'updateStatus'])->name('updateStatus');
+    });
 
     // ── Resident Routes ───────────────────────────────────────────────────────
     Route::middleware('role:resident')->group(function () {
