@@ -2,7 +2,11 @@
 
 namespace App\Providers;
 
-// use Illuminate\Support\Facades\Gate;
+use App\Models\QueueTicket;
+use App\Models\TelemedicineRequest;
+use App\Models\TelemedicineSession;
+use App\Policies\QueueTicketPolicy;
+use App\Policies\TelemedicinePolicy;
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
 
 class AuthServiceProvider extends ServiceProvider
@@ -13,7 +17,9 @@ class AuthServiceProvider extends ServiceProvider
      * @var array<class-string, class-string>
      */
     protected $policies = [
-        //
+        QueueTicket::class         => QueueTicketPolicy::class,
+        TelemedicineRequest::class => TelemedicinePolicy::class,
+        TelemedicineSession::class => TelemedicinePolicy::class,
     ];
 
     /**
@@ -21,6 +27,6 @@ class AuthServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        $this->registerPolicies();
     }
 }

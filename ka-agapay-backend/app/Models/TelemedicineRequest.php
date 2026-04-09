@@ -1,0 +1,129 @@
+<?php
+// app/Models/TelemedicineRequest.php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+
+class TelemedicineRequest extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = [
+        'resident_profile_id',
+        'requested_by',
+        'queue_ticket_id',
+        'appointment_id',
+        'rhu_id',
+        'endorsed_by_bhw',
+        'is_bhw_assisted',
+        'bhw_notes',
+        'chief_complaint',
+        'urgency_level',
+        'symptoms',
+        'additional_notes',
+        'screened_by',
+        'screening_notes',
+        'screened_at',
+        'status',
+        'rejection_reason',
+        'cancellation_reason',
+        'cancelled_at',
+    ];
+
+    protected $casts = [
+        'symptoms'       => 'array',
+        'is_bhw_assisted' => 'boolean',
+        'screened_at'    => 'datetime',
+        'cancelled_at'   => 'datetime',
+    ];
+
+    // --- Relationships ---
+
+    public function residentProfile(): BelongsTo
+    {
+        return $this->belongsTo(ResidentProfile::class);
+    }
+
+    public function requestedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'requested_by', 'user_id');
+    }
+
+    public function endorsedByBhw(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'endorsed_by_bhw', 'user_id');
+    }
+
+    public function screenedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'screened_by', 'user_id');
+    }
+
+    public function rhu(): BelongsTo
+    {
+        return $this->belongsTo(Barangay::class, 'rhu_id');
+    }
+
+    public function queueTicket(): BelongsTo
+    {
+        return $this->belongsTo(QueueTicket::class);
+    }
+
+    public function appointment(): BelongsTo
+    {
+        return $this->belongsTo(Appointment::class);
+    }
+
+    public function session(): HasOne
+    {
+        return $this->hasOne(TelemedicineSession::class, 'request_id');
+    }
+
+    public function logs(): MorphMany
+    {
+        return $this->morphMany(TelemedicineLog::class, 'loggable');
+    }
+
+    // --- Scopes ---
+
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    public function scopeForRhu($query, int $rhuId)
+    {
+        return $query->where('rhu_id', $rhuId);
+    }
+
+    public function scopeUrgent($query)
+    {
+        return $query->whereIn('urgency_level', ['urgent', 'emergency']);
+    }
+
+    // --- Helpers ---
+
+    public function isTerminal(): bool
+    {
+        return in_array($this->status, ['rejected', 'cancelled', 'completed']);
+    }
+
+    public function canTransitionTo(string $newStatus): bool
+    {
+        $allowed = [
+            'pending'   => ['screened', 'rejected', 'cancelled'],
+            'screened'  => ['scheduled', 'rejected', 'cancelled'],
+            'scheduled' => ['completed', 'cancelled'],
+            'rejected'  => [],
+            'cancelled' => [],
+            'completed' => [],
+        ];
+
+        return in_array($newStatus, $allowed[$this->status] ?? []);
+    }
+}

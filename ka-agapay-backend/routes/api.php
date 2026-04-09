@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\MedicalReportController;
 use App\Http\Controllers\Api\ResidentProfileController;
 use App\Http\Controllers\Api\Queue\QueueController;
+use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public Auth Routes ───────────────────────────────────────────────────────
@@ -86,4 +87,34 @@ Route::middleware('auth:sanctum')->group(function () {
             return response()->json(\App\Models\User::with(['role', 'barangay'])->paginate(20));
         });
     });
+});
+Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
+
+    // Telemedicine Module
+    Route::prefix('telemedicine')->name('telemedicine.')->group(function () {
+
+        // -- Request Lifecycle --
+        Route::get('/requests',          [TelemedicineController::class, 'indexRequests'])->name('requests.index');
+        Route::post('/requests',         [TelemedicineController::class, 'createRequest'])->name('requests.create');
+        Route::get('/requests/mine',     [TelemedicineController::class, 'myRequests'])->name('requests.mine');
+        Route::get('/requests/{request}', [TelemedicineController::class, 'showRequest'])->name('requests.show');
+        Route::patch('/requests/{request}/screen',  [TelemedicineController::class, 'screenRequest'])->name('requests.screen');
+        Route::delete('/requests/{request}',        [TelemedicineController::class, 'cancelRequest'])->name('requests.cancel');
+
+        // -- Session Lifecycle --
+        Route::post('/requests/{request}/session',          [TelemedicineController::class, 'createSession'])->name('sessions.create');
+        Route::get('/sessions',                             [TelemedicineController::class, 'mySessions'])->name('sessions.mine');
+        Route::get('/sessions/{session}',                   [TelemedicineController::class, 'showSession'])->name('sessions.show');
+        Route::patch('/sessions/{session}/status',          [TelemedicineController::class, 'updateSessionStatus'])->name('sessions.status');
+
+        // -- Clinical Notes --
+        Route::put('/sessions/{session}/notes',             [TelemedicineController::class, 'saveNotes'])->name('sessions.notes');
+
+        // -- Referrals --
+        Route::post('/sessions/{session}/referrals',        [TelemedicineController::class, 'createReferral'])->name('sessions.referrals.create');
+
+        // -- Dashboard --
+        Route::get('/summary',                              [TelemedicineController::class, 'summary'])->name('summary');
+    });
+
 });
