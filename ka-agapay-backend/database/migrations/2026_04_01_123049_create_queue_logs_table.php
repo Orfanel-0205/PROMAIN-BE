@@ -12,7 +12,7 @@ return new class extends Migration
         Schema::create('queue_logs', function (Blueprint $table) {
             $table->id();
             $table->foreignId('queue_ticket_id')->constrained('queue_tickets')->cascadeOnDelete();
-            $table->foreignId('performed_by')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('performed_by')->nullable()->constrained('users', 'user_id')->nullOnDelete();
             $table->string('action'); // 'issued', 'called', 'in_service', 'completed', 'skipped', 'cancelled', 'no_show'
             $table->string('from_status')->nullable();
             $table->string('to_status');

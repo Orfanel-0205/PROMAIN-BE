@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('queue_counters', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('rhu_id')->constrained('barangays');
+            $table->foreignId('rhu_id')->constrained('barangays', 'barangay_id');
             $table->enum('service_type', [
                 'opd_consultation',
                 'prenatal_checkup',

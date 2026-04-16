@@ -13,6 +13,10 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule): void
     {
         // $schedule->command('inspire')->hourly();
+
+        $schedule->call(function () {
+            app(\App\Services\Notification\NotificationService::class)->sendSessionReminders();
+        })->everyFiveMinutes()->description('Send telemedicine session reminders');
     }
 
     /**

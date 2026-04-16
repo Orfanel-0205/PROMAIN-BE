@@ -11,11 +11,11 @@ return new class extends Migration
         Schema::create('queue_tickets', function (Blueprint $table) {
             $table->id();
             $table->string('ticket_number', 20)->unique(); // e.g., RHU1-OPD-2024-0001
-            $table->foreignId('resident_profile_id')->constrained('resident_profiles')->restrictOnDelete();
+            $table->foreignId('resident_profile_id')->nullable()->constrained('resident_profiles', 'id')->nullOnDelete();
             $table->foreignId('appointment_id')->nullable()->constrained('appointments')->nullOnDelete();
-            $table->foreignId('rhu_id')->constrained('barangays')->comment('Which RHU this ticket belongs to');
-            $table->foreignId('issued_by')->nullable()->constrained('users')->nullOnDelete()->comment('Staff or BHW who issued the ticket');
-            $table->foreignId('served_by')->nullable()->constrained('users')->nullOnDelete()->comment('Staff who served the patient');
+            $table->foreignId('rhu_id')->constrained('barangays', 'barangay_id')->comment('Which RHU this ticket belongs to');
+            $table->foreignId('issued_by')->nullable()->constrained('users', 'user_id')->nullOnDelete()->comment('Staff or BHW who issued the ticket');
+            $table->foreignId('served_by')->nullable()->constrained('users', 'user_id')->nullOnDelete()->comment('Staff who served the patient');
 
             // Service classification
             $table->enum('service_type', [

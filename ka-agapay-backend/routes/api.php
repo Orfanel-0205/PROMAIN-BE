@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\MedicalReportController;
 use App\Http\Controllers\Api\ResidentProfileController;
 use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
+use App\Http\Controllers\Api\NotificationController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public Auth Routes ───────────────────────────────────────────────────────
@@ -115,6 +116,17 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
 
         // -- Dashboard --
         Route::get('/summary',                              [TelemedicineController::class, 'summary'])->name('summary');
+    });
+
+    // Notification Module
+    Route::prefix('notifications')->name('notifications.')->group(function () {
+        Route::get('/',                  [NotificationController::class, 'index']);
+        Route::get('/unread-count',      [NotificationController::class, 'unreadCount']);
+        Route::get('/preferences',       [NotificationController::class, 'preferences']);
+        Route::put('/preferences',       [NotificationController::class, 'updatePreferences']);
+        Route::post('/read-all',         [NotificationController::class, 'markAllRead']);
+        Route::patch('/{id}/read',       [NotificationController::class, 'markRead']);
+        Route::delete('/{id}',           [NotificationController::class, 'destroy']);
     });
 
 });

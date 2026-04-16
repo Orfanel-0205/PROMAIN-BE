@@ -77,4 +77,14 @@ class User extends Authenticatable
     {
         return in_array($this->role?->name, $roles);
     }
+
+    public function notificationPreferences(): HasMany
+    {
+        return $this->hasMany(NotificationPreference::class, 'user_id', 'user_id');
+    }
+
+    public function smsLogs(): HasMany
+    {
+        return $this->hasMany(SmsLog::class, 'user_id', 'user_id');
+    }
 }

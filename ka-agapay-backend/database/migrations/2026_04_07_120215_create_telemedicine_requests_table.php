@@ -22,7 +22,7 @@ return new class extends Migration
             $table->foreignId('appointment_id')->nullable()->constrained('appointments')->nullOnDelete();
 
             // Which RHU is this directed to
-            $table->foreignId('rhu_id')->constrained('barangays')
+            $table->foreignId('rhu_id')->constrained('barangays', 'barangay_id')
                 ->comment('Target RHU (barangay record serving as RHU)');
 
             // BHW involvement
