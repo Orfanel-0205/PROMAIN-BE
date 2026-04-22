@@ -15,9 +15,15 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
+use App\Services\Audit\AuditService;
+use App\Services\Audit\AuditActions;
 
 class TelemedicineService
 {
+    public function __construct(
+        private readonly AuditService $audit
+    ) {}
+
     /**
      * Resident or BHW submits a telemedicine request.
      */
@@ -45,6 +51,12 @@ class TelemedicineService
             $this->writeLog($request, null, 'pending', 'request_created', [
                 'urgency_level'  => $request->urgency_level,
                 'is_bhw_assisted'=> $request->is_bhw_assisted,
+            ]);
+
+            $this->audit->info(AuditActions::TELE_REQUEST_SUBMITTED, 'telemedicine', [
+                'subject'       => $request,
+                'subject_label' => "Telemedicine Request #{$request->id}",
+                'new_values'    => ['status' => 'pending'],
             ]);
 
             return $request->fresh(['residentProfile', 'requestedBy', 'rhu']);
@@ -99,6 +111,14 @@ class TelemedicineService
                 ]);
             }
 
+            $action = $data['decision'] === 'approve' ? AuditActions::TELE_REQUEST_SCREENED : AuditActions::TELE_REQUEST_REJECTED;
+            $this->audit->info($action, 'telemedicine', [
+                'subject'       => $request,
+                'subject_label' => "Telemedicine Request #{$request->id}",
+                'old_values'    => ['status' => $fromStatus],
+                'new_values'    => ['status' => $request->status],
+            ]);
+
             return $request->fresh(['residentProfile', 'screenedBy', 'session']);
         });
     }
@@ -140,6 +160,12 @@ class TelemedicineService
 
             $this->writeLog($session, null, 'scheduled', 'session_scheduled', [
                 'assigned_doctor_id' => $session->assigned_doctor_id,
+            ]);
+
+            $this->audit->info(AuditActions::TELE_SESSION_CREATED, 'telemedicine', [
+                'subject'       => $session,
+                'subject_label' => "Telemedicine Session #{$session->id}",
+                'new_values'    => ['status' => 'scheduled'],
             ]);
 
             return $session->fresh(['request.residentProfile', 'assignedDoctor']);
@@ -201,6 +227,19 @@ class TelemedicineService
                 'performed_by' => Auth::id(),
             ]));
 
+            $actionMap = [
+                'active' => AuditActions::TELE_SESSION_STARTED,
+                'ended'  => AuditActions::TELE_SESSION_ENDED,
+            ];
+            $action = $actionMap[$newStatus] ?? 'telemedicine_session.updated';
+
+            $this->audit->info($action, 'telemedicine', [
+                'subject'       => $session,
+                'subject_label' => "Telemedicine Session #{$session->id}",
+                'old_values'    => ['status' => $fromStatus],
+                'new_values'    => ['status' => $newStatus],
+            ]);
+
             return $session->fresh(['request.residentProfile', 'assignedDoctor', 'notes', 'referrals']);
         });
     }
@@ -259,6 +298,14 @@ class TelemedicineService
                     'finalized'              => $isFinalized,
                 ]);
 
+            if ($isFinalized) {
+                $this->audit->info(AuditActions::TELE_NOTES_FINALIZED, 'telemedicine', [
+                    'subject'       => $notes,
+                    'subject_label' => "Session Notes #{$notes->id}",
+                    'new_values'    => ['is_finalized' => true],
+                ]);
+            }
+
             return $notes->fresh(['recordedBy']);
         });
     }
@@ -290,6 +337,12 @@ class TelemedicineService
                 'referral_id'   => $referral->id,
                 'referral_type' => $referral->referral_type,
                 'is_urgent'     => $referral->is_urgent,
+            ]);
+
+            $this->audit->info(AuditActions::TELE_REFERRAL_ISSUED, 'telemedicine', [
+                'subject'       => $referral,
+                'subject_label' => "Referral #{$referral->id}",
+                'new_values'    => ['status' => 'pending'],
             ]);
 
             return $referral->fresh(['issuedBy', 'residentProfile']);

@@ -20,6 +20,7 @@ class ResidentProfile extends Model
     {
         return [
             'birth_date' => 'date',
+            'philhealth_no' => 'encrypted',
         ];
     }
 

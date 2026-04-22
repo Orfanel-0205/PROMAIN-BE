@@ -10,9 +10,15 @@ use App\Models\UserRole;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use App\Services\Audit\AuditService;
+use App\Services\Audit\AuditActions;
 
 class AuthController extends Controller
 {
+    public function __construct(
+        private readonly AuditService $audit
+    ) {}
+
     public function register(RegisterRequest $request): JsonResponse
     {
         $residentRole = UserRole::where('name', 'resident')->first();
@@ -34,6 +40,12 @@ class AuthController extends Controller
 
         $token = $user->createToken('ka-agapay-token')->plainTextToken;
 
+        $this->audit->info(AuditActions::USER_CREATED, 'auth', [
+            'subject'       => $user,
+            'subject_label' => $user->first_name . ' ' . $user->last_name,
+            'metadata'      => ['mobile_number' => $user->mobile_number],
+        ]);
+
         return response()->json([
             'message' => 'Registration successful.',
             'user'    => $this->formatUser($user),
@@ -46,6 +58,9 @@ class AuthController extends Controller
         $user = User::where('mobile_number', $request->mobile_number)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
+            $this->audit->warning(AuditActions::AUTH_LOGIN_FAILED, 'auth', [
+                'metadata' => ['attempted_mobile' => $request->mobile_number],
+            ]);
             return response()->json(['message' => 'Invalid credentials.'], 401);
         }
 
@@ -56,6 +71,12 @@ class AuthController extends Controller
         $user->tokens()->delete();
         $token = $user->createToken('ka-agapay-token')->plainTextToken;
 
+        $this->audit->info(AuditActions::AUTH_LOGIN, 'auth', [
+            'subject'       => $user,
+            'subject_label' => $user->first_name . ' ' . $user->last_name,
+            'metadata'      => ['mobile_number' => $user->mobile_number],
+        ]);
+
         return response()->json([
             'message' => 'Login successful.',
             'user'    => $this->formatUser($user),
@@ -65,7 +86,13 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+        $user->currentAccessToken()->delete();
+
+        $this->audit->info(AuditActions::AUTH_LOGOUT, 'auth', [
+            'subject'       => $user,
+            'subject_label' => $user->first_name . ' ' . $user->last_name,
+        ]);
 
         return response()->json(['message' => 'Logged out successfully.']);
     }

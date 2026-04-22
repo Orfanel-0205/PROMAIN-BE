@@ -18,7 +18,16 @@ class RegisterRequest extends FormRequest
             'last_name'     => 'required|string|max:100',
             'mobile_number' => 'required|string|max:20|unique:users,mobile_number',
             'email'         => 'nullable|email|unique:users,email',
-            'password'      => 'required|string|min:8|confirmed',
+            'password'      => [
+                'required',
+                'string',
+                'min:8',
+                'confirmed',
+                \Illuminate\Validation\Rules\Password::min(8)
+                    ->mixedCase()
+                    ->numbers()
+                    ->uncompromised(),
+            ],
             'barangay_id'   => 'nullable|exists:barangays,barangay_id',
         ];
     }

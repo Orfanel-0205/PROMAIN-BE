@@ -10,11 +10,40 @@ use App\Http\Controllers\Api\ResidentProfileController;
 use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\AuditController;
 use Illuminate\Support\Facades\Route;
 
+Route::get('/health', function () {
+    $dbOk    = false;
+    $redisOk = false;
+
+    try {
+        \Illuminate\Support\Facades\DB::connection()->getPdo();
+        $dbOk = true;
+    } catch (\Exception $e) {}
+
+    try {
+        \Illuminate\Support\Facades\Cache::store('redis')->put('health_check', 1, 5);
+        $redisOk = \Illuminate\Support\Facades\Cache::store('redis')->get('health_check') === 1;
+    } catch (\Exception $e) {}
+
+    $status = $dbOk && $redisOk ? 200 : 503;
+
+    return response()->json([
+        'status'    => $status === 200 ? 'ok' : 'degraded',
+        'database'  => $dbOk ? 'ok' : 'error',
+        'redis'     => $redisOk ? 'ok' : 'error',
+        'timestamp' => now()->toIso8601String(),
+        'version'   => config('app.version', '1.0.0'),
+    ], $status);
+});
+
+
 // ─── Public Auth Routes ───────────────────────────────────────────────────────
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login',    [AuthController::class, 'login']);
+Route::middleware('throttle:auth')->group(function () {
+    Route::post('/register', [AuthController::class, 'register']);
+    Route::post('/login',    [AuthController::class, 'login']);
+});
 
 // ─── Authenticated Routes ─────────────────────────────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {
@@ -127,6 +156,13 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::post('/read-all',         [NotificationController::class, 'markAllRead']);
         Route::patch('/{id}/read',       [NotificationController::class, 'markRead']);
         Route::delete('/{id}',           [NotificationController::class, 'destroy']);
+    });
+
+    // Audit Module
+    Route::prefix('audit')->group(function () {
+        Route::get('/',                         [AuditController::class, 'index']);
+        Route::get('/user/{userId}',            [AuditController::class, 'userTimeline']);
+        Route::get('/subject',                  [AuditController::class, 'subjectHistory']);
     });
 
 });

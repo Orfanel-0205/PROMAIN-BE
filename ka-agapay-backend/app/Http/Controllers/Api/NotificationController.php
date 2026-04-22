@@ -6,9 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\NotificationPreference;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Services\Audit\AuditService;
+use App\Services\Audit\AuditActions;
 
 class NotificationController extends Controller
 {
+    public function __construct(
+        private readonly AuditService $audit
+    ) {}
+
     /**
      * GET /api/v1/notifications
      * Paginated in-app notification inbox for the authenticated user.
@@ -40,6 +46,10 @@ class NotificationController extends Controller
         $notification = $request->user()->notifications()->findOrFail($id);
         $notification->markAsRead();
 
+        $this->audit->info(AuditActions::NOTIFICATION_READ, 'notifications', [
+            'subject_label' => "Notification #{$id}",
+        ]);
+
         return response()->json(['message' => 'Notification marked as read.']);
     }
 
@@ -50,6 +60,10 @@ class NotificationController extends Controller
     public function markAllRead(Request $request): JsonResponse
     {
         $request->user()->unreadNotifications->markAsRead();
+
+        $this->audit->info(AuditActions::NOTIFICATION_ALL_READ, 'notifications', [
+            'subject_label' => 'All unread notifications',
+        ]);
 
         return response()->json(['message' => 'All notifications marked as read.']);
     }
@@ -103,6 +117,10 @@ class NotificationController extends Controller
                 ]
             );
         }
+
+        $this->audit->info(AuditActions::PREFERENCES_UPDATED, 'notifications', [
+            'subject_label' => 'Notification Preferences',
+        ]);
 
         return response()->json(['message' => 'Notification preferences updated.']);
     }

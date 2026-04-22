@@ -12,9 +12,15 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
+use App\Services\Audit\AuditService;
+use App\Services\Audit\AuditActions;
 
 class QueueService
 {
+    public function __construct(
+        private readonly AuditService $audit
+    ) {}
+
     /**
      * Issue a new queue ticket for a resident.
      * Computes priority score, assigns a ticket number, and persists.
@@ -80,6 +86,16 @@ class QueueService
                 'priority_category' => $priorityCategory,
                 'queue_position'    => $queuePosition,
                 'flags'             => $flags,
+            ]);
+
+            $this->audit->info(AuditActions::QUEUE_TICKET_ISSUED, 'queue', [
+                'subject'       => $ticket,
+                'subject_label' => "Queue Ticket #{$ticket->ticket_number}",
+                'new_values'    => ['status' => 'waiting'],
+                'metadata'      => [
+                    'priority_score'    => $priorityScore,
+                    'priority_category' => $priorityCategory,
+                ],
             ]);
 
             return $ticket->fresh(['residentProfile', 'rhu', 'issuedBy']);
@@ -155,6 +171,26 @@ class QueueService
             $ticket->update($updates);
 
             $this->writeLog($ticket, $fromStatus, $newStatus, $newStatus, $metadata);
+
+            // Determine audit action constant based on new status
+            $actionMap = [
+                'called'     => AuditActions::QUEUE_TICKET_CALLED,
+                'in_service' => AuditActions::QUEUE_TICKET_IN_SERVICE,
+                'completed'  => AuditActions::QUEUE_TICKET_COMPLETED,
+                'cancelled'  => AuditActions::QUEUE_TICKET_CANCELLED,
+                'skipped'    => AuditActions::QUEUE_TICKET_SKIPPED,
+                'no_show'    => AuditActions::QUEUE_TICKET_NO_SHOW,
+            ];
+
+            $action = $actionMap[$newStatus] ?? 'queue_ticket.updated';
+
+            $this->audit->info($action, 'queue', [
+                'subject'       => $ticket,
+                'subject_label' => "Queue Ticket #{$ticket->ticket_number}",
+                'old_values'    => ['status' => $fromStatus],
+                'new_values'    => ['status' => $newStatus],
+                'metadata'      => $metadata,
+            ]);
 
             return $ticket->fresh(['residentProfile', 'rhu', 'servedBy', 'logs']);
         });
