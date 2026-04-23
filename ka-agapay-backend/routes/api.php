@@ -11,6 +11,8 @@ use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\AuditController;
+use App\Http\Controllers\Api\PrescriptionController;
+use App\Http\Controllers\Api\ReferralController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -163,6 +165,28 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::get('/',                         [AuditController::class, 'index']);
         Route::get('/user/{userId}',            [AuditController::class, 'userTimeline']);
         Route::get('/subject',                  [AuditController::class, 'subjectHistory']);
+    });
+
+    // Prescriptions Module
+    Route::prefix('prescriptions')->name('prescriptions.')->group(function () {
+        Route::get('/',                              [PrescriptionController::class, 'index']);
+        Route::post('/',                             [PrescriptionController::class, 'store']);
+        Route::get('/mine',                          [PrescriptionController::class, 'mine']);
+        Route::get('/resident/{residentProfileId}',  [PrescriptionController::class, 'forResident']);
+        Route::get('/{prescription}',                [PrescriptionController::class, 'show']);
+        Route::post('/{prescription}/dispense',      [PrescriptionController::class, 'dispense']);
+        Route::patch('/{prescription}/void',         [PrescriptionController::class, 'void']);
+    });
+
+    // Referrals Module
+    Route::prefix('referrals')->name('referrals.')->group(function () {
+        Route::get('/',                          [ReferralController::class, 'index']);
+        Route::post('/',                         [ReferralController::class, 'store']);
+        Route::get('/mine',                      [ReferralController::class, 'mine']);
+        Route::get('/bhw-assigned',              [ReferralController::class, 'bhwAssigned']);
+        Route::get('/{referral}',                [ReferralController::class, 'show']);
+        Route::patch('/{referral}/status',       [ReferralController::class, 'updateStatus']);
+        Route::post('/{referral}/bhw-report',    [ReferralController::class, 'bhwReport']);
     });
 
 });

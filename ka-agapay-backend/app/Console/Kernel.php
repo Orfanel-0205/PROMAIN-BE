@@ -17,6 +17,11 @@ class Kernel extends ConsoleKernel
         $schedule->call(function () {
             app(\App\Services\Notification\NotificationService::class)->sendSessionReminders();
         })->everyFiveMinutes()->description('Send telemedicine session reminders');
+
+        $schedule->call(function () {
+            $count = app(\App\Services\Prescription\PrescriptionService::class)->expireStale();
+            logger()->info("Expired {$count} stale prescriptions.");
+        })->dailyAt('00:05')->description('Expire stale prescriptions');
     }
 
     /**
