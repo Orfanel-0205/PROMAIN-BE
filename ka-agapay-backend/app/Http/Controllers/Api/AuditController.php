@@ -30,12 +30,12 @@ class AuditController extends Controller
         ]);
 
         $logs = ActivityLog::with('user')
-            ->when($request->filled('user_id'),  fn($q) => $q->where('user_id', $request->user_id))
-            ->when($request->filled('module'),   fn($q) => $q->where('module', $request->module))
-            ->when($request->filled('action'),   fn($q) => $q->where('action', $request->action))
-            ->when($request->filled('severity'), fn($q) => $q->where('severity', $request->severity))
-            ->when($request->filled('from'),     fn($q) => $q->where('created_at', '>=', $request->from))
-            ->when($request->filled('to'),       fn($q) => $q->where('created_at', '<=', $request->to . ' 23:59:59'))
+            ->when(fn() => $request->filled('user_id'),  fn($q) => $q->where('user_id', $request->user_id))
+            ->when(fn() => $request->filled('module'),   fn($q) => $q->where('module', $request->module))
+            ->when(fn() => $request->filled('action'),   fn($q) => $q->where('action', $request->action))
+            ->when(fn() => $request->filled('severity'), fn($q) => $q->where('severity', $request->severity))
+            ->when(fn() => $request->filled('from'),     fn($q) => $q->where('created_at', '>=', $request->from))
+            ->when(fn() => $request->filled('to'),       fn($q) => $q->where('created_at', '<=', $request->to . ' 23:59:59'))
             ->latest('created_at')
             ->paginate($request->integer('per_page', 50));
 

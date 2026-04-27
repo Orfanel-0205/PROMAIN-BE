@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\PrescriptionController;
 use App\Http\Controllers\Api\ReferralController;
+use App\Http\Controllers\Api\Ai\AiController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -188,5 +189,23 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::patch('/{referral}/status',       [ReferralController::class, 'updateStatus']);
         Route::post('/{referral}/bhw-report',    [ReferralController::class, 'bhwReport']);
     });
+    //AI Route
 
+    Route::prefix('ai')->group(function () {
+        Route::post('/triage/telemedicine/{telRequest}', [AiController::class, 'triageTelemedicine']);
+        Route::post('/triage/queue/{ticket}',            [AiController::class, 'triageQueue']);
+        Route::get('/history',                           [AiController::class, 'history']);
+        Route::patch('/triage/{score}/override',         [AiController::class, 'override']);
+    });
+    //Analytics Route
+
+    Route::prefix('v1/analytics')->middleware('auth:sanctum')->group(function () {
+        Route::get('/overview',               [AnalyticsController::class, 'overview']);
+        Route::get('/queue-performance',      [AnalyticsController::class, 'queuePerformance']);
+        Route::get('/telemedicine-summary',   [AnalyticsController::class, 'telemedicineSummary']);
+        Route::get('/prescription-summary',   [AnalyticsController::class, 'prescriptionSummary']);
+        Route::get('/barangay-health-profile',[AnalyticsController::class, 'barangayHealthProfile']);
+        Route::get('/ai-accuracy',            [AnalyticsController::class, 'aiAccuracy']);
+        Route::get('/top-diagnoses',          [AnalyticsController::class, 'topDiagnoses']);
+    });
 });

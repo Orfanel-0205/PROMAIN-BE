@@ -43,15 +43,15 @@ class ReferralController extends Controller
                 'issuedBy',
                 'assignedBhw',
             ])
-            ->when($request->filled('status'),
+            ->when(fn() => $request->filled('status'),
                 fn($q) => $q->where('status', $request->status))
-            ->when($request->filled('urgency'),
+            ->when(fn() => $request->filled('urgency'),
                 fn($q) => $q->where('urgency', $request->urgency))
-            ->when($request->filled('type'),
+            ->when(fn() => $request->filled('type'),
                 fn($q) => $q->where('referral_type', $request->type))
-            ->when($request->filled('bhw_id'),
+            ->when(fn() => $request->filled('bhw_id'),
                 fn($q) => $q->forBhw($request->integer('bhw_id')))
-            ->when($request->boolean('due_today'),
+            ->when(fn() => $request->boolean('due_today'),
                 fn($q) => $q->dueToday())
             ->orderByDesc('is_urgent')
             ->orderBy('follow_up_date')

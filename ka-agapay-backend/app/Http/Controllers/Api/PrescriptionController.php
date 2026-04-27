@@ -48,17 +48,17 @@ class PrescriptionController extends Controller
                 'prescribedBy',
                 'dispensedBy',
             ])
-            ->when($request->filled('resident_profile_id'),
+            ->when(fn() => $request->filled('resident_profile_id'),
                 fn($q) => $q->forResident($request->integer('resident_profile_id')))
-            ->when($request->filled('status'),
+            ->when(fn() => $request->filled('status'),
                 fn($q) => $q->where('status', $request->status))
-            ->when($request->filled('rhu_id'),
+            ->when(fn() => $request->filled('rhu_id'),
                 fn($q) => $q->forRhu($request->integer('rhu_id')))
-            ->when($request->filled('from'),
+            ->when(fn() => $request->filled('from'),
                 fn($q) => $q->where('prescription_date', '>=', $request->from))
-            ->when($request->filled('to'),
+            ->when(fn() => $request->filled('to'),
                 fn($q) => $q->where('prescription_date', '<=', $request->to))
-            ->when($request->boolean('controlled_only'),
+            ->when(fn() => $request->boolean('controlled_only'),
                 fn($q) => $q->controlled())
             ->latest('prescription_date')
             ->paginate($request->integer('per_page', 20));
