@@ -208,4 +208,15 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::get('/ai-accuracy',            [AnalyticsController::class, 'aiAccuracy']);
         Route::get('/top-diagnoses',          [AnalyticsController::class, 'topDiagnoses']);
     });
+    //Inventory Routes
+    Route::prefix('v1/inventory')->middleware('auth:sanctum')->group(function () {
+    Route::get('/',                           [InventoryController::class, 'index']);
+    Route::post('/',                          [InventoryController::class, 'store']);
+    Route::get('/alerts',                     [InventoryController::class, 'alerts']);
+    Route::get('/{item}',                     [InventoryController::class, 'show']);
+    Route::post('/{item}/stock-in',           [InventoryController::class, 'stockIn']);
+    Route::post('/{item}/stock-out',          [InventoryController::class, 'stockOut']);
+    Route::patch('/{item}/adjust',            [InventoryController::class, 'adjust']);
+    Route::get('/{item}/transactions',        [InventoryController::class, 'transactions']);
+    });
 });
