@@ -1,5 +1,4 @@
 // app/layout.tsx
-
 import type { Metadata } from 'next';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import './globals.css';

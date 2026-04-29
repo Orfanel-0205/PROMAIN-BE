@@ -65,12 +65,12 @@ export default function DashboardPage() {
                     <Card className="rounded-xl shadow-sm border-0 bg-blue-50">
                         <Statistic
                             title="Waiting in Queue"
-                            value={data?.today.queue.waiting ?? 0}
+                            value={data?.today?.queue?.waiting ?? 0}
                             prefix={<TeamOutlined className="text-blue-600" />}
-                            valueStyle={{ color: '#1d4ed8' }}
+                            styles={{ content: { color: '#1d4ed8' } }}
                         />
                         <Text className="text-gray-500 text-xs">
-                            Avg wait: {data?.today.queue.avg_wait_minutes ?? 0} mins
+                            Avg wait: {data?.today?.queue?.avg_wait_minutes ?? 0} mins
                         </Text>
                     </Card>
                 </Col>
@@ -79,12 +79,12 @@ export default function DashboardPage() {
                     <Card className="rounded-xl shadow-sm border-0 bg-green-50">
                         <Statistic
                             title="Telemedicine Today"
-                            value={data?.today.telemedicine.total ?? 0}
+                            value={data?.today?.telemedicine?.total ?? 0}
                             prefix={<VideoCameraOutlined className="text-green-600" />}
-                            valueStyle={{ color: '#16a34a' }}
+                            styles={{ content: { color: '#16a34a' } }}
                         />
                         <Text className="text-gray-500 text-xs">
-                            {data?.today.telemedicine.pending ?? 0} pending review
+                            {data?.today?.telemedicine?.pending ?? 0} pending review
                         </Text>
                     </Card>
                 </Col>
@@ -93,12 +93,12 @@ export default function DashboardPage() {
                     <Card className="rounded-xl shadow-sm border-0 bg-purple-50">
                         <Statistic
                             title="Prescriptions Issued"
-                            value={data?.today.prescriptions.total_issued ?? 0}
+                            value={data?.today?.prescriptions?.total_issued ?? 0}
                             prefix={<FileTextOutlined className="text-purple-600" />}
-                            valueStyle={{ color: '#7c3aed' }}
+                            styles={{ content: { color: '#7c3aed' } }}
                         />
                         <Text className="text-gray-500 text-xs">
-                            {data?.today.prescriptions.dispensed ?? 0} dispensed
+                            {data?.today?.prescriptions?.dispensed ?? 0} dispensed
                         </Text>
                     </Card>
                 </Col>
@@ -107,13 +107,13 @@ export default function DashboardPage() {
                     <Card className="rounded-xl shadow-sm border-0 bg-orange-50">
                         <Statistic
                             title="Pending Referrals"
-                            value={data?.today.referrals.pending ?? 0}
+                            value={data?.today?.referrals?.pending ?? 0}
                             prefix={<ShareAltOutlined className="text-orange-600" />}
-                            valueStyle={{ color: '#ea580c' }}
+                            styles={{ content: { color: '#ea580c' } }}
                         />
-                        {(data?.today.referrals.urgent ?? 0) > 0 && (
+                        {(data?.today?.referrals?.urgent ?? 0) > 0 && (
                             <Text className="text-red-500 text-xs font-medium">
-                                ⚠ {data?.today.referrals.urgent} urgent
+                                ⚠ {data?.today?.referrals?.urgent} urgent
                             </Text>
                         )}
                     </Card>
@@ -121,9 +121,9 @@ export default function DashboardPage() {
             </Row>
 
             {/* Emergency Alert */}
-            {(data?.today.telemedicine.emergency ?? 0) > 0 && (
+            {(data?.today?.telemedicine?.emergency ?? 0) > 0 && (
                 <Alert
-                    message={`${data?.today.telemedicine.emergency} Emergency Telemedicine Request(s) Today`}
+                    message={`${data?.today?.telemedicine?.emergency} Emergency Telemedicine Request(s) Today`}
                     description="Please review and prioritize these cases immediately."
                     type="error"
                     showIcon

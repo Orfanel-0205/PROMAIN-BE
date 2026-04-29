@@ -14,6 +14,9 @@ use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\PrescriptionController;
 use App\Http\Controllers\Api\ReferralController;
 use App\Http\Controllers\Api\Ai\AiController;
+use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\Analytics\AnalyticsController;
+use App\Http\Controllers\Api\InventoryController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -198,8 +201,7 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::patch('/triage/{score}/override',         [AiController::class, 'override']);
     });
     //Analytics Route
-
-    Route::prefix('v1/analytics')->middleware('auth:sanctum')->group(function () {
+    Route::prefix('analytics')->group(function () {
         Route::get('/overview',               [AnalyticsController::class, 'overview']);
         Route::get('/queue-performance',      [AnalyticsController::class, 'queuePerformance']);
         Route::get('/telemedicine-summary',   [AnalyticsController::class, 'telemedicineSummary']);
@@ -208,15 +210,20 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::get('/ai-accuracy',            [AnalyticsController::class, 'aiAccuracy']);
         Route::get('/top-diagnoses',          [AnalyticsController::class, 'topDiagnoses']);
     });
+
+    //Dashboard Route
+    Route::prefix('dashboard')->group(function () {
+        Route::get('/admin', [DashboardController::class, 'admin']);
+    });
     //Inventory Routes
-    Route::prefix('v1/inventory')->middleware('auth:sanctum')->group(function () {
-    Route::get('/',                           [InventoryController::class, 'index']);
-    Route::post('/',                          [InventoryController::class, 'store']);
-    Route::get('/alerts',                     [InventoryController::class, 'alerts']);
-    Route::get('/{item}',                     [InventoryController::class, 'show']);
-    Route::post('/{item}/stock-in',           [InventoryController::class, 'stockIn']);
-    Route::post('/{item}/stock-out',          [InventoryController::class, 'stockOut']);
-    Route::patch('/{item}/adjust',            [InventoryController::class, 'adjust']);
-    Route::get('/{item}/transactions',        [InventoryController::class, 'transactions']);
+    Route::prefix('inventory')->group(function () {
+        Route::get('/',                           [InventoryController::class, 'index']);
+        Route::post('/',                          [InventoryController::class, 'store']);
+        Route::get('/alerts',                     [InventoryController::class, 'alerts']);
+        Route::get('/{item}',                     [InventoryController::class, 'show']);
+        Route::post('/{item}/stock-in',           [InventoryController::class, 'stockIn']);
+        Route::post('/{item}/stock-out',          [InventoryController::class, 'stockOut']);
+        Route::patch('/{item}/adjust',            [InventoryController::class, 'adjust']);
+        Route::get('/{item}/transactions',        [InventoryController::class, 'transactions']);
     });
 });

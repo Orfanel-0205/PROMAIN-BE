@@ -1,4 +1,3 @@
-Set-Content -Path "bootstrap\app.php" -Encoding UTF8 -Value @'
 <?php
 
 use Illuminate\Foundation\Application;
@@ -25,4 +24,3 @@ $app->singleton(
 );
 
 return $app;
-'@';
