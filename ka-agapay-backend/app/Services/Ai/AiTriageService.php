@@ -22,6 +22,14 @@ class AiTriageService
     {
         return DB::transaction(function () use ($request) {
             $profile = $request->residentProfile;
+            $queueTicket = $request->queueTicket;
+
+            // Resident profile doesn't store all risk flags (e.g., pregnancy/PWD).
+            // Queue tickets contain those eligibility flags, so we pull them from there
+            // when available.
+            $ageYears = $profile?->birth_date
+                ? now()->diffInYears($profile->birth_date)
+                : null;
 
             $inputPayload = [
                 'chief_complaint'  => $request->chief_complaint,
@@ -29,14 +37,12 @@ class AiTriageService
                 'urgency_declared' => $request->urgency_level,
                 'is_bhw_assisted'  => $request->is_bhw_assisted,
                 'resident_flags'   => [
-                    'age'         => $profile?->birth_date
-                        ? now()->diffInYears($profile->birth_date)
-                        : null,
-                    'is_senior'   => $profile?->birth_date
-                        ? now()->diffInYears($profile->birth_date) >= 60
-                        : false,
-                    'is_pregnant' => (bool) ($profile?->is_pregnant ?? false),
-                    'is_pwd'      => (bool) ($profile?->is_pwd ?? false),
+                    'age'         => $ageYears,
+                    'is_senior'   => $ageYears !== null
+                        ? $ageYears >= 60
+                        : (bool) ($queueTicket?->is_senior ?? false),
+                    'is_pregnant' => (bool) ($queueTicket?->is_pregnant ?? false),
+                    'is_pwd'      => (bool) ($queueTicket?->is_pwd ?? false),
                 ],
             ];
 
