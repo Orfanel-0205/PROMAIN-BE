@@ -2,6 +2,8 @@
 import type { Metadata } from 'next';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import './globals.css';
+import KaAgapayChat from '@/components/chatbot/KaAgapayChat';
+
 
 export const metadata: Metadata = {
   title: 'Ka-agapay Admin Portal',
@@ -18,8 +20,10 @@ export default function RootLayout({
       <body>
         <AntdRegistry>
           {children}
+          <KaAgapayChat />
         </AntdRegistry>
       </body>
+
     </html>
   );
 }

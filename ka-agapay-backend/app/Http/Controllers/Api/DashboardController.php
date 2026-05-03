@@ -27,8 +27,8 @@ class DashboardController extends Controller
             ->count();
 
         $avgWait = QueueTicket::whereDate('created_at', $today)
-            ->whereNotNull('served_at')
-            ->selectRaw('AVG(EXTRACT(EPOCH FROM (served_at - created_at))/60) as avg_mins')
+            ->whereNotNull('service_started_at')
+            ->selectRaw('AVG(EXTRACT(EPOCH FROM (service_started_at - issued_at))/60) as avg_mins')
             ->value('avg_mins');
 
         // ── Telemedicine ───────────────────────────────────────────────────────

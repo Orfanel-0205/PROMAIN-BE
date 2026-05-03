@@ -1,8 +1,9 @@
+// app/login/page.tsx
 'use client';
 
 import React, { useState } from 'react';
-import { Form, Input, Button, Alert, Typography } from 'antd';
-import { LockOutlined, PhoneOutlined, MedicineBoxOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, message, Typography } from 'antd';
+import { UserOutlined, LockOutlined, MedicineBoxOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import Cookies from 'js-cookie';
 import api from '@/lib/api';
@@ -11,93 +12,123 @@ const { Title, Text } = Typography;
 
 export default function LoginPage() {
     const router = useRouter();
+    const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
 
-    const onFinish = async (values: { mobile_number: string; password: string }) => {
+    const onFinish = async (values: any) => {
         setLoading(true);
-        setError(null);
         try {
             const res = await api.post('/login', values);
-            const token = res.data?.token ?? res.data?.data?.token;
-            if (!token) throw new Error('No token returned from server');
-            Cookies.set('ka_agapay_token', token, { expires: 7 });
-            router.push('/');
-        } catch (err: unknown) {
-            const axiosError = err as { response?: { data?: { message?: string } } };
-            setError(
-                axiosError?.response?.data?.message ?? 'Invalid credentials. Please try again.'
-            );
+            Cookies.set('ka_agapay_token', res.data.token, { expires: 7 });
+            Cookies.set('ka_agapay_user', JSON.stringify(res.data.user), { expires: 7 });
+            message.success('Login successful!');
+            router.push('/dashboard');
+        } catch (err: any) {
+            message.error(err.response?.data?.message || 'Invalid credentials.');
         } finally {
             setLoading(false);
         }
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-900 via-blue-800 to-blue-600">
-            <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-10">
+        <div style={{
+            minHeight: '100vh',
+            background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+        }}>
+            <Card
+                style={{
+                    width: '100%',
+                    maxWidth: 420,
+                    borderRadius: 16,
+                    boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
+                    border: 'none',
+                }}
+            >
                 {/* Logo */}
-                <div className="flex flex-col items-center mb-8">
-                    <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-lg">
-                        <MedicineBoxOutlined className="text-white text-3xl" />
+                <div style={{ textAlign: 'center', marginBottom: 32 }}>
+                    <div style={{
+                        display: 'inline-flex',
+                        background: '#1d4ed8',
+                        borderRadius: '50%',
+                        padding: 16,
+                        marginBottom: 16,
+                    }}>
+                        <MedicineBoxOutlined style={{ color: 'white', fontSize: 28 }} />
                     </div>
-                    <Title level={3} className="!mb-0 !text-blue-900">Ka-agapay</Title>
-                    <Text className="text-gray-500 text-sm">RHU Admin Portal — Malasiqui, Pangasinan</Text>
+                    <Title level={2} style={{ marginBottom: 4, color: '#1e3a8a' }}>
+                        Ka-agapay
+                    </Title>
+                    <Text style={{ color: '#6b7280' }}>
+                        RHU1 & RHU2 Malasiqui, Pangasinan
+                    </Text>
                 </div>
 
-                {error && (
-                    <Alert
-                        message={error}
-                        type="error"
-                        showIcon
-                        closable
-                        onClose={() => setError(null)}
-                        className="mb-4 rounded-lg"
-                    />
-                )}
-
-                <Form layout="vertical" onFinish={onFinish} size="large" requiredMark={false}>
+                {/* Login Form */}
+                <Form
+                    form={form}
+                    onFinish={onFinish}
+                    layout="vertical"
+                    size="large"
+                >
                     <Form.Item
                         name="mobile_number"
-                        label={<span className="font-medium text-gray-700">Mobile Number</span>}
+                        label="Mobile Number"
                         rules={[{ required: true, message: 'Please enter your mobile number' }]}
                     >
                         <Input
-                            prefix={<PhoneOutlined className="text-gray-400" />}
-                            placeholder="09170000002"
-                            className="rounded-lg"
+                            prefix={<UserOutlined style={{ color: '#9ca3af' }} />}
+                            placeholder="09XXXXXXXXX"
                         />
                     </Form.Item>
 
                     <Form.Item
                         name="password"
-                        label={<span className="font-medium text-gray-700">Password</span>}
+                        label="Password"
                         rules={[{ required: true, message: 'Please enter your password' }]}
                     >
                         <Input.Password
-                            prefix={<LockOutlined className="text-gray-400" />}
-                            placeholder="••••••••"
-                            className="rounded-lg"
+                            prefix={<LockOutlined style={{ color: '#9ca3af' }} />}
+                            placeholder="Enter your password"
                         />
                     </Form.Item>
 
-                    <Form.Item className="mb-0 mt-2">
+                    <Form.Item style={{ marginTop: 8 }}>
                         <Button
                             type="primary"
                             htmlType="submit"
                             loading={loading}
                             block
-                            className="h-11 rounded-lg bg-blue-600 hover:!bg-blue-700 font-semibold text-base"
+                            style={{
+                                height: 48,
+                                background: '#1d4ed8',
+                                border: 'none',
+                                borderRadius: 8,
+                                fontSize: 16,
+                            }}
                         >
                             Sign In
                         </Button>
                     </Form.Item>
                 </Form>
 
-                <Text className="block text-center text-gray-400 text-xs mt-6">
-                    Authorized personnel only. Unauthorized access is prohibited.
-                </Text>
-            </div>
+                {/* Demo Credentials */}
+                <div style={{
+                    background: '#f8fafc',
+                    borderRadius: 8,
+                    padding: 12,
+                    marginTop: 8,
+                }}>
+                    <Text style={{ fontSize: 12, color: '#6b7280' }}>
+                        <strong>Demo accounts</strong> (password: password123)<br />
+                        Admin: 09170000001 | MHO: 09170000002<br />
+                        Staff: 09170000003 | BHW: 09170000004
+                    </Text>
+                </div>
+            </Card>
         </div>
     );
 }

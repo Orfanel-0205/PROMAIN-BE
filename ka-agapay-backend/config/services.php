@@ -31,4 +31,10 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    'google' => [
+        'gemini_api_key'   => env('GEMINI_API_KEY'),
+        'vision_api_key'   => env('GOOGLE_VISION_API_KEY'),
+    ],
+
 ];
+

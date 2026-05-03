@@ -52,7 +52,7 @@ export default function QueuePage() {
 
     const fetchQueue = async () => {
         try {
-            const res = await api.get('/v1/queue', {
+            const res = await api.get('/queue', {
                 params: { rhu_id: 1, status: statusFilter }
             });
             setTickets(res.data.data || []);
@@ -65,7 +65,7 @@ export default function QueuePage() {
 
     const callNext = async () => {
         try {
-            const res = await api.post('/v1/queue/call-next', {
+            const res = await api.post('/queue/call-next', {
                 rhu_id: 1,
                 service_type: 'opd_consultation'
             });
@@ -79,7 +79,7 @@ export default function QueuePage() {
     const updateStatus = async (ticketId: number, status: string) => {
         setActionLoading(ticketId);
         try {
-            await api.patch(`/v1/queue/${ticketId}/status`, { status });
+            await api.patch(`/queue/${ticketId}/status`, { status });
             message.success(`Status updated to ${status}`);
             fetchQueue();
         } catch (err: any) {

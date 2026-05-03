@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 // Routes that don't require authentication
-const PUBLIC_PATHS = ['/login'];
+const PUBLIC_PATHS = ['/login', '/register'];
 
 export function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
@@ -24,9 +24,10 @@ export function middleware(request: NextRequest) {
     const token = request.cookies.get('ka_agapay_token')?.value;
 
     if (!token) {
-        const loginUrl = new URL('/login', request.url);
-        return NextResponse.redirect(loginUrl);
+        const registerUrl = new URL('/register', request.url);
+        return NextResponse.redirect(registerUrl);
     }
+
 
     return NextResponse.next();
 }

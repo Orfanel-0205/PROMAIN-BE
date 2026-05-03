@@ -36,7 +36,7 @@ export default function InventoryPage() {
 
     const fetchInventory = async () => {
         try {
-            const res = await api.get('/v1/inventory', { params: { rhu_id: 1 } });
+            const res = await api.get('/inventory', { params: { rhu_id: 1 } });
             setItems(res.data.data || []);
         } finally {
             setLoading(false);
@@ -44,7 +44,7 @@ export default function InventoryPage() {
     };
 
     const fetchAlerts = async () => {
-        const res = await api.get('/v1/inventory/alerts?rhu_id=1');
+        const res = await api.get('/inventory/alerts?rhu_id=1');
         setAlerts(res.data);
     };
 
@@ -53,7 +53,7 @@ export default function InventoryPage() {
         if (!item) return;
 
         try {
-            await api.post(`/v1/inventory/${item.id}/stock-${type}`, values);
+            await api.post(`/inventory/${item.id}/stock-${type}`, values);
             message.success(`Stock ${type === 'in' ? 'added' : 'deducted'} successfully.`);
             setStockModal({ visible: false, item: null, type: 'in' });
             form.resetFields();
