@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -24,6 +23,9 @@ class User extends Authenticatable
         'mobile_number',
         'password',
         'account_status',
+        'avatar',
+        'last_login_at',
+        'last_login_ip',
     ];
 
     protected $hidden = [
@@ -34,7 +36,8 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            'password' => 'hashed',
+            'password'      => 'hashed',
+            'last_login_at' => 'datetime',
         ];
     }
 
@@ -46,45 +49,5 @@ class User extends Authenticatable
     public function barangay(): BelongsTo
     {
         return $this->belongsTo(Barangay::class, 'barangay_id', 'barangay_id');
-    }
-
-    public function residentProfile(): HasOne
-    {
-        return $this->hasOne(ResidentProfile::class, 'user_id', 'user_id');
-    }
-
-    public function appointments(): HasMany
-    {
-        return $this->hasMany(Appointment::class, 'user_id', 'user_id');
-    }
-
-    public function consultations(): HasMany
-    {
-        return $this->hasMany(Consultation::class, 'user_id', 'user_id');
-    }
-
-    public function eventRegistrations(): HasMany
-    {
-        return $this->hasMany(EventRegistration::class, 'user_id', 'user_id');
-    }
-
-    public function hasRole(string $role): bool
-    {
-        return $this->role?->name === $role;
-    }
-
-    public function hasAnyRole(array $roles): bool
-    {
-        return in_array($this->role?->name, $roles);
-    }
-
-    public function notificationPreferences(): HasMany
-    {
-        return $this->hasMany(NotificationPreference::class, 'user_id', 'user_id');
-    }
-
-    public function smsLogs(): HasMany
-    {
-        return $this->hasMany(SmsLog::class, 'user_id', 'user_id');
     }
 }

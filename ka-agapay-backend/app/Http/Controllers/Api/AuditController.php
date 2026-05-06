@@ -76,4 +76,53 @@ class AuditController extends Controller
 
         return response()->json(['data' => $logs]);
     }
+
+ public function store(Request $request): JsonResponse
+{
+    // ── Accept both the mobile app's flat format AND the admin panel format ──
+    // Mobile sends: { action, metadata, user_id, timestamp }
+    // Admin panel sends: { action, module, severity, subject_type, metadata }
+
+    $validated = $request->validate([
+        'action'        => ['required', 'string', 'max:100'],
+        // 'module' is optional — mobile app puts it inside metadata
+        'module'        => ['nullable', 'string', 'max:50'],
+        'severity'      => ['nullable', 'string', 'in:info,warning,critical'],
+        'subject_type'  => ['nullable', 'string'],
+        'subject_id'    => ['nullable', 'integer'],
+        'subject_label' => ['nullable', 'string', 'max:255'],
+        'metadata'      => ['nullable', 'array'],
+        // Mobile-only fields — accepted but not stored directly
+        'user_id'       => ['nullable', 'integer'],
+        'timestamp'     => ['nullable', 'string'],
+    ]);
+
+    // Extract module: prefer top-level, fall back to metadata.module
+    $module = $validated['module']
+        ?? $validated['metadata']['module']
+        ?? 'mobile';
+
+    // Use authenticated user — ignore the user_id from the request body
+    // (never trust client-supplied user identity)
+    $authUser = $request->user();
+
+    $log = ActivityLog::create([
+        'user_id'       => $authUser->user_id,
+        'user_role'     => $authUser->role?->name ?? 'resident',
+        'action'        => $validated['action'],
+        'module'        => $module,
+        'severity'      => $validated['severity'] ?? 'info',
+        'subject_type'  => $validated['subject_type'] ?? null,
+        'subject_id'    => $validated['subject_id'] ?? null,
+        'subject_label' => $validated['subject_label'] ?? null,
+        'metadata'      => $validated['metadata'] ?? [],
+        'ip_address'    => $request->ip(),
+        'user_agent'    => $request->userAgent(),
+        'http_method'   => $request->method(),
+        'route_name'    => 'api.v1.logs.store',
+        'created_at'    => now(),
+    ]);
+
+    return response()->json(['status' => 'success', 'data' => $log], 201);
+}
 }

@@ -10,101 +10,39 @@ use App\Models\UserRole;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use App\Services\Audit\AuditService;
-use App\Services\Audit\AuditActions;
 
 class AuthController extends Controller
 {
-    public function __construct(
-        private readonly AuditService $audit
-    ) {}
-
     public function register(RegisterRequest $request): JsonResponse
     {
-        $roleName = $request->input('role', 'resident');
-        $role = UserRole::where('name', $roleName)->first() 
-                ?? UserRole::where('name', 'resident')->first();
+        // Find the resident role
+        $role = UserRole::where('name', 'resident')->first();
 
         if (!$role) {
-            return response()->json(['message' => 'Default role not found.'], 500);
+            return response()->json([
+                'message' => 'Default role not found. Please seed the user_roles table.',
+            ], 500);
         }
-
-        $otp = (string) rand(100000, 999999);
 
         $user = User::create([
             'role_id'        => $role->role_id,
-            'barangay_id'    => $request->barangay_id ?? $request->rhu_id, // Map rhu_id to barangay_id for now if needed
+            'barangay_id'    => $request->barangay_id,
             'first_name'     => $request->first_name,
             'last_name'      => $request->last_name,
             'email'          => $request->email,
             'mobile_number'  => $request->mobile_number,
             'password'       => Hash::make($request->password),
-            'account_status' => 'active', 
-            'otp_code'       => $otp,
-
-            'otp_expires_at' => now()->addMinutes(10),
+            'account_status' => 'active',
         ]);
 
-        $this->audit->info('auth.register', 'auth', [
-            'subject_id'    => $user->user_id,
-            'subject_label' => $user->first_name . ' ' . $user->last_name,
-            'metadata'      => ['mobile_number' => $user->mobile_number, 'role' => $role->name],
-        ]);
+        $user->load('role', 'barangay');
+        $token = $user->createToken('ka-agapay-mobile')->plainTextToken;
 
         return response()->json([
             'message' => 'Registration successful.',
             'user'    => $this->formatUser($user),
-            'otp_mock' => $otp,
-            'token'   => $user->createToken('ka-agapay-token')->plainTextToken,
-        ], 201);
-
-    }
-
-
-    public function verifyOtp(Request $request): JsonResponse
-    {
-        $request->validate([
-            'mobile_number' => ['required', 'string'],
-            'otp_code'      => ['required', 'string', 'size:6'],
-        ]);
-
-        $user = User::where('mobile_number', $request->mobile_number)->first();
-
-        if (!$user || $user->otp_code !== $request->otp_code) {
-            return response()->json(['message' => 'Invalid OTP.'], 422);
-        }
-
-        if (now()->isAfter($user->otp_expires_at)) {
-            return response()->json(['message' => 'OTP expired.'], 422);
-        }
-
-        $user->update([
-            'otp_code' => null,
-            'otp_expires_at' => null,
-            'email_verified_at' => now(), // Generic verification flag
-        ]);
-
-        $token = $user->createToken('ka-agapay-token')->plainTextToken;
-
-        return response()->json([
-            'message' => 'OTP verified.',
             'token'   => $token,
-            'user'    => $this->formatUser($user),
-        ]);
-    }
-
-    public function resendOtp(Request $request): JsonResponse
-    {
-        $request->validate(['mobile_number' => 'required']);
-        $user = User::where('mobile_number', $request->mobile_number)->firstOrFail();
-
-        $otp = (string) rand(100000, 999999);
-        $user->update([
-            'otp_code' => $otp,
-            'otp_expires_at' => now()->addMinutes(10),
-        ]);
-
-        return response()->json(['message' => 'OTP resent.', 'otp_mock' => $otp]);
+        ], 201);
     }
 
     public function login(LoginRequest $request): JsonResponse
@@ -112,40 +50,27 @@ class AuthController extends Controller
         $user = User::where('mobile_number', $request->mobile_number)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
-            $this->audit->warning('auth.login_failed', 'auth', [
-                'metadata' => ['attempted_mobile' => $request->mobile_number],
-            ]);
-            return response()->json(['message' => 'Invalid credentials.'], 401);
+            return response()->json([
+                'message' => 'Invalid mobile number or password.',
+            ], 401);
         }
 
-        // Account Status Check
-        if ($user->account_status === 'pending' || $user->account_status === 'under_review') {
+        if (in_array($user->account_status, ['suspended', 'rejected'])) {
             return response()->json([
-                'message' => 'Your account is under review.',
-                'status'  => $user->account_status,
+                'message' => 'Your account has been ' . $user->account_status . '.',
             ], 403);
         }
 
-        if ($user->account_status === 'rejected') {
-            return response()->json(['message' => 'Your registration was rejected.'], 403);
-        }
-
-        if ($user->account_status === 'suspended') {
-            return response()->json(['message' => 'Your account has been suspended.'], 403);
-        }
-
+        // Revoke old tokens and issue fresh one
         $user->tokens()->delete();
-        $token = $user->createToken('ka-agapay-token')->plainTextToken;
+        $token = $user->createToken('ka-agapay-mobile')->plainTextToken;
 
         $user->update([
             'last_login_at' => now(),
             'last_login_ip' => $request->ip(),
         ]);
 
-        $this->audit->info('auth.login', 'auth', [
-            'subject_id'    => $user->user_id,
-            'subject_label' => $user->first_name . ' ' . $user->last_name,
-        ]);
+        $user->load('role', 'barangay');
 
         return response()->json([
             'message' => 'Login successful.',
@@ -156,23 +81,40 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        $user = $request->user();
-        $user->currentAccessToken()->delete();
-
-        $this->audit->info('auth.logout', 'auth', [
-            'subject_id'    => $user->user_id,
-            'subject_label' => $user->first_name . ' ' . $user->last_name,
-        ]);
+        $request->user()->currentAccessToken()->delete();
 
         return response()->json(['message' => 'Logged out successfully.']);
     }
-
     public function me(Request $request): JsonResponse
     {
-        $user = $request->user()->load(['role', 'barangay', 'residentProfile']);
-        return response()->json(['user' => $this->formatUser($user)]);
+        $user = $request->user()->load('role', 'barangay');
+
+        return response()->json([
+            'user' => $this->formatUser($user),
+        ]);
     }
 
+    public function updateProfile(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'first_name'    => ['sometimes', 'string', 'max:100'],
+            'last_name'     => ['sometimes', 'string', 'max:100'],
+            'email'         => ['sometimes', 'email', "unique:users,email,{$user->user_id},user_id"],
+            'barangay_id'   => ['sometimes', 'integer', 'exists:barangays,barangay_id'],
+        ]);
+
+        $user->update($validated);
+        $user->load('role', 'barangay');
+
+        return response()->json([
+            'message' => 'Profile updated.',
+            'user'    => $this->formatUser($user),
+        ]);
+    }
+
+    // ── Consistent shape sent to the mobile app ───────────────────────────
     private function formatUser(User $user): array
     {
         return [
@@ -182,8 +124,9 @@ class AuthController extends Controller
             'email'          => $user->email,
             'mobile_number'  => $user->mobile_number,
             'account_status' => $user->account_status,
-            'role'           => $user->role?->name,
+            'role'           => $user->role?->name ?? 'resident',
             'barangay'       => $user->barangay?->name,
+            'avatar'         => $user->avatar ?? null,
         ];
     }
 }

@@ -9,10 +9,13 @@ class UserRoleSeeder extends Seeder
 {
     public function run(): void
     {
-        $roles = ['resident', 'staff_admin', 'super_admin', 'mho', 'bhw'];
+        $roles = ['resident', 'doctor', 'nurse', 'midwife', 'admin', 'super_admin', 'it_staff', 'mho_admin'];
 
         foreach ($roles as $role) {
-            DB::table('user_roles')->insertOrIgnore(['name' => $role]);
+            DB::table('user_roles')->updateOrInsert(
+                ['name' => $role],
+                ['name' => $role]
+            );
         }
     }
 }
