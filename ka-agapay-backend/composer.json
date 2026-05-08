@@ -2,24 +2,29 @@
     "name": "laravel/laravel",
     "type": "project",
     "description": "The skeleton application for the Laravel framework.",
-    "keywords": ["laravel", "framework"],
+    "keywords": [
+        "laravel",
+        "framework"
+    ],
     "license": "MIT",
     "require": {
-		"php": "^8.1",
-		"cweagans/composer-patches": "^1.8",
-		"guzzlehttp/guzzle": "^7.2",
-		"laravel/framework": "^10.10",
-		"laravel/sanctum": "^3.3",
-		"laravel/tinker": "^2.8"
-	},
-	"extra": {
-		"patches": {
-			"nesbot/carbon": {
-				"Ignore PHP2447 trait conflict in Date.php": "patches/carbon-php2447-ignore.patch"
-			}
-		}
-	},
-
+        "php": "^8.1",
+        "cweagans/composer-patches": "^1.8",
+        "google-gemini-php/laravel": "^2.0",
+        "google/cloud-ai-platform": "^1.59",
+        "google/cloud-bigquery": "^1.36",
+        "guzzlehttp/guzzle": "^7.2",
+        "laravel/framework": "^10.10",
+        "laravel/sanctum": "^3.3",
+        "laravel/tinker": "^2.8"
+    },
+    "extra": {
+        "patches": {
+            "nesbot/carbon": {
+                "Ignore PHP2447 trait conflict in Date.php": "patches/carbon-php2447-ignore.patch"
+            }
+        }
+    },
     "require-dev": {
         "fakerphp/faker": "^1.9.1",
         "laravel/pint": "^1.0",
@@ -66,10 +71,11 @@
         "preferred-install": "dist",
         "sort-packages": true,
         "allow-plugins": {
+            "cweagans/composer-patches": true,
             "pestphp/pest-plugin": true,
             "php-http/discovery": true
         }
     },
-    "minimum-stability": "stable",
+    "minimum-stability": "dev",
     "prefer-stable": true
 }

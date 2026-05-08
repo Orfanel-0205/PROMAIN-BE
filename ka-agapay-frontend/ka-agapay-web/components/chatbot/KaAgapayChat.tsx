@@ -45,7 +45,7 @@ export default function KaAgapayChat() {
                 history: messages.slice(-10) // Send last 10 messages for context
             });
 
-            setMessages(prev => [...prev, { role: 'assistant', content: res.data.reply }]);
+            setMessages(prev => [...prev, { role: 'assistant', content: res.data.message.content }]);
         } catch (err) {
             setMessages(prev => [...prev, { role: 'assistant', content: "I'm sorry, I'm having trouble connecting. Please try again." }]);
         } finally {

@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ChatLog;
 use App\Services\Ai\GeminiService;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class ChatController extends Controller
@@ -41,9 +43,29 @@ class ChatController extends Controller
             'message' => $message,
         ]);
 
-        // Get AI response
-        $start    = microtime(true);
-        $reply    = $this->gemini->chat($message, $history);
+        // ✅ FIXED: wrap Gemini call in try/catch
+        // GeminiService handles its own retries and fallbacks,
+        // but this outer catch is a final safety net so Gemini
+        // failures NEVER bubble up as a 500 to the mobile app.
+        $start = microtime(true);
+
+        try {
+            $reply = $this->gemini->chat($message, $history);
+        } catch (ConnectionException $e) {
+            Log::error('ChatController: Gemini connection failed', [
+                'error' => $e->getMessage(),
+            ]);
+            $reply = "Pasensya na, hindi makonekta sa AI ngayon. "
+                   . "Pumunta sa RHU Malasiqui para sa tulong, o subukan ulit mamaya.";
+        } catch (\Throwable $e) {
+            Log::error('ChatController: unexpected Gemini error', [
+                'error' => $e->getMessage(),
+                'class' => get_class($e),
+            ]);
+            $reply = "Pasensya na, may pansamantalang problema ang AI assistant. "
+                   . "Subukan ulit mamaya o pumunta sa RHU para sa tulong.";
+        }
+
         $duration = (int) ((microtime(true) - $start) * 1000);
 
         // Save AI response
@@ -54,7 +76,7 @@ class ChatController extends Controller
             'response_ms' => $duration,
         ]);
 
-        // Detect chief complaint keywords (simple heuristic)
+        // ── Detect chief complaint keywords ───────────────────────────────
         $complaintKeywords = [
             'sakit', 'masakit', 'lagnat', 'ubo', 'sipon', 'hirap', 'sugat',
             'dugo', 'nahilo', 'nahihilo', 'pananakit', 'pagduduwal', 'pagtatae',
@@ -63,7 +85,7 @@ class ChatController extends Controller
         ];
 
         $detectedComplaint = null;
-        $lowerMessage = strtolower($message);
+        $lowerMessage      = strtolower($message);
         foreach ($complaintKeywords as $keyword) {
             if (str_contains($lowerMessage, $keyword)) {
                 $detectedComplaint = $message;
@@ -71,15 +93,17 @@ class ChatController extends Controller
             }
         }
 
-        // Detect if AI reply suggests booking or records
+        // ── Detect suggested action from AI reply ─────────────────────────
         $suggestedAction = null;
-        $lowerReply = strtolower($reply);
+        $lowerReply      = strtolower($reply);
+
         if (
             str_contains($lowerReply, 'appointment') ||
             str_contains($lowerReply, 'konsultasyon') ||
             str_contains($lowerReply, 'doctor') ||
             str_contains($lowerReply, 'doktor') ||
-            str_contains($lowerReply, 'schedule')
+            str_contains($lowerReply, 'schedule') ||
+            str_contains($lowerReply, 'book')
         ) {
             $suggestedAction = 'book_appointment';
         } elseif (
@@ -92,7 +116,6 @@ class ChatController extends Controller
         }
 
         return response()->json([
-            // ✅ Matches frontend ChatResponse type exactly
             'message' => [
                 'id'        => (string) ($log->id ?? Str::uuid()),
                 'role'      => 'assistant',
