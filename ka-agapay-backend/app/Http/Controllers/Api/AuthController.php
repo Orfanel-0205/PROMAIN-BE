@@ -15,7 +15,6 @@ class AuthController extends Controller
 {
     public function register(RegisterRequest $request): JsonResponse
     {
-        // Find the resident role
         $role = UserRole::where('name', 'resident')->first();
 
         if (!$role) {
@@ -26,16 +25,20 @@ class AuthController extends Controller
 
         $user = User::create([
             'role_id'        => $role->role_id,
-            'barangay_id'    => $request->barangay_id,
             'first_name'     => $request->first_name,
             'last_name'      => $request->last_name,
             'email'          => $request->email,
             'mobile_number'  => $request->mobile_number,
             'password'       => Hash::make($request->password),
-            'account_status' => 'active',
+            'barangay'       => $request->barangay,   // plain string column
+            'birthday'       => $request->birthday,
+            'sex'            => $request->sex,
+            'account_status' => 'active',              // skip approval, go straight in
         ]);
 
-        $user->load('role', 'barangay');
+        // Only load 'role' — no barangay relationship on User
+        $user->load('role');
+
         $token = $user->createToken('ka-agapay-mobile')->plainTextToken;
 
         return response()->json([
@@ -61,7 +64,6 @@ class AuthController extends Controller
             ], 403);
         }
 
-        // Revoke old tokens and issue fresh one
         $user->tokens()->delete();
         $token = $user->createToken('ka-agapay-mobile')->plainTextToken;
 
@@ -70,7 +72,7 @@ class AuthController extends Controller
             'last_login_ip' => $request->ip(),
         ]);
 
-        $user->load('role', 'barangay');
+        $user->load('role');
 
         return response()->json([
             'message' => 'Login successful.',
@@ -82,16 +84,13 @@ class AuthController extends Controller
     public function logout(Request $request): JsonResponse
     {
         $request->user()->currentAccessToken()->delete();
-
         return response()->json(['message' => 'Logged out successfully.']);
     }
+
     public function me(Request $request): JsonResponse
     {
-        $user = $request->user()->load('role', 'barangay');
-
-        return response()->json([
-            'user' => $this->formatUser($user),
-        ]);
+        $user = $request->user()->load('role');
+        return response()->json(['user' => $this->formatUser($user)]);
     }
 
     public function updateProfile(Request $request): JsonResponse
@@ -99,14 +98,14 @@ class AuthController extends Controller
         $user = $request->user();
 
         $validated = $request->validate([
-            'first_name'    => ['sometimes', 'string', 'max:100'],
-            'last_name'     => ['sometimes', 'string', 'max:100'],
-            'email'         => ['sometimes', 'email', "unique:users,email,{$user->user_id},user_id"],
-            'barangay_id'   => ['sometimes', 'integer', 'exists:barangays,barangay_id'],
+            'first_name'  => ['sometimes', 'string', 'max:100'],
+            'last_name'   => ['sometimes', 'string', 'max:100'],
+            'email'       => ['sometimes', 'email', "unique:users,email,{$user->user_id},user_id"],
+            'barangay'    => ['sometimes', 'string'],
         ]);
 
         $user->update($validated);
-        $user->load('role', 'barangay');
+        $user->load('role');
 
         return response()->json([
             'message' => 'Profile updated.',
@@ -114,7 +113,6 @@ class AuthController extends Controller
         ]);
     }
 
-    // ── Consistent shape sent to the mobile app ───────────────────────────
     private function formatUser(User $user): array
     {
         return [
@@ -125,8 +123,10 @@ class AuthController extends Controller
             'mobile_number'  => $user->mobile_number,
             'account_status' => $user->account_status,
             'role'           => $user->role?->name ?? 'resident',
-            'barangay'       => $user->barangay?->name,
+            'barangay'       => $user->barangay,   // plain string, no relationship
             'avatar'         => $user->avatar ?? null,
+            'birthday'       => $user->birthday,
+            'sex'            => $user->sex,
         ];
     }
 }

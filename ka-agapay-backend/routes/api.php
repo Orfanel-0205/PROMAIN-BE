@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\ConsultationController;
 use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\BiometricController;
 
 Route::prefix('v1')->group(function () {
 
@@ -46,6 +47,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/me',              [AuthController::class, 'me']);
         Route::put('/me',              [AuthController::class, 'updateProfile']);
         Route::put('/change-password', [AuthController::class, 'changePassword']);
+        Route::post('/biometric/enable',  [BiometricController::class, 'enable']);
+        Route::post('/biometric/disable', [BiometricController::class, 'disable']);
 
         // ── Profile ───────────────────────────────────────────────────────
         Route::patch('/profile',       [ProfileController::class, 'update']);

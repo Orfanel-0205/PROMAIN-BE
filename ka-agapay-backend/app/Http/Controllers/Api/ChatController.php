@@ -78,10 +78,14 @@ class ChatController extends Controller
 
         // ── Detect chief complaint keywords ───────────────────────────────
         $complaintKeywords = [
+            // Tagalog / General
             'sakit', 'masakit', 'lagnat', 'ubo', 'sipon', 'hirap', 'sugat',
             'dugo', 'nahilo', 'nahihilo', 'pananakit', 'pagduduwal', 'pagtatae',
+            // English
             'pain', 'fever', 'cough', 'cold', 'dizzy', 'wound', 'bleeding',
             'headache', 'stomachache', 'vomiting', 'diarrhea', 'rash',
+            // Pangasinense
+            'petang', 'eges', 'ulo', 'man-ubo', 'sipon', 'sakit na eges', 'sakit na ulo',
         ];
 
         $detectedComplaint = null;
