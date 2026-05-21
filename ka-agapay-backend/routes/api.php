@@ -1,168 +1,197 @@
 <?php
 
+use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\AnnouncementController;
-use App\Http\Controllers\Api\AppointmentController;
-use App\Http\Controllers\Api\ConsultationController;
-use App\Http\Controllers\Api\EventController;
-use App\Http\Controllers\Api\MedicalReportController;
-use App\Http\Controllers\Api\ResidentProfileController;
+use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\PrescriptionController;
+use App\Http\Controllers\Api\ReferralController;
+use App\Http\Controllers\Api\InventoryController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\WebRtcController;
+use App\Http\Controllers\Api\OcrController;
+use App\Http\Controllers\Api\ApprovalController;
+use App\Http\Controllers\Api\Ai\AiController;
+use App\Http\Controllers\Api\Analytics\AnalyticsController;
 use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
-use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\Telemedicine\SessionController;
+use App\Http\Controllers\Api\HealthController;
+use App\Http\Controllers\Api\AdminUserController;
+use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AiSettingsController;
+use App\Http\Controllers\Api\ChatController;
+use App\Http\Controllers\Api\AppointmentController;
+use App\Http\Controllers\Api\AnnouncementController;
+use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\AuditController;
-use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\ConsultationController;
+use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\BiometricController;
 
-Route::get('/health', function () {
-    $dbOk    = false;
-    $redisOk = false;
+Route::prefix('v1')->group(function () {
 
-    try {
-        \Illuminate\Support\Facades\DB::connection()->getPdo();
-        $dbOk = true;
-    } catch (\Exception $e) {}
+    // ── PUBLIC ────────────────────────────────────────────────────────────
+    Route::post('/register',        [AuthController::class, 'register']);
+    Route::post('/login',           [AuthController::class, 'login']);
+    Route::post('/verify-otp',      [AuthController::class, 'verifyOtp']);
+    Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
+    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/reset-password',  [AuthController::class, 'resetPassword']);
+    Route::get('/health',           [HealthController::class, 'check']);
 
-    try {
-        \Illuminate\Support\Facades\Cache::store('redis')->put('health_check', 1, 5);
-        $redisOk = \Illuminate\Support\Facades\Cache::store('redis')->get('health_check') === 1;
-    } catch (\Exception $e) {}
+    // ── PROTECTED ─────────────────────────────────────────────────────────
+    Route::middleware('auth:sanctum')->group(function () {
 
-    $status = $dbOk && $redisOk ? 200 : 503;
+        // ── Auth ──────────────────────────────────────────────────────────
+        Route::post('/logout',         [AuthController::class, 'logout']);
+        Route::get('/me',              [AuthController::class, 'me']);
+        Route::put('/me',              [AuthController::class, 'updateProfile']);
+        Route::put('/change-password', [AuthController::class, 'changePassword']);
+        Route::post('/biometric/enable',  [BiometricController::class, 'enable']);
+        Route::post('/biometric/disable', [BiometricController::class, 'disable']);
 
-    return response()->json([
-        'status'    => $status === 200 ? 'ok' : 'degraded',
-        'database'  => $dbOk ? 'ok' : 'error',
-        'redis'     => $redisOk ? 'ok' : 'error',
-        'timestamp' => now()->toIso8601String(),
-        'version'   => config('app.version', '1.0.0'),
-    ], $status);
-});
+        // ── Profile ───────────────────────────────────────────────────────
+        Route::patch('/profile',       [ProfileController::class, 'update']);
+        Route::post('/profile/avatar', [ProfileController::class, 'updateAvatar']);
 
+        // ── Dashboard ─────────────────────────────────────────────────────
+        Route::get('/dashboard',       [DashboardController::class, 'index']);
+        Route::get('/dashboard/admin', [DashboardController::class, 'admin']);
 
-// ─── Public Auth Routes ───────────────────────────────────────────────────────
-Route::middleware('throttle:auth')->group(function () {
-    Route::post('/register', [AuthController::class, 'register']);
-    Route::post('/login',    [AuthController::class, 'login']);
-});
+        // ── Announcements ─────────────────────────────────────────────────
+        Route::get('/announcements',      [AnnouncementController::class, 'index']);
+        Route::get('/announcements/{id}', [AnnouncementController::class, 'show']);
 
-// ─── Authenticated Routes ─────────────────────────────────────────────────────
-Route::middleware('auth:sanctum')->group(function () {
+        // ── Activity Logs — uses AuditController (no ActivityLogController) 
+        Route::post('/logs', [AuditController::class, 'store']);
 
-    Route::post('/logout', [AuthController::class, 'logout']);
-    Route::get('/me',      [AuthController::class, 'me']);
-
-    // ── Queue Routes ──────────────────────────────────────────────────────────
-    Route::prefix('v1/queue')->name('queue.')->group(function () {
-        Route::get('/',                  [QueueController::class, 'index'])->name('index');
-        Route::get('/live',              [QueueController::class, 'live'])->name('live');
-        Route::get('/summary',           [QueueController::class, 'summary'])->name('summary');
-        Route::post('/issue',            [QueueController::class, 'issue'])->name('issue');
-        Route::post('/call-next',        [QueueController::class, 'callNext'])->name('callNext');
-        Route::get('/my-ticket',         [QueueController::class, 'myTicket'])->name('myTicket');
-        Route::get('/{ticket}',          [QueueController::class, 'show'])->name('show');
-        Route::patch('/{ticket}/status', [QueueController::class, 'updateStatus'])->name('updateStatus');
-    });
-
-    // ── Resident Routes ───────────────────────────────────────────────────────
-    Route::middleware('role:resident')->group(function () {
-        Route::get('/profile',  [ResidentProfileController::class, 'show']);
-        Route::put('/profile',  [ResidentProfileController::class, 'update']);
-
-        Route::get('/appointments',          [AppointmentController::class, 'myAppointments']);
-        Route::post('/appointments',         [AppointmentController::class, 'store']);
-
-        Route::post('/events/{event}/register', [EventController::class, 'register']);
-
-        Route::get('/consultations/mine',    [ConsultationController::class, 'mine']);
-    });
-
-    // ── Public-read routes (any authenticated user) ───────────────────────────
-    Route::get('/announcements',         [AnnouncementController::class, 'index']);
-    Route::get('/announcements/{id}',    [AnnouncementController::class, 'show']);
-
-    Route::get('/events',                [EventController::class, 'index']);
-    Route::get('/events/{id}',           [EventController::class, 'show']);
-
-    // ── Staff / Admin Routes ──────────────────────────────────────────────────
-    Route::middleware('role:staff_admin,super_admin,mho')->group(function () {
-
-        // Announcements CRUD
-        Route::post('/announcements',              [AnnouncementController::class, 'store']);
-        Route::put('/announcements/{id}',          [AnnouncementController::class, 'update']);
-        Route::post('/announcements/{id}/publish', [AnnouncementController::class, 'publish']);
-
-        // Events CRUD
-        Route::post('/events',           [EventController::class, 'store']);
-        Route::put('/events/{id}',       [EventController::class, 'update']);
-
-        // Appointments management
-        Route::get('/appointments',                    [AppointmentController::class, 'index']);
-        Route::put('/appointments/{id}/status',        [AppointmentController::class, 'updateStatus']);
-
-        // Consultations
-        Route::post('/consultations',                  [ConsultationController::class, 'store']);
-        Route::get('/consultations',                   [ConsultationController::class, 'index']);
-        Route::get('/consultations/{id}',              [ConsultationController::class, 'show']);
-        Route::put('/consultations/{id}',              [ConsultationController::class, 'update']);
-
-        // Medical Reports
-        Route::post('/medical-reports',                [MedicalReportController::class, 'store']);
-        Route::get('/medical-reports/{id}',            [MedicalReportController::class, 'show']);
-        Route::get('/users/{userId}/medical-reports',  [MedicalReportController::class, 'forResident']);
-    });
-
-    // ── Super Admin Only ──────────────────────────────────────────────────────
-    Route::middleware('role:super_admin')->group(function () {
-        Route::get('/admin/users', function () {
-            return response()->json(\App\Models\User::with(['role', 'barangay'])->paginate(20));
+        // ── Chat / Chatbot ────────────────────────────────────────────────
+        Route::prefix('chat')->group(function () {
+            Route::post('/message',  [ChatController::class, 'sendMessage']);
+            Route::get('/history',   [ChatController::class, 'history']);
+            Route::post('/end',      [ChatController::class, 'endSession']);
+            Route::post('/escalate', [ChatController::class, 'escalateToDoctor']);
         });
+
+        // ── Consultations ─────────────────────────────────────────────────
+        Route::get('/consultations', [ConsultationController::class, 'mine']);
+
+        // ── Appointments ──────────────────────────────────────────────────
+        Route::prefix('appointments')->group(function () {
+            Route::get('/',              [AppointmentController::class, 'index']);
+            Route::post('/',             [AppointmentController::class, 'store']);
+            Route::get('/my',            [AppointmentController::class, 'myAppointments']);
+            Route::get('/show/{id}',     [AppointmentController::class, 'show']);
+            Route::get('/{userId}',      [AppointmentController::class, 'userAppointments']);
+            Route::patch('/{id}/status', [AppointmentController::class, 'updateStatus']);
+        });
+
+        // ── Programs / Events ─────────────────────────────────────────────
+        Route::get('/programs',                [EventController::class, 'index']);
+        Route::get('/programs/{id}',           [EventController::class, 'show']);
+        Route::post('/programs/{id}/register', [EventController::class, 'register']);
+
+        // ── Notifications ─────────────────────────────────────────────────
+        Route::get('/notifications',           [NotificationController::class, 'index']);
+        Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+
+        // ── Queue ─────────────────────────────────────────────────────────
+        Route::prefix('queue')->group(function () {
+            Route::get('/',              [QueueController::class, 'index']);
+            Route::post('/issue',        [QueueController::class, 'issue']);
+            Route::get('/my-ticket',     [QueueController::class, 'myTicket']);
+            Route::get('/live',          [QueueController::class, 'live']);
+            Route::get('/summary',       [QueueController::class, 'summary']);
+            Route::post('/call-next',    [QueueController::class, 'callNext']);
+            Route::patch('/{id}/status', [QueueController::class, 'updateStatus']);
+        });
+
+        // ── Telemedicine ──────────────────────────────────────────────────
+        Route::prefix('telemedicine')->group(function () {
+
+            // Patient-facing session join (WebView / Jitsi)
+            Route::get('/sessions',                      [SessionController::class, 'index']);
+            Route::get('/sessions/{id}',                 [SessionController::class, 'show']);
+            Route::patch('/sessions/{id}/status',        [SessionController::class, 'updateStatus']);
+            Route::put('/sessions/{id}/notes',           [SessionController::class, 'saveNotes']);
+            Route::post('/sessions/{id}/prescriptions',  [SessionController::class, 'issuePrescription']);
+            Route::post('/sessions/{id}/referrals',      [SessionController::class, 'issueReferral']);
+            Route::post('/sessions/{id}/transcribe',     [SessionController::class, 'transcribe']);
+            Route::post('/sessions/{id}/summarize',      [SessionController::class, 'summarize']);
+
+            // Requests
+            Route::get('/requests',               [TelemedicineController::class, 'indexRequests']);
+            Route::post('/requests',              [TelemedicineController::class, 'createRequest']);
+            Route::get('/requests/mine',          [TelemedicineController::class, 'myRequests']);
+            Route::get('/requests/{id}',          [TelemedicineController::class, 'showRequest']);
+            Route::patch('/requests/{id}/screen', [TelemedicineController::class, 'screenRequest']);
+            Route::delete('/requests/{id}',       [TelemedicineController::class, 'cancelRequest']);
+
+            // Session creation from request
+            Route::post('/requests/{id}/session', [SessionController::class, 'create']);
+
+            // WebRTC signaling
+            Route::get('/sessions/{id}/join',           [WebRtcController::class, 'getJoinToken']);
+            Route::post('/sessions/{id}/signal',        [WebRtcController::class, 'signal']);
+            Route::get('/sessions/{id}/signals',        [WebRtcController::class, 'getSignals']);
+            Route::post('/sessions/{id}/ice-candidate', [WebRtcController::class, 'iceCandidate']);
+        });
+
+        // ── OCR ───────────────────────────────────────────────────────────
+        Route::prefix('ocr')->group(function () {
+            Route::post('/upload',     [OcrController::class, 'upload']);
+            Route::get('/{id}',        [OcrController::class, 'result']);
+            Route::post('/{id}/retry', [OcrController::class, 'retry']);
+        });
+
+        // ── AI ────────────────────────────────────────────────────────────
+        Route::prefix('ai')->group(function () {
+            Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
+            Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
+            Route::get('/history',                   [AiController::class, 'history']);
+            Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
+        });
+
+        // ── Analytics ─────────────────────────────────────────────────────
+        Route::prefix('analytics')->group(function () {
+            Route::get('/overview',                [AnalyticsController::class, 'overview']);
+            Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
+            Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
+            Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
+            Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
+            Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
+            Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
+        });
+
+        // ── Resources ─────────────────────────────────────────────────────
+        Route::apiResource('prescriptions', PrescriptionController::class);
+        Route::apiResource('referrals',     ReferralController::class);
+        Route::apiResource('inventory',     InventoryController::class);
+
+        // ── Super Admin ───────────────────────────────────────────────────
+        Route::middleware('role:super_admin')->prefix('admin')->group(function () {
+            Route::get('/users',                 [AdminUserController::class, 'index']);
+            Route::post('/users',                [AdminUserController::class, 'store']);
+            Route::put('/users/{id}',            [AdminUserController::class, 'update']);
+            Route::delete('/users/{id}',         [AdminUserController::class, 'destroy']);
+            Route::patch('/users/{id}/suspend',  [AdminUserController::class, 'suspend']);
+            Route::patch('/users/{id}/activate', [AdminUserController::class, 'activate']);
+            Route::get('/audit-logs',            [AuditController::class, 'index']);
+            Route::get('/system-stats',          [AdminController::class, 'systemStats']);
+            Route::get('/ai-settings',           [AiSettingsController::class, 'index']);
+            Route::put('/ai-settings',           [AiSettingsController::class, 'update']);
+            Route::post('/programs',             [EventController::class, 'store']);
+        });
+
+        // ── Approvals ─────────────────────────────────────────────────────
+        Route::middleware('role:super_admin,mho_admin,it_staff')
+            ->prefix('approvals')->group(function () {
+                Route::get('/',                    [ApprovalController::class, 'index']);
+                Route::get('/pending',             [ApprovalController::class, 'pending']);
+                Route::get('/{id}',                [ApprovalController::class, 'show']);
+                Route::patch('/{id}/approve',      [ApprovalController::class, 'approve']);
+                Route::patch('/{id}/reject',       [ApprovalController::class, 'reject']);
+                Route::patch('/{id}/request-info', [ApprovalController::class, 'requestInfo']);
+            });
     });
-});
-Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
-
-    // Telemedicine Module
-    Route::prefix('telemedicine')->name('telemedicine.')->group(function () {
-
-        // -- Request Lifecycle --
-        Route::get('/requests',          [TelemedicineController::class, 'indexRequests'])->name('requests.index');
-        Route::post('/requests',         [TelemedicineController::class, 'createRequest'])->name('requests.create');
-        Route::get('/requests/mine',     [TelemedicineController::class, 'myRequests'])->name('requests.mine');
-        Route::get('/requests/{request}', [TelemedicineController::class, 'showRequest'])->name('requests.show');
-        Route::patch('/requests/{request}/screen',  [TelemedicineController::class, 'screenRequest'])->name('requests.screen');
-        Route::delete('/requests/{request}',        [TelemedicineController::class, 'cancelRequest'])->name('requests.cancel');
-
-        // -- Session Lifecycle --
-        Route::post('/requests/{request}/session',          [TelemedicineController::class, 'createSession'])->name('sessions.create');
-        Route::get('/sessions',                             [TelemedicineController::class, 'mySessions'])->name('sessions.mine');
-        Route::get('/sessions/{session}',                   [TelemedicineController::class, 'showSession'])->name('sessions.show');
-        Route::patch('/sessions/{session}/status',          [TelemedicineController::class, 'updateSessionStatus'])->name('sessions.status');
-
-        // -- Clinical Notes --
-        Route::put('/sessions/{session}/notes',             [TelemedicineController::class, 'saveNotes'])->name('sessions.notes');
-
-        // -- Referrals --
-        Route::post('/sessions/{session}/referrals',        [TelemedicineController::class, 'createReferral'])->name('sessions.referrals.create');
-
-        // -- Dashboard --
-        Route::get('/summary',                              [TelemedicineController::class, 'summary'])->name('summary');
-    });
-
-    // Notification Module
-    Route::prefix('notifications')->name('notifications.')->group(function () {
-        Route::get('/',                  [NotificationController::class, 'index']);
-        Route::get('/unread-count',      [NotificationController::class, 'unreadCount']);
-        Route::get('/preferences',       [NotificationController::class, 'preferences']);
-        Route::put('/preferences',       [NotificationController::class, 'updatePreferences']);
-        Route::post('/read-all',         [NotificationController::class, 'markAllRead']);
-        Route::patch('/{id}/read',       [NotificationController::class, 'markRead']);
-        Route::delete('/{id}',           [NotificationController::class, 'destroy']);
-    });
-
-    // Audit Module
-    Route::prefix('audit')->group(function () {
-        Route::get('/',                         [AuditController::class, 'index']);
-        Route::get('/user/{userId}',            [AuditController::class, 'userTimeline']);
-        Route::get('/subject',                  [AuditController::class, 'subjectHistory']);
-    });
-
 });

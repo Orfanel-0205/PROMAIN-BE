@@ -18,6 +18,21 @@ class AppointmentController extends Controller
         return response()->json($appointments);
     }
 
+    public function userAppointments(string $userId): JsonResponse
+    {
+        $appointments = Appointment::where('user_id', $userId)
+            ->latest()
+            ->get(); // Using get() instead of paginate to match mobile expectation of array
+
+        return response()->json($appointments);
+    }
+
+    public function show(int $id): JsonResponse
+    {
+        $appointment = Appointment::with(['resident', 'handler'])->findOrFail($id);
+        return response()->json($appointment);
+    }
+
     public function index(): JsonResponse
     {
         $appointments = Appointment::with(['resident', 'handler'])->latest()->paginate(20);

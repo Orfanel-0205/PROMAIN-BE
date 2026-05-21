@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ActivityLog extends Model
 {
+    protected $table = 'audit_logs';
+
     // Immutable — never updated
     public $timestamps = false;
     const CREATED_AT = 'created_at';

@@ -14,13 +14,13 @@ return new class extends Migration
             $table->foreignId('session_id')->constrained('telemedicine_sessions')->cascadeOnDelete();
             $table->foreignId('recorded_by')->constrained('users', 'user_id')->restrictOnDelete();
 
-            // SOAP-structured clinical documentation
+            // SOAP-structure
             $table->text('subjective')->nullable()->comment('Chief complaint, history as told by patient');
             $table->text('objective')->nullable()->comment('Observed vitals, signs reported or measured');
             $table->text('assessment')->nullable()->comment('Diagnosis or differential diagnosis');
             $table->text('plan')->nullable()->comment('Treatment, prescriptions, referrals, follow-up');
 
-            // Structured fields for thesis analytics
+            // Structured field
             $table->string('primary_diagnosis_code', 20)->nullable()->comment('ICD-10 code');
             $table->string('primary_diagnosis_label')->nullable();
             $table->json('medications')->nullable()->comment('Array of prescribed medications');

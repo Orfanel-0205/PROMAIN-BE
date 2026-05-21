@@ -46,9 +46,9 @@ class TelemedicineController extends Controller
 
         $requests = TelemedicineRequest::with(['residentProfile.user', 'residentProfile.barangay', 'rhu', 'screenedBy', 'session'])
             ->forRhu($request->integer('rhu_id'))
-            ->when($request->filled('status'),        fn($q) => $q->where('status', $request->status))
-            ->when($request->filled('urgency_level'), fn($q) => $q->where('urgency_level', $request->urgency_level))
-            ->when($request->filled('date'),          fn($q) => $q->whereDate('created_at', $request->date),
+            ->when(fn() => $request->filled('status'),        fn($q) => $q->where('status', $request->status))
+            ->when(fn() => $request->filled('urgency_level'), fn($q) => $q->where('urgency_level', $request->urgency_level))
+            ->when(fn() => $request->filled('date'),          fn($q) => $q->whereDate('created_at', $request->date),
                                                       fn($q) => $q->whereDate('created_at', today()))
             ->orderByRaw("CASE urgency_level WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END")
             ->latest()
@@ -229,11 +229,11 @@ class TelemedicineController extends Controller
         $sessions = TelemedicineSession::with(['request.residentProfile.user', 'request.rhu'])
             ->where('assigned_doctor_id', $request->user()->user_id)
             ->when(
-                $request->filled('date'),
+                fn() => $request->filled('date'),
                 fn($q) => $q->whereDate('scheduled_date', $request->date),
                 fn($q) => $q->whereDate('scheduled_date', today())
             )
-            ->when($request->filled('status'), fn($q) => $q->where('status', $request->status))
+            ->when(fn() => $request->filled('status'), fn($q) => $q->where('status', $request->status))
             ->orderBy('scheduled_time')
             ->paginate(20);
 

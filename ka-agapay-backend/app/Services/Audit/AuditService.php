@@ -3,7 +3,7 @@
 
 namespace App\Services\Audit;
 
-use App\Models\ActivityLog;
+use App\Models\AuditLog;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Request;
@@ -15,11 +15,12 @@ class AuditService
         string $action,
         string $module,
         array  $options = []
-    ): ?ActivityLog {
+    ): ?AuditLog {
+
         try {
             $user = Auth::user();
 
-            return ActivityLog::create([
+            return AuditLog::create([
                 'user_id'       => $user?->user_id,
                 'user_role'     => $user?->role?->name,
                 'action'        => $action,
@@ -51,17 +52,17 @@ class AuditService
         }
     }
 
-    public function info(string $action, string $module, array $options = []): ?ActivityLog
+    public function info(string $action, string $module, array $options = []): ?AuditLog
     {
         return $this->log($action, $module, array_merge($options, ['severity' => 'info']));
     }
 
-    public function warning(string $action, string $module, array $options = []): ?ActivityLog
+    public function warning(string $action, string $module, array $options = []): ?AuditLog
     {
         return $this->log($action, $module, array_merge($options, ['severity' => 'warning']));
     }
 
-    public function critical(string $action, string $module, array $options = []): ?ActivityLog
+    public function critical(string $action, string $module, array $options = []): ?AuditLog
     {
         return $this->log($action, $module, array_merge($options, ['severity' => 'critical']));
     }
@@ -71,7 +72,7 @@ class AuditService
         string $action,
         array  $oldValues = [],
         array  $newValues = []
-    ): ?ActivityLog {
+    ): ?AuditLog {
         return $this->log($action, strtolower(class_basename($model)), [
             'subject'       => $model,
             'subject_label' => method_exists($model, 'getAuditLabel')

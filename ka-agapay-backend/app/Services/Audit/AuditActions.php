@@ -42,11 +42,14 @@ class AuditActions
     const PRESCRIPTION_ISSUED     = 'prescription.issued';
     const PRESCRIPTION_DISPENSED  = 'prescription.dispensed';
     const PRESCRIPTION_VOIDED     = 'prescription.voided';
+    const PRESCRIPTION_EXPIRED    = 'prescription.expired';
 
     // Referrals
     const REFERRAL_CREATED        = 'referral.created';
     const REFERRAL_ACKNOWLEDGED   = 'referral.acknowledged';
     const REFERRAL_COMPLETED      = 'referral.completed';
+    const REFERRAL_CANCELLED      = 'referral.cancelled';
+    const REFERRAL_BHW_REPORT     = 'referral.bhw_report_submitted';
 
     // Notifications
     const NOTIFICATION_READ       = 'notification.read';

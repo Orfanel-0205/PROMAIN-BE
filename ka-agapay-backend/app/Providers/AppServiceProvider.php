@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use App\Services\Audit\AuditService;
+use App\Services\Prescription\PrescriptionService;
+use App\Services\Referral\ReferralService;
 use Illuminate\Support\Facades\Log;
 
 class AppServiceProvider extends ServiceProvider
@@ -14,6 +16,8 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(AuditService::class);
+        $this->app->singleton(PrescriptionService::class);
+        $this->app->singleton(ReferralService::class);
     }
 
     /**
