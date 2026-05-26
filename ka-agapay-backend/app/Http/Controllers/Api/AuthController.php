@@ -64,7 +64,9 @@ class AuthController extends Controller
             ], 403);
         }
 
-        $user->tokens()->delete();
+        $user->tokens()
+            ->where('name', '!=', 'ka-agapay-biometric')
+            ->delete();
         $token = $user->createToken('ka-agapay-mobile')->plainTextToken;
 
         $user->update([
@@ -113,20 +115,30 @@ class AuthController extends Controller
         ]);
     }
 
-    private function formatUser(User $user): array
-    {
-        return [
-            'user_id'        => $user->user_id,
-            'first_name'     => $user->first_name,
-            'last_name'      => $user->last_name,
-            'email'          => $user->email,
-            'mobile_number'  => $user->mobile_number,
-            'account_status' => $user->account_status,
-            'role'           => $user->role?->name ?? 'resident',
-            'barangay'       => $user->barangay,   // plain string, no relationship
-            'avatar'         => $user->avatar ?? null,
-            'birthday'       => $user->birthday,
-            'sex'            => $user->sex,
-        ];
+ private function formatUser(User $user): array
+{
+    $avatarUrl = null;
+
+    if ($user->profile_picture) {
+        $avatarUrl = \Illuminate\Support\Facades\Storage::disk('public')
+            ->url($user->profile_picture);
+    } elseif ($user->avatar) {
+        $avatarUrl = $user->avatar;
     }
+
+    return [
+        'user_id'        => $user->user_id,
+        'first_name'     => $user->first_name,
+        'last_name'      => $user->last_name,
+        'email'          => $user->email,
+        'mobile_number'  => $user->mobile_number,
+        'account_status' => $user->account_status,
+        'role'           => $user->role?->name ?? 'resident',
+        'barangay'       => $user->barangay,
+        'avatar'         => $avatarUrl,
+        'birthday'       => $user->birthday,
+        'sex'            => $user->sex,
+        'id_verified'    => (bool) $user->id_verified,
+    ];
+}
 }

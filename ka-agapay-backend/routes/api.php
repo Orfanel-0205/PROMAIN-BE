@@ -153,15 +153,32 @@ Route::prefix('v1')->group(function () {
         });
 
         // ── Analytics ─────────────────────────────────────────────────────
-        Route::prefix('analytics')->group(function () {
-            Route::get('/overview',                [AnalyticsController::class, 'overview']);
-            Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
-            Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
-            Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
-            Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
-            Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
-            Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
-        });
+       Route::prefix('analytics')
+    ->middleware('role:admin,staff,super_admin')
+    ->group(function () {
+
+        // Core analytics dashboard
+        Route::get('/overview',                [AnalyticsController::class, 'overview']);
+        Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
+        Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
+        Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
+        Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
+        Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
+        Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
+
+        // GIS / Heatmaps
+        Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
+        Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
+        Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);
+        Route::get('/disease-clusters', [AnalyticsController::class, 'diseaseClusters']);
+
+        // Alerts system
+        Route::get('/outbreak-alerts',               [AnalyticsController::class, 'outbreakAlerts']);
+        Route::post('/outbreak-alerts/{id}/resolve', [AnalyticsController::class, 'resolveAlert']);
+
+        // AI + Priority dashboard
+        Route::get('/priority-dashboard', [AnalyticsController::class, 'priorityDashboard']);
+    });
 
         // ── Resources ─────────────────────────────────────────────────────
         Route::apiResource('prescriptions', PrescriptionController::class);

@@ -27,6 +27,7 @@ class User extends Authenticatable
         'barangay',           // NEW: plain string from fixed barangay list
         'birthday',           // NEW: date
         'sex',                // NEW: enum
+        'id_verified',        // NEW: bool flag
         'biometric_enabled',  // NEW: bool flag
         'biometric_token_hash', // NEW: hashed biometric token
         'last_login_at',
@@ -45,6 +46,7 @@ class User extends Authenticatable
             'password'          => 'hashed',
             'birthday'          => 'date',
             'last_login_at'     => 'datetime',
+            'id_verified'       => 'boolean',
             'biometric_enabled' => 'boolean',
         ];
     }

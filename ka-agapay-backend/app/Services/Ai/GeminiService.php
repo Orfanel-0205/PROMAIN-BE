@@ -61,10 +61,18 @@ class GeminiService
                 'program', 'programa', 'free', 'libre', 'rhu',
             ],
             'response' =>
-                "Ang RHU Malasiqui ay nag-aalok ng: Libreng konsultasyon, "
-                . "Maternal at prenatal care, Immunization para sa bata, "
-                . "Libreng gamot, Family planning, TB-DOTS program. "
-                . "Bukas Lunes–Biyernes, 8AM–5PM.",
+                  "Ang RHU Malasiqui ay nag-aalok ng mga sumusunod na serbisyo: "
+        . "Konsulta at outpatient services, Maternal at prenatal/postnatal care, "
+        . "Labor at newborn care para sa birthing clinics, Family planning services, "
+        . "Child care at immunization, Nutrition services, Adolescent health services, "
+        . "Dental services, TB-DOTS program, Morbid clinic consultations, "
+        . "Minor surgery tulad ng tuli, wound suturing, at cyst excision, "
+        . "Referral at ancillary services gaya ng laboratory, X-ray, ECG, pharmacy, at ambulance, "
+        . "Pagkuha ng medical certificate at sanitary permit, "
+        . "HIV/AIDS at STI counseling, Leprosy prevention, "
+        . "Healthy lifestyle counseling at monitoring ng blood pressure at timbang, "
+        . "Dengue, rabies, at communicable disease prevention, at Mental health services. "
+        . "Bukas Lunes hanggang Biyernes, 8:00 AM hanggang 5:00 PM.",
         ],
 
         'lagnat' => [

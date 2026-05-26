@@ -1,4 +1,5 @@
 <?php
+// database/seeders/DatabaseSeeder.php
 
 namespace Database\Seeders;
 
@@ -10,9 +11,7 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             UserRoleSeeder::class,
-            BarangaySeeder::class,
-            QueuePriorityRuleSeeder::class,
-            DemoDataSeeder::class,
+            // other seeders...
         ]);
     }
 }

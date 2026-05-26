@@ -3,33 +3,116 @@
 namespace App\Http\Controllers\Api\Telemedicine;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Telemedicine\SaveSessionNotesRequest;
+use App\Http\Requests\Telemedicine\ScheduleSessionRequest;
+use App\Http\Requests\Telemedicine\UpdateSessionStatusRequest;
+use App\Http\Resources\Telemedicine\TelemedicineSessionResource;
+use App\Models\TelemedicineRequest;
+use App\Models\TelemedicineSession;
+use App\Services\Telemedicine\TelemedicineService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class SessionController extends Controller
 {
-    public function index(): JsonResponse
-    {
-        return response()->json(['data' => []]);
+    public function __construct(
+        private readonly TelemedicineService $service
+    ) {}
+
+    /**
+     * POST /telemedicine/requests/{request}/session
+     */
+    public function store(
+        ScheduleSessionRequest $request,
+        TelemedicineRequest $telemedicineRequest
+    ): JsonResponse {
+        $this->authorize('createSession', $telemedicineRequest);
+
+        $session = $this->service->createSession(
+            $telemedicineRequest,
+            $request->validated()
+        );
+
+        return response()->json([
+            'message' => 'Telemedicine session scheduled.',
+            'data'    => new TelemedicineSessionResource($session),
+        ], 201);
     }
 
-    public function create(Request $request, $id): JsonResponse
+    /**
+     * GET /telemedicine/sessions/{session}
+     */
+    public function show(TelemedicineSession $session): JsonResponse
     {
-        return response()->json(['message' => 'Session created.'], 201);
+        $this->authorize('view', $session);
+
+        $session->load([
+            'request.residentProfile.user',
+            'assignedDoctor',
+            'notes.recordedBy',
+            'referrals',
+        ]);
+
+        return response()->json([
+            'data' => new TelemedicineSessionResource($session),
+        ]);
     }
 
-    public function show($id): JsonResponse
-    {
-        return response()->json(['data' => null]);
+    /**
+     * PATCH /telemedicine/sessions/{session}/status
+     */
+    public function updateStatus(
+        UpdateSessionStatusRequest $request,
+        TelemedicineSession $session
+    ): JsonResponse {
+        $this->authorize('updateStatus', $session);
+
+        $session = $this->service->transitionSessionStatus(
+            $session,
+            $request->status,
+            $request->validated()
+        );
+
+        return response()->json([
+            'message' => 'Session status updated.',
+            'data'    => new TelemedicineSessionResource($session),
+        ]);
     }
 
-    public function updateStatus(Request $request, $id): JsonResponse
-    {
-        return response()->json(['message' => 'Status updated.']);
+    /**
+     * PUT /telemedicine/sessions/{session}/notes
+     */
+    public function saveNotes(
+        SaveSessionNotesRequest $request,
+        TelemedicineSession $session
+    ): JsonResponse {
+        $this->authorize('saveNotes', $session);
+
+        $notes = $this->service->saveNotes(
+            $session,
+            $request->validated()
+        );
+
+        return response()->json([
+            'message' => 'Session notes saved.',
+            'data'    => $notes,
+        ]);
     }
 
-    public function saveNotes(Request $request, $id): JsonResponse
+    /**
+     * GET /telemedicine/sessions/mine
+     */
+    public function mine(Request $request): AnonymousResourceCollection
     {
-        return response()->json(['message' => 'Notes saved.']);
+        $sessions = TelemedicineSession::with([
+                'request.residentProfile.user',
+                'request.rhu',
+            ])
+            ->where('assigned_doctor_id', $request->user()->user_id)
+            ->latest()
+            ->paginate(20);
+
+        return TelemedicineSessionResource::collection($sessions);
     }
 }
