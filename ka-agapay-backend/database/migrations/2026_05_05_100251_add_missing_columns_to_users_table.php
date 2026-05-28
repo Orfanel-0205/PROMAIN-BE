@@ -1,5 +1,5 @@
 <?php
-
+//app/database/migrations/2026_05_05_100251_add_missing_columns_to_users_table.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

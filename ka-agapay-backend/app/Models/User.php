@@ -1,5 +1,5 @@
 <?php
-
+//app/models/User.php
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;

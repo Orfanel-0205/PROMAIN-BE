@@ -12,31 +12,29 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
+use Intervention\Image\ImageManager;
+use Intervention\Image\Drivers\Gd\Driver;
+
 class OcrController extends Controller
 {
     /**
-     * POST /api/v1/ocr/upload
-     *
-     * Upload and OCR any valid ID:
-     * - School ID
-     * - Passport
-     * - Driver's License
-     * - PhilHealth
-     * - Barangay ID
-     * - Government IDs
+     * Upload ID and process OCR
      */
-    public function upload(Request $request): JsonResponse
-    {
+    public function upload(
+        Request $request
+    ): JsonResponse {
+
         $request->validate([
+
             'id_image' => [
                 'required',
                 'file',
                 'mimes:jpg,jpeg,png,webp,pdf',
-                'max:10240', // 10MB
+                'max:10240',
             ],
 
             'id_type' => [
-                'nullable',
+                'required',
                 'string',
                 'max:100',
             ],
@@ -46,251 +44,487 @@ class OcrController extends Controller
 
         $file = $request->file('id_image');
 
-        // ─────────────────────────────────────────────
-        // Store publicly so frontend can preview image
-        // ─────────────────────────────────────────────
+        /*
+        |--------------------------------------------------------------------------
+        | PRIVATE STORAGE
+        |--------------------------------------------------------------------------
+        */
 
         $path = $file->store(
-            "id_uploads/{$user->user_id}",
-            'public'
+            "id_uploads/{$user->user_id}"
         );
 
-        // Public preview URL
-        $publicUrl = Storage::disk('public')->url($path);
+        $fullPath = storage_path(
+            "app/{$path}"
+        );
 
-        // ─────────────────────────────────────────────
-        // OCR Processing
-        // ─────────────────────────────────────────────
+        /*
+        |--------------------------------------------------------------------------
+        | OCR PROCESS
+        |--------------------------------------------------------------------------
+        */
 
         $extractedText = $this->runOcr(
-            $file->getRealPath(),
+            $fullPath,
             $file->getMimeType()
         );
 
-        // ─────────────────────────────────────────────
-        // Better validation for ALL ID types
-        // including school IDs
-        // ─────────────────────────────────────────────
+        /*
+        |--------------------------------------------------------------------------
+        | OCR VALIDATION
+        |--------------------------------------------------------------------------
+        */
 
-        $cleaned = preg_replace(
-            '/\s+/',
-            '',
+        $couldRead = $this->validateOcr(
             $extractedText
         );
 
-        $couldRead = strlen($cleaned) >= 5;
+        /*
+        |--------------------------------------------------------------------------
+        | STRUCTURED EXTRACTION
+        |--------------------------------------------------------------------------
+        */
 
-        // ─────────────────────────────────────────────
-        // Save OCR result
-        // ─────────────────────────────────────────────
+        $name = $this->extractName(
+            $extractedText
+        );
 
-        $ocrResult = OcrResult::create([
-            'user_id'        => $user->user_id,
+        $birthdate = $this->extractBirthdate(
+            $extractedText
+        );
 
-            'id_type'        => $request->input(
-                'id_type',
-                'unknown'
-            ),
+        $idNumber = $this->extractIdNumber(
+            $extractedText
+        );
 
-            'file_path'      => $path,
+        /*
+        |--------------------------------------------------------------------------
+        | CONFIDENCE SCORE
+        |--------------------------------------------------------------------------
+        */
+
+        $confidence = $couldRead
+            ? 90
+            : 40;
+
+        /*
+        |--------------------------------------------------------------------------
+        | SAVE OCR RESULT
+        |--------------------------------------------------------------------------
+        */
+
+        $ocr = OcrResult::create([
+
+            'user_id' => $user->user_id,
+
+            'id_type' => $request->id_type,
+
+            'file_path' => $path,
 
             'extracted_text' => $extractedText,
 
-            'status'         => $couldRead
+            'extracted_name' => $name,
+
+            'extracted_birthdate' => $birthdate,
+
+            'extracted_id_number' => $idNumber,
+
+            'confidence_score' => $confidence,
+
+            'status' => $couldRead
                 ? 'approved'
                 : 'failed',
+
+            'processed_at' => now(),
         ]);
 
-        // ─────────────────────────────────────────────
-        // Mark user as verified
-        // ─────────────────────────────────────────────
+        /*
+        |--------------------------------------------------------------------------
+        | UPDATE USER VERIFICATION
+        |--------------------------------------------------------------------------
+        */
 
         if ($couldRead) {
+
             $user->update([
                 'id_verified' => true,
             ]);
         }
 
-        // ─────────────────────────────────────────────
-        // Response
-        // ─────────────────────────────────────────────
+        /*
+        |--------------------------------------------------------------------------
+        | RESPONSE
+        |--------------------------------------------------------------------------
+        */
 
         return response()->json([
+
             'message' => $couldRead
-                ? 'ID uploaded successfully.'
-                : 'Could not read ID clearly. Please upload a clearer image.',
+                ? 'ID verified successfully'
+                : 'OCR failed. Please upload clearer image',
 
-            'ocr_id'         => $ocrResult->id,
+            'ocr_id' => $ocr->id,
 
-            'status'         => $ocrResult->status,
+            'status' => $ocr->status,
 
-            'id_verified'    => $couldRead,
+            'verified' => $couldRead,
 
-            // IMPORTANT:
-            // frontend preview support
-            'id_image_url'   => $publicUrl,
+            'confidence_score' => $confidence,
 
-            // OCR preview/debugging
             'extracted_text' => $extractedText,
 
-        ], $couldRead ? 200 : 422);
-    }
+            'extracted_name' => $name,
 
-    /**
-     * GET /api/v1/ocr/{id}
-     */
-    public function result(int $id): JsonResponse
-    {
-        $ocr = OcrResult::where('id', $id)
-            ->where('user_id', auth()->id())
-            ->firstOrFail();
+            'birthdate' => $birthdate,
 
-        return response()->json([
-            'ocr_id'         => $ocr->id,
-
-            'status'         => $ocr->status,
-
-            'id_type'        => $ocr->id_type,
-
-            'id_verified'    => $ocr->status === 'approved',
-
-            'extracted_text' => $ocr->extracted_text,
-
-            'id_image_url'   => Storage::disk('public')
-                ->url($ocr->file_path),
+            'id_number' => $idNumber,
         ]);
     }
 
     /**
-     * POST /api/v1/ocr/{id}/retry
+     * Get OCR Result
      */
-    public function retry(int $id): JsonResponse
-    {
-        $ocr = OcrResult::where('id', $id)
-            ->where('user_id', auth()->id())
-            ->firstOrFail();
+    public function result(
+        int $id
+    ): JsonResponse {
 
-        $fullPath = Storage::disk('public')
-            ->path($ocr->file_path);
+        $ocr = OcrResult::where(
+            'id',
+            $id
+        )
+        ->where(
+            'user_id',
+            auth()->id()
+        )
+        ->firstOrFail();
+
+        return response()->json([
+
+            'ocr_id' => $ocr->id,
+
+            'status' => $ocr->status,
+
+            'verified' => $ocr->status === 'approved',
+
+            'confidence_score' => $ocr->confidence_score,
+
+            'extracted_text' => $ocr->extracted_text,
+
+            'extracted_name' => $ocr->extracted_name,
+
+            'birthdate' => $ocr->extracted_birthdate,
+
+            'id_number' => $ocr->extracted_id_number,
+        ]);
+    }
+
+    /**
+     * Retry OCR Processing
+     */
+    public function retry(
+        int $id
+    ): JsonResponse {
+
+        $ocr = OcrResult::where(
+            'id',
+            $id
+        )
+        ->where(
+            'user_id',
+            auth()->id()
+        )
+        ->firstOrFail();
+
+        $fullPath = storage_path(
+            "app/{$ocr->file_path}"
+        );
 
         $extractedText = $this->runOcr(
             $fullPath,
             'image/jpeg'
         );
 
-        $cleaned = preg_replace(
-            '/\s+/',
-            '',
+        $couldRead = $this->validateOcr(
             $extractedText
         );
 
-        $couldRead = strlen($cleaned) >= 5;
-
         $ocr->update([
+
             'extracted_text' => $extractedText,
 
-            'status'         => $couldRead
+            'status' => $couldRead
                 ? 'approved'
                 : 'failed',
+
+            'processed_at' => now(),
         ]);
 
         if ($couldRead) {
+
             auth()->user()->update([
                 'id_verified' => true,
             ]);
         }
 
         return response()->json([
+
             'message' => $couldRead
-                ? 'Retry successful.'
-                : 'Still could not read the ID.',
+                ? 'Retry successful'
+                : 'OCR still failed',
 
-            'status'      => $ocr->status,
+            'status' => $ocr->status,
 
-            'id_verified' => $couldRead,
+            'verified' => $couldRead,
 
             'extracted_text' => $extractedText,
         ]);
     }
 
-    // ─────────────────────────────────────────────
-    // OCR HELPER
-    // ─────────────────────────────────────────────
-
+    /**
+     * OCR ENGINE
+     */
     private function runOcr(
         string $filePath,
         string $mimeType
     ): string {
 
+        $processedPath = null;
+
         try {
 
-            // OCR.Space API Key
-            $apiKey = config(
-                'services.ocr_space.key',
-                env('OCR_SPACE_API_KEY', 'helloworld')
+            /*
+            |--------------------------------------------------------------------------
+            | IMAGE PREPROCESSING
+            |--------------------------------------------------------------------------
+            */
+
+            $processedPath = $this->preprocessImage(
+                $filePath
             );
 
-            $response = Http::timeout(30)
+            $apiKey = env(
+                'OCR_SPACE_API_KEY'
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | OCR REQUEST
+            |--------------------------------------------------------------------------
+            */
+
+            $response = Http::timeout(60)
                 ->attach(
                     'file',
-                    file_get_contents($filePath),
-                    'id_image.' . $this->extensionFromMime($mimeType)
+                    file_get_contents(
+                        $processedPath
+                    ),
+                    'image.jpg'
                 )
                 ->post(
                     'https://api.ocr.space/parse/image',
                     [
-                        'apikey'    => $apiKey,
 
-                        'language'  => 'eng',
+                        'apikey' => $apiKey,
 
-                        // Engine 2 handles IDs better
+                        'language' => 'eng',
+
                         'OCREngine' => 2,
 
-                        'isTable'   => false,
+                        'isTable' => false,
                     ]
                 );
 
-            $data = $response->json();
-
-            if (
-                isset(
-                    $data['ParsedResults'][0]['ParsedText']
-                )
-            ) {
-                return trim(
-                    $data['ParsedResults'][0]['ParsedText']
-                );
-            }
-
-            return '';
+            return trim(
+                $response['ParsedResults'][0]['ParsedText']
+                ?? ''
+            );
 
         } catch (\Throwable $e) {
 
-            Log::warning(
-                '[OCR] Failed: ' . $e->getMessage()
+            Log::error(
+                '[OCR ERROR] ' .
+                $e->getMessage()
             );
 
             return '';
+
+        } finally {
+
+            /*
+            |--------------------------------------------------------------------------
+            | TEMP FILE CLEANUP
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                $processedPath &&
+                file_exists($processedPath) &&
+                $processedPath !== $filePath
+            ) {
+                unlink($processedPath);
+            }
         }
     }
 
-    // ─────────────────────────────────────────────
-    // MIME HELPER
-    // ─────────────────────────────────────────────
-
-    private function extensionFromMime(
-        string $mime
+    /**
+     * IMAGE PREPROCESSING
+     */
+    private function preprocessImage(
+        string $filePath
     ): string {
 
-        return match ($mime) {
+        $extension = strtolower(
+            pathinfo(
+                $filePath,
+                PATHINFO_EXTENSION
+            )
+        );
 
-            'image/png' => 'png',
+        /*
+        |--------------------------------------------------------------------------
+        | SKIP PDF PROCESSING
+        |--------------------------------------------------------------------------
+        */
 
-            'image/webp' => 'webp',
+        if ($extension === 'pdf') {
+            return $filePath;
+        }
 
-            'application/pdf' => 'pdf',
+        $manager = new ImageManager(
+            new Driver()
+        );
 
-            default => 'jpg',
-        };
+        $image = $manager->read(
+            $filePath
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | OCR ENHANCEMENT
+        |--------------------------------------------------------------------------
+        */
+
+        $image->greyscale()
+              ->contrast(20)
+              ->brightness(5)
+              ->sharpen(15);
+
+        /*
+        |--------------------------------------------------------------------------
+        | TEMP DIRECTORY
+        |--------------------------------------------------------------------------
+        */
+
+        $tempDir = storage_path(
+            'app/temp'
+        );
+
+        if (!file_exists($tempDir)) {
+
+            mkdir(
+                $tempDir,
+                0755,
+                true
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | TEMP FILE
+        |--------------------------------------------------------------------------
+        */
+
+        $tempPath = $tempDir . '/' .
+            uniqid() .
+            '.jpg';
+
+        $image->save($tempPath);
+
+        return $tempPath;
+    }
+
+    /**
+     * OCR VALIDATION
+     */
+    private function validateOcr(
+        string $text
+    ): bool {
+
+        $keywords = [
+
+            'name',
+            'student',
+            'license',
+            'passport',
+            'philippines',
+            'barangay',
+            'university',
+            'identification',
+            'republic',
+        ];
+
+        $matches = 0;
+
+        foreach ($keywords as $word) {
+
+            if (
+                stripos(
+                    $text,
+                    $word
+                ) !== false
+            ) {
+                $matches++;
+            }
+        }
+
+        return $matches >= 2;
+    }
+
+    /**
+     * NAME EXTRACTION
+     */
+    private function extractName(
+        string $text
+    ): ?string {
+
+        preg_match(
+            '/Name[:\s]+([A-Z][a-z]+\s[A-Z][a-z]+)/',
+            $text,
+            $m
+        );
+
+        return $m[1] ?? null;
+    }
+
+    /**
+     * BIRTHDATE EXTRACTION
+     */
+    private function extractBirthdate(
+        string $text
+    ): ?string {
+
+        preg_match(
+            '/\d{2}\/\d{2}\/\d{4}/',
+            $text,
+            $m
+        );
+
+        return $m[0] ?? null;
+    }
+
+    /**
+     * ID NUMBER EXTRACTION
+     */
+    private function extractIdNumber(
+        string $text
+    ): ?string {
+
+        preg_match(
+            '/[A-Z0-9\-]{6,}/',
+            $text,
+            $m
+        );
+
+        return $m[0] ?? null;
     }
 }

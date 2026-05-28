@@ -1,4 +1,5 @@
 <?php
+// database/seeders/BarangaySeeder.php
 
 namespace Database\Seeders;
 

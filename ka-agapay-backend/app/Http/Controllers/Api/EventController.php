@@ -57,7 +57,7 @@ class EventController extends Controller
 
         return response()->json(['message' => 'Event updated.', 'event' => $event]);
     }
-
+    // RESIDENT==> REGISTER FOR THE EVENT
     public function register(Request $request, int $event): JsonResponse
     {
         $eventModel = Event::findOrFail($event);

@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_04_29_183354_upgrade_users_and_roles_table.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
