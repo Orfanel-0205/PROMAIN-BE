@@ -30,5 +30,9 @@ return [
         'gemini_api_key'     => env('GEMINI_API_KEY'),
         'vision_api_key'     => env('GOOGLE_VISION_API_KEY'),
     ],
+    // OCR 
+    'ocr_space' => [
+    'key' => env('OCR_SPACE_API_KEY'),
+],
 
 ];

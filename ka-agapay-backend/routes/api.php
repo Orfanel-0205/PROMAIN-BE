@@ -1,6 +1,11 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+
+// =============================================================================
+// CONTROLLERS
+// =============================================================================
+
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PrescriptionController;
@@ -32,82 +37,136 @@ use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\PatientController;
 use App\Http\Controllers\Api\HomeVisitController;
 
+// =============================================================================
+// API V1
+// =============================================================================
+
 Route::prefix('v1')->group(function () {
 
-    // =============================================================================
-    // PUBLIC — Tight rate limits to prevent abuse
-    // =============================================================================
+    // =========================================================================
+    // PUBLIC ROUTES
+    // =========================================================================
 
     Route::middleware('throttle:5,1')->group(function () {
 
-        // ── Authentication ────────────────────────────────────────────────
-        Route::post('/register',          [AuthController::class, 'register']);
-        Route::post('/login',             [AuthController::class, 'login']);
-        Route::post('/verify-otp',        [AuthController::class, 'verifyOtp']);
-        Route::post('/resend-otp',        [AuthController::class, 'resendOtp']);
-        Route::post('/forgot-password',   [AuthController::class, 'forgotPassword']);
-        Route::post('/reset-password',    [AuthController::class, 'resetPassword']);
+        // ---------------------------------------------------------------------
+        // AUTHENTICATION
+        // ---------------------------------------------------------------------
 
-        // ── Biometric Login ──────────────────────────────────────────────
-        Route::post('/biometric/login',   [AuthController::class, 'biometricLogin']);
+        Route::post('/register',        [AuthController::class, 'register']);
+        Route::post('/login',           [AuthController::class, 'login']);
+        Route::post('/verify-otp',      [AuthController::class, 'verifyOtp']);
+        Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
+        Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+        Route::post('/reset-password',  [AuthController::class, 'resetPassword']);
+
+        // ---------------------------------------------------------------------
+        // BIOMETRIC LOGIN
+        // ---------------------------------------------------------------------
+
+        Route::post('/biometric/login', [AuthController::class, 'biometricLogin']);
     });
 
-    // ── Public utilities ─────────────────────────────────────────────────
+    // =========================================================================
+    // PUBLIC UTILITIES
+    // =========================================================================
+
     Route::get('/health', [HealthController::class, 'check']);
 
-    // Barangay list — public for registration forms
     Route::get('/barangays', [BarangayController::class, 'index'])
         ->middleware('throttle:30,1');
 
-    // =============================================================================
-    // AUTHENTICATED — Requires Sanctum token
-    // =============================================================================
+    // =========================================================================
+    // AUTHENTICATED ROUTES
+    // =========================================================================
 
     Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
-        // ── Auth ──────────────────────────────────────────────────────────
+        // =====================================================================
+        // ACTIVITY LOGS
+        // =====================================================================
+
+        Route::post('/activity-logs', [ActivityLogController::class, 'store']);
+
+        Route::get('/activity-logs', [ActivityLogController::class, 'index'])
+            ->middleware('role:super_admin,admin');
+
+        // =====================================================================
+        // AUTH
+        // =====================================================================
+
         Route::post('/logout',         [AuthController::class, 'logout']);
         Route::get('/me',              [AuthController::class, 'me']);
         Route::put('/me',              [AuthController::class, 'updateProfile']);
         Route::put('/change-password', [AuthController::class, 'changePassword']);
 
-        // ── Biometrics ────────────────────────────────────────────────────
+        // =====================================================================
+        // BIOMETRICS
+        // =====================================================================
+
         Route::post('/biometric/enable',  [BiometricController::class, 'enable']);
         Route::post('/biometric/disable', [BiometricController::class, 'disable']);
 
-        // ── Profile ───────────────────────────────────────────────────────
+        // =====================================================================
+        // PROFILE
+        // =====================================================================
+
         Route::get('/profile',         [ProfileController::class, 'show']);
         Route::patch('/profile',       [ProfileController::class, 'update']);
         Route::put('/profile',         [ProfileController::class, 'update']);
         Route::post('/profile/avatar', [ProfileController::class, 'updateAvatar']);
 
-        // ── Dashboard ─────────────────────────────────────────────────────
+        // =====================================================================
+        // PATIENT SELF SERVICE
+        // =====================================================================
+
+        Route::get('/patient/me', [PatientController::class, 'me']);
+        Route::patch('/patient/me', [PatientController::class, 'update']);
+
+        // =====================================================================
+        // DASHBOARD
+        // =====================================================================
+
         Route::get('/dashboard',       [DashboardController::class, 'index']);
         Route::get('/dashboard/admin', [DashboardController::class, 'admin']);
 
-        // ── Announcements ─────────────────────────────────────────────────
+        // =====================================================================
+        // ANNOUNCEMENTS
+        // =====================================================================
+
         Route::get('/announcements',      [AnnouncementController::class, 'index']);
         Route::get('/announcements/{id}', [AnnouncementController::class, 'show']);
 
-        // ── Activity Logs ────────────────────────────────────────────────
+        // =====================================================================
+        // AUDIT LOGS
+        // =====================================================================
+
         Route::post('/logs', [AuditController::class, 'store']);
 
-        // Optional dedicated ActivityLogController endpoint
-        Route::post('/activity-logs', [ActivityLogController::class, 'store']);
+        // =====================================================================
+        // CHATBOT
+        // =====================================================================
 
-        // ── Chat / Chatbot ────────────────────────────────────────────────
         Route::prefix('chat')->group(function () {
+
             Route::post('/message',  [ChatController::class, 'sendMessage']);
             Route::get('/history',   [ChatController::class, 'history']);
             Route::post('/end',      [ChatController::class, 'endSession']);
             Route::post('/escalate', [ChatController::class, 'escalateToDoctor']);
         });
 
-        // ── Consultations ─────────────────────────────────────────────────
+        // =====================================================================
+        // CONSULTATIONS
+        // =====================================================================
+
         Route::get('/consultations', [ConsultationController::class, 'mine']);
 
-        // ── Appointments ──────────────────────────────────────────────────
+        // =====================================================================
+        // APPOINTMENTS
+        // =====================================================================
+
         Route::prefix('appointments')->group(function () {
+
             Route::get('/',              [AppointmentController::class, 'index']);
             Route::post('/',             [AppointmentController::class, 'store']);
             Route::get('/my',            [AppointmentController::class, 'myAppointments']);
@@ -116,17 +175,27 @@ Route::prefix('v1')->group(function () {
             Route::patch('/{id}/status', [AppointmentController::class, 'updateStatus']);
         });
 
-        // ── Programs / Events ─────────────────────────────────────────────
+        // =====================================================================
+        // PROGRAMS / EVENTS
+        // =====================================================================
+
         Route::get('/programs',                [EventController::class, 'index']);
         Route::get('/programs/{id}',           [EventController::class, 'show']);
         Route::post('/programs/{id}/register', [EventController::class, 'register']);
 
-        // ── Notifications ─────────────────────────────────────────────────
+        // =====================================================================
+        // NOTIFICATIONS
+        // =====================================================================
+
         Route::get('/notifications',           [NotificationController::class, 'index']);
         Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
 
-        // ── Queue ─────────────────────────────────────────────────────────
+        // =====================================================================
+        // QUEUE
+        // =====================================================================
+
         Route::prefix('queue')->group(function () {
+
             Route::get('/',              [QueueController::class, 'index']);
             Route::post('/issue',        [QueueController::class, 'issue']);
             Route::get('/my-ticket',     [QueueController::class, 'myTicket']);
@@ -136,18 +205,21 @@ Route::prefix('v1')->group(function () {
             Route::patch('/{id}/status', [QueueController::class, 'updateStatus']);
         });
 
-        // ── Telemedicine ──────────────────────────────────────────────────
+        // =====================================================================
+        // TELEMEDICINE
+        // =====================================================================
+
         Route::prefix('telemedicine')->group(function () {
 
             // Sessions
-            Route::get('/sessions',                      [SessionController::class, 'index']);
-            Route::get('/sessions/{id}',                 [SessionController::class, 'show']);
-            Route::patch('/sessions/{id}/status',        [SessionController::class, 'updateStatus']);
-            Route::put('/sessions/{id}/notes',           [SessionController::class, 'saveNotes']);
-            Route::post('/sessions/{id}/prescriptions',  [SessionController::class, 'issuePrescription']);
-            Route::post('/sessions/{id}/referrals',      [SessionController::class, 'issueReferral']);
-            Route::post('/sessions/{id}/transcribe',     [SessionController::class, 'transcribe']);
-            Route::post('/sessions/{id}/summarize',      [SessionController::class, 'summarize']);
+            Route::get('/sessions',                     [SessionController::class, 'index']);
+            Route::get('/sessions/{id}',                [SessionController::class, 'show']);
+            Route::patch('/sessions/{id}/status',       [SessionController::class, 'updateStatus']);
+            Route::put('/sessions/{id}/notes',          [SessionController::class, 'saveNotes']);
+            Route::post('/sessions/{id}/prescriptions', [SessionController::class, 'issuePrescription']);
+            Route::post('/sessions/{id}/referrals',     [SessionController::class, 'issueReferral']);
+            Route::post('/sessions/{id}/transcribe',    [SessionController::class, 'transcribe']);
+            Route::post('/sessions/{id}/summarize',     [SessionController::class, 'summarize']);
 
             // Requests
             Route::get('/requests',               [TelemedicineController::class, 'indexRequests']);
@@ -157,7 +229,7 @@ Route::prefix('v1')->group(function () {
             Route::patch('/requests/{id}/screen', [TelemedicineController::class, 'screenRequest']);
             Route::delete('/requests/{id}',       [TelemedicineController::class, 'cancelRequest']);
 
-            // Session creation
+            // Session Creation
             Route::post('/requests/{id}/session', [SessionController::class, 'create']);
 
             // WebRTC
@@ -167,42 +239,71 @@ Route::prefix('v1')->group(function () {
             Route::post('/sessions/{id}/ice-candidate', [WebRtcController::class, 'iceCandidate']);
         });
 
-        // ── OCR / ID Verification ─────────────────────────────────────────
+        // =====================================================================
+        // OCR / ID VERIFICATION
+        // =====================================================================
+
         Route::prefix('ocr')->group(function () {
-            Route::post('/upload',     [OcrController::class, 'upload']);
-            Route::get('/{id}',        [OcrController::class, 'result']);
-            Route::post('/{id}/retry', [OcrController::class, 'retry']);
+
+            // Registration ID Scan
+            Route::post('/upload',      [OcrController::class, 'upload']);
+            Route::get('/result/{id}',  [OcrController::class, 'result']);
+            Route::post('/retry/{id}',  [OcrController::class, 'retry']);
+
+            // Telemedicine Prescription OCR
+            Route::post('/prescription/{consultationId}', [
+                OcrController::class,
+                'scanPrescription'
+            ]);
         });
 
-        // ── AI ────────────────────────────────────────────────────────────
+        // =====================================================================
+        // HOME VISITS
+        // =====================================================================
+
+        Route::get('/home-visits',             [HomeVisitController::class, 'index']);
+        Route::post('/home-visits',            [HomeVisitController::class, 'store']);
+        Route::get('/home-visits/{id}',        [HomeVisitController::class, 'show']);
+        Route::patch('/home-visits/{id}/cancel', [
+            HomeVisitController::class,
+            'cancel'
+        ]);
+
+        // =====================================================================
+        // AI
+        // =====================================================================
+
         Route::prefix('ai')->group(function () {
+
             Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
             Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
             Route::get('/history',                   [AiController::class, 'history']);
             Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
         });
 
-        // ── Clinical staff routes ─────────────────────────────────────────
-        Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')->group(function () {
-            Route::apiResource('/patients', PatientController::class);
+        // =====================================================================
+        // CLINICAL STAFF
+        // =====================================================================
 
-            Route::get('/consultations/all', [
-                ConsultationController::class,
-                'index'
-            ]);
-        });
+        Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')
+            ->group(function () {
 
-        // ── BHW routes ────────────────────────────────────────────────────
-        Route::middleware('role:bhw,rhu_admin,super_admin')->group(function () {
-            Route::get('/home-visits', [HomeVisitController::class, 'index']);
-        });
+                Route::apiResource('/patients', PatientController::class);
 
-        // ── Analytics ─────────────────────────────────────────────────────
+                Route::get('/consultations/all', [
+                    ConsultationController::class,
+                    'index'
+                ]);
+            });
+
+        // =====================================================================
+        // ANALYTICS
+        // =====================================================================
+
         Route::prefix('analytics')
             ->middleware('role:admin,staff,super_admin')
             ->group(function () {
 
-                // Core analytics dashboard
                 Route::get('/overview',                [AnalyticsController::class, 'overview']);
                 Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
                 Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
@@ -211,26 +312,39 @@ Route::prefix('v1')->group(function () {
                 Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
                 Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
 
-                // GIS / Heatmaps
                 Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
                 Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
                 Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);
                 Route::get('/disease-clusters', [AnalyticsController::class, 'diseaseClusters']);
 
-                // Alerts
-                Route::get('/outbreak-alerts',               [AnalyticsController::class, 'outbreakAlerts']);
-                Route::post('/outbreak-alerts/{id}/resolve', [AnalyticsController::class, 'resolveAlert']);
+                Route::get('/outbreak-alerts', [
+                    AnalyticsController::class,
+                    'outbreakAlerts'
+                ]);
 
-                // AI + Priority
-                Route::get('/priority-dashboard', [AnalyticsController::class, 'priorityDashboard']);
+                Route::post('/outbreak-alerts/{id}/resolve', [
+                    AnalyticsController::class,
+                    'resolveAlert'
+                ]);
+
+                Route::get('/priority-dashboard', [
+                    AnalyticsController::class,
+                    'priorityDashboard'
+                ]);
             });
 
-        // ── Resources ─────────────────────────────────────────────────────
+        // =====================================================================
+        // RESOURCES
+        // =====================================================================
+
         Route::apiResource('prescriptions', PrescriptionController::class);
         Route::apiResource('referrals',     ReferralController::class);
         Route::apiResource('inventory',     InventoryController::class);
 
-        // ── Admin Routes ──────────────────────────────────────────────────
+        // =====================================================================
+        // ADMIN
+        // =====================================================================
+
         Route::middleware('role:rhu_admin,super_admin')
             ->prefix('admin')
             ->group(function () {
@@ -243,19 +357,26 @@ Route::prefix('v1')->group(function () {
                 Route::patch('/users/{id}/suspend',  [AdminUserController::class, 'suspend']);
                 Route::patch('/users/{id}/activate', [AdminUserController::class, 'activate']);
 
-                Route::get('/system-stats',          [AdminController::class, 'systemStats']);
-                Route::get('/ai-settings',           [AiSettingsController::class, 'index']);
-                Route::put('/ai-settings',           [AiSettingsController::class, 'update']);
+                Route::get('/system-stats', [AdminController::class, 'systemStats']);
 
-                Route::post('/programs',             [EventController::class, 'store']);
+                Route::get('/ai-settings', [AiSettingsController::class, 'index']);
+                Route::put('/ai-settings', [AiSettingsController::class, 'update']);
+
+                Route::post('/programs', [EventController::class, 'store']);
             });
 
-        // ── Super Admin ───────────────────────────────────────────────────
+        // =====================================================================
+        // SUPER ADMIN
+        // =====================================================================
+
         Route::middleware('role:super_admin')
             ->prefix('superadmin')
             ->group(function () {
 
-                Route::put('/users/{id}/role', [AdminUserController::class, 'assignRole']);
+                Route::put('/users/{id}/role', [
+                    AdminUserController::class,
+                    'assignRole'
+                ]);
 
                 Route::get('/audit-logs', [
                     AuditController::class,
@@ -263,12 +384,15 @@ Route::prefix('v1')->group(function () {
                 ]);
             });
 
-        // ── Approvals ─────────────────────────────────────────────────────
+        // =====================================================================
+        // APPROVALS
+        // =====================================================================
+
         Route::middleware('role:super_admin,mho_admin,it_staff')
             ->prefix('approvals')
             ->group(function () {
 
-                Route::get('/',                    [ApprovalController::class, 'index']);
+                Route::get('/',                     [ApprovalController::class, 'index']);
                 Route::get('/pending',             [ApprovalController::class, 'pending']);
                 Route::get('/{id}',                [ApprovalController::class, 'show']);
 
@@ -278,3 +402,4 @@ Route::prefix('v1')->group(function () {
             });
     });
 });
+

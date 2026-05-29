@@ -1,5 +1,5 @@
 <?php
-
+//2026_05_27_010100_create_barangay_heatmaps_table.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

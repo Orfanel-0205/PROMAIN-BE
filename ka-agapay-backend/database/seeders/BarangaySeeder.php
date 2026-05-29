@@ -1,11 +1,27 @@
 <?php
-// database/seeders/BarangaySeeder.php
 
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Seeds all 73 barangays of Malasiqui, Pangasinan.
+ *
+ * ── AUTHORITATIVE SOURCE ────────────────────────────────────────────────────
+ * This seeder is the single source of truth for barangay name spellings.
+ * The following MUST always match this list exactly:
+ *
+ *   • app/Support/BarangayList.php      (utility list — same spellings)
+ *   • constants/barangay.ts             (frontend fallback — same spellings)
+ *
+ * Validation uses Rule::exists('barangays', 'name') — NOT hardcoded lists.
+ *
+ * After any change to names, run:
+ *   php artisan cache:forget barangays_list
+ *   php artisan db:seed --class=BarangaySeeder
+ * ───────────────────────────────────────────────────────────────────────────
+ */
 class BarangaySeeder extends Seeder
 {
     public function run(): void
@@ -45,16 +61,16 @@ class BarangaySeeder extends Seeder
             'Guilig',
             'Ican',
             'Ingala-Gala',
-            'Lasip',
             'Lareg-Lareg',
+            'Lasip',
             'Lepa',
             'Lokeb Este',
             'Lokeb Norte',
             'Lokeb Sur',
             'Lunec',
-            'Manggan-Dampay',
             'Mabulitec',
             'Malimpec',
+            'Manggan-Dampay',
             'Nalsian Norte',
             'Nalsian Sur',
             'Nancapian',
@@ -87,7 +103,9 @@ class BarangaySeeder extends Seeder
         ];
 
         foreach ($barangays as $name) {
-            DB::table('barangays')->insertOrIgnore(['name' => $name]);
+            DB::table('barangays')->insertOrIgnore(['name' => trim($name)]);
         }
+
+        $this->command->info('BarangaySeeder: ' . count($barangays) . ' barangays seeded.');
     }
 }

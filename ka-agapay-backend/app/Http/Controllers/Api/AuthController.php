@@ -1,13 +1,4 @@
 <?php
-// app/Http/Controllers/Api/AuthController.php
-// Complete rewrite addressing all identified issues:
-//   ✅ FIX 422: barangay validated against DB (not hardcoded list mismatch)
-//   ✅ FIX 500: role fetched safely with descriptive error
-//   ✅ Strong password policy (PasswordPolicyService)
-//   ✅ Rate limiting + lockout (see routes/api.php throttle middleware)
-//   ✅ Audit log on every auth event
-//   ✅ Proper Sanctum token handling
-//   ✅ No privilege escalation on registration (always gets 'resident' role)
 
 namespace App\Http\Controllers\Api;
 
@@ -16,9 +7,9 @@ use App\Models\ActivityLog;
 use App\Models\User;
 use App\Models\UserRole;
 use App\Services\BiometricAuthService;
-use App\Services\PasswordPolicyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
@@ -28,23 +19,22 @@ use Illuminate\Validation\Rules\Password;
 class AuthController extends Controller
 {
     public function __construct(
-        private readonly BiometricAuthService $biometricService
+        private readonly BiometricAuthService $biometricService,
     ) {}
 
     // =========================================================================
     // REGISTER
     // =========================================================================
 
-      public function register(Request $request): JsonResponse
+    public function register(Request $request): JsonResponse
     {
-        // ── 0. Normalize inputs before validation ─────────────────────────
-        // Trim barangay to prevent invisible-whitespace 422 failures.
-        // The mobile app does this too, but defense-in-depth is worthwhile.
-        if ($request->has('barangay')) {
-            $request->merge(['barangay' => trim($request->input('barangay'))]);
-        }
- 
-        // ── 1. Validate input ─────────────────────────────────────────────
+        // ── 0. Normalise inputs before validation ─────────────────────────
+        $request->merge([
+            'barangay'      => trim((string) $request->input('barangay', '')),
+            'mobile_number' => trim((string) $request->input('mobile_number', '')),
+        ]);
+
+        // ── 1. Validate ───────────────────────────────────────────────────
         $validated = $request->validate([
             'first_name'            => ['required', 'string', 'max:100'],
             'last_name'             => ['required', 'string', 'max:100'],
@@ -59,19 +49,88 @@ class AuthController extends Controller
                 Password::min(8)->mixedCase()->numbers()->symbols(),
             ],
             'password_confirmation' => ['required'],
-            'barangay'              => ['required', 'string', Rule::exists('barangays', 'name')],
-            'birthday'              => ['nullable', 'date', 'before:today'],
-            'sex'                   => ['nullable', Rule::in(['male', 'female', 'other'])],
+            'barangay'              => [
+                'required', 'string', 'max:150',
+                Rule::exists('barangays', 'name'),
+            ],
+            'birthday' => [
+                'nullable', 'date',
+                'before:' . now()->subYears(18)->toDateString(),
+                'after:1900-01-01',
+            ],
+            'sex' => ['nullable', Rule::in(['male', 'female', 'other'])],
         ], [
             'mobile_number.regex'            => 'Mobile number must start with 09 and have 11 digits.',
             'mobile_number.unique'           => 'That mobile number is already registered.',
             'barangay.exists'                => 'Please select a valid barangay from the list.',
             'password.min'                   => 'Password must be at least 8 characters.',
             'password_confirmation.required' => 'Please confirm your password.',
+            'birthday.before'                => 'You must be at least 18 years old to register.',
+            'birthday.after'                 => 'Birthday must be after 1900.',
         ]);
- 
-        // ... rest of method unchanged
+
+        // ── 2. Resolve the 'resident' role ────────────────────────────────
+        $residentRole = UserRole::where('name', 'resident')->first();
+
+        if (! $residentRole) {
+            report(new \RuntimeException(
+                'UserRole "resident" not found. Run: php artisan db:seed --class=UserRoleSeeder'
+            ));
+            return response()->json([
+                'message' => 'Server configuration error. Please contact support.',
+            ], 500);
+        }
+
+        // ── 3. Create the user ────────────────────────────────────────────
+        $user = DB::transaction(function () use ($validated, $residentRole): User {
+            $user = User::create([
+                'role_id'           => $residentRole->role_id,
+                'first_name'        => $validated['first_name'],
+                'last_name'         => $validated['last_name'],
+                'email'             => $validated['email']    ?? null,
+                'mobile_number'     => $validated['mobile_number'],
+                'password'          => Hash::make($validated['password']),
+                'barangay'          => $validated['barangay'],
+                'birthday'          => $validated['birthday'] ?? null,
+                'sex'               => $validated['sex']      ?? null,
+                'account_status'    => 'pending',
+                'id_verified'       => false,
+                'biometric_enabled' => false,
+            ]);
+
+            // ── THE FIX ───────────────────────────────────────────────────
+            // User::create() returns the model built from the PHP array we
+            // passed. At this point `birthday` is still the raw string that
+            // came from the request (e.g. "2003-01-01") because Eloquent's
+            // $casts only execute when a value is read BACK from the database.
+            //
+            // refresh() re-fetches the persisted row so every cast fires:
+            //   'birthday' => 'date'  →  Carbon instance
+            //   'locked_until' => 'datetime'  →  Carbon instance
+            // Without this, formatUser() calls ->toDateString() on a plain
+            // string and throws: "Call to a member function toDateString()
+            // on string".
+            $user->refresh();
+
+            return $user;
+        });
+
+        // ── 4. Issue Sanctum token ────────────────────────────────────────
+        $token = $user->createToken('mobile')->plainTextToken;
+
+        // ── 5. Audit log ──────────────────────────────────────────────────
+        $this->logActivity($user, 'REGISTER', [
+            'method'   => 'mobile_number',
+            'barangay' => $user->barangay,
+        ], $request);
+
+        return response()->json([
+            'message' => 'Registration successful. Your account is pending approval.',
+            'user'    => $this->formatUser($user),
+            'token'   => $token,
+        ], 201);
     }
+
     // =========================================================================
     // LOGIN
     // =========================================================================
@@ -83,16 +142,15 @@ class AuthController extends Controller
             'password'      => ['required', 'string'],
         ]);
 
-        $mobile = $validated['mobile_number'];
+        $mobile = trim($validated['mobile_number']);
 
         // ── 1. Rate limiting (5 attempts per mobile per minute) ───────────
         $rateLimitKey = 'login|' . $mobile;
 
         if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
             $seconds = RateLimiter::availableIn($rateLimitKey);
-
             return response()->json([
-                'message' => "Too many login attempts. Try again in {$seconds} seconds.",
+                'message'     => "Too many login attempts. Try again in {$seconds} seconds.",
                 'retry_after' => $seconds,
             ], 429);
         }
@@ -100,7 +158,7 @@ class AuthController extends Controller
         // ── 2. Find user ──────────────────────────────────────────────────
         $user = User::where('mobile_number', $mobile)->first();
 
-        // ── 3. Check lockout (from failed_login_count column) ─────────────
+        // ── 3. Check lockout ──────────────────────────────────────────────
         if ($user && $user->locked_until && $user->locked_until->isFuture()) {
             return response()->json([
                 'message' => 'Account locked due to too many failed attempts. '
@@ -109,14 +167,13 @@ class AuthController extends Controller
         }
 
         // ── 4. Verify credentials ─────────────────────────────────────────
-        if (!$user || !Hash::check($validated['password'], $user->password)) {
-            RateLimiter::hit($rateLimitKey, 60);  // decay 60 s
+        if (! $user || ! Hash::check($validated['password'], $user->password)) {
+            RateLimiter::hit($rateLimitKey, 60);
 
             if ($user) {
                 $failCount = $user->failed_login_count + 1;
                 $updates   = ['failed_login_count' => $failCount];
 
-                // Lock account after 10 consecutive failures (30-minute lockout)
                 if ($failCount >= 10) {
                     $updates['locked_until'] = now()->addMinutes(30);
                     $this->logActivity($user, 'ACCOUNT_LOCKED', [
@@ -125,10 +182,7 @@ class AuthController extends Controller
                 }
 
                 $user->update($updates);
-
-                $this->logActivity($user, 'LOGIN_FAILED', [
-                    'attempt' => $failCount,
-                ], $request);
+                $this->logActivity($user, 'LOGIN_FAILED', ['attempt' => $failCount], $request);
             }
 
             return response()->json(['message' => 'Invalid credentials.'], 401);
@@ -137,7 +191,7 @@ class AuthController extends Controller
         // ── 5. Check account status ───────────────────────────────────────
         if ($user->account_status !== 'active') {
             return response()->json([
-                'message' => match($user->account_status) {
+                'message' => match ($user->account_status) {
                     'pending'   => 'Your account is pending approval.',
                     'suspended' => 'Your account has been suspended. Contact the RHU.',
                     'rejected'  => 'Your registration was not approved.',
@@ -146,7 +200,7 @@ class AuthController extends Controller
             ], 403);
         }
 
-        // ── 6. Reset failed attempt counter ───────────────────────────────
+        // ── 6. Reset failed-attempt counter ───────────────────────────────
         RateLimiter::clear($rateLimitKey);
         $user->update([
             'failed_login_count' => 0,
@@ -174,11 +228,8 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        // Revoke only the current device's token (Sanctum design)
         $request->user()->currentAccessToken()->delete();
-
         $this->logActivity($request->user(), 'LOGOUT', [], $request);
-
         return response()->json(['message' => 'Logged out successfully.']);
     }
 
@@ -200,7 +251,6 @@ class AuthController extends Controller
     public function biometricEnable(Request $request): JsonResponse
     {
         $rawToken = $this->biometricService->enable($request->user(), $request);
-
         return response()->json([
             'message'         => 'Biometric login enabled.',
             'biometric_token' => $rawToken,
@@ -214,7 +264,6 @@ class AuthController extends Controller
     public function biometricDisable(Request $request): JsonResponse
     {
         $this->biometricService->disableAll($request->user());
-
         return response()->json(['message' => 'Biometric login disabled.']);
     }
 
@@ -228,7 +277,6 @@ class AuthController extends Controller
             'biometric_token' => ['required', 'string', 'size:64'],
         ]);
 
-        // Rate-limit biometric attempts (3 per minute per IP)
         $key = 'biometric|' . $request->ip();
 
         if (RateLimiter::tooManyAttempts($key, 3)) {
@@ -239,9 +287,8 @@ class AuthController extends Controller
 
         $user = $this->biometricService->validate($request->input('biometric_token'));
 
-        if (!$user) {
+        if (! $user) {
             RateLimiter::hit($key, 60);
-
             return response()->json([
                 'message' => 'Biometric token invalid or expired. Please log in with your password.',
             ], 401);
@@ -251,7 +298,10 @@ class AuthController extends Controller
 
         $token = $user->createToken('mobile-biometric')->plainTextToken;
 
-        $user->update(['last_login_at' => now(), 'last_login_ip' => $request->ip()]);
+        $user->update([
+            'last_login_at' => now(),
+            'last_login_ip' => $request->ip(),
+        ]);
 
         $this->logActivity($user, 'LOGIN', ['method' => 'biometric'], $request);
 
@@ -268,7 +318,15 @@ class AuthController extends Controller
 
     /**
      * Canonical user shape returned to the mobile app.
-     * Never exposes password, token hashes, or internal fields.
+     *
+     * birthday is cast to Carbon via User::$casts['birthday' => 'date'].
+     * After register(), refresh() ensures the cast has fired before we arrive
+     * here. For all other entry points (login, me, biometricLogin) the model
+     * is loaded fresh from the DB so the cast already applies.
+     *
+     * The parseBirthday() helper below is a final safety net: if for any reason
+     * the cast hasn't fired and birthday is still a raw string, it converts it
+     * to Carbon rather than letting toDateString() crash.
      */
     private function formatUser(User $user): array
     {
@@ -279,7 +337,7 @@ class AuthController extends Controller
             'email'             => $user->email,
             'mobile_number'     => $user->mobile_number,
             'barangay'          => $user->barangay,
-            'birthday'          => $user->birthday?->toDateString(),
+            'birthday'          => $this->parseBirthday($user->birthday),
             'sex'               => $user->sex,
             'account_status'    => $user->account_status,
             'role'              => $user->role?->name,
@@ -287,6 +345,33 @@ class AuthController extends Controller
             'biometric_enabled' => (bool) $user->biometric_enabled,
             'avatar'            => $user->profile_picture_url ?? $user->avatar,
         ];
+    }
+
+    /**
+     * Safely convert birthday to a Y-m-d string regardless of whether
+     * Eloquent's cast has fired yet.
+     *
+     *  - null / empty string → null
+     *  - Carbon instance     → "Y-m-d"   (cast already ran — normal path)
+     *  - raw string          → parsed by Carbon → "Y-m-d"  (safety net)
+     */
+    private function parseBirthday(mixed $birthday): ?string
+    {
+        if ($birthday === null || $birthday === '') {
+            return null;
+        }
+
+        if ($birthday instanceof \DateTimeInterface) {
+            return Carbon::instance($birthday)->toDateString();
+        }
+
+        // Cast hasn't fired — birthday is still a raw string.
+        // Carbon::parse() handles "Y-m-d" and most other date formats.
+        try {
+            return Carbon::parse((string) $birthday)->toDateString();
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function logActivity(User $user, string $action, array $meta, Request $request): void
@@ -300,7 +385,7 @@ class AuthController extends Controller
                 'ip_address' => $request->ip(),
             ]);
         } catch (\Throwable) {
-            // Never let logging break auth
+            // Never let logging break the auth flow.
         }
     }
 }

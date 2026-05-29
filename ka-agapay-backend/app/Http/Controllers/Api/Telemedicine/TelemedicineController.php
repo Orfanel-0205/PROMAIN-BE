@@ -12,7 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
-class TelemedicineRequestController extends Controller
+class TelemedicineController extends Controller
 {
     public function __construct(
         private readonly TelemedicineService $service
