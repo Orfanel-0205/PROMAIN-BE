@@ -1,4 +1,5 @@
 <?php
+// routes/api.php
 
 use Illuminate\Support\Facades\Route;
 
@@ -55,6 +56,10 @@ Route::prefix('v1')->group(function () {
 
         Route::post('/register',        [AuthController::class, 'register']);
         Route::post('/login',           [AuthController::class, 'login']);
+
+        // WEB ADMIN LOGIN
+        Route::post('/admin/login',     [AuthController::class, 'adminLogin']);
+
         Route::post('/verify-otp',      [AuthController::class, 'verifyOtp']);
         Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
         Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
@@ -77,6 +82,29 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:30,1');
 
     // =========================================================================
+    // ADMIN EVENTS ROUTES
+    // =========================================================================
+    // Added as requested.
+    // Full URL examples:
+    // GET    /api/v1/admin/events
+    // POST   /api/v1/admin/events
+    // POST   /api/v1/admin/events/{id}
+    // PATCH  /api/v1/admin/events/{id}/publish
+    // DELETE /api/v1/admin/events/{id}
+    // GET    /api/v1/admin/events/{id}/registrants
+
+    Route::middleware(['auth:sanctum', 'role:admin,staff,super_admin'])
+        ->group(function () {
+            Route::get('/admin/events', [EventController::class, 'adminIndex']);
+            Route::post('/admin/events', [EventController::class, 'store']);
+            Route::post('/admin/events/{id}', [EventController::class, 'update']);
+            Route::patch('/admin/events/{id}/publish', [EventController::class, 'publish']);
+            Route::delete('/admin/events/{id}', [EventController::class, 'destroy']);
+
+            Route::get('/admin/events/{id}/registrants', [EventController::class, 'registrants']);
+        });
+
+    // =========================================================================
     // AUTHENTICATED ROUTES
     // =========================================================================
 
@@ -89,7 +117,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/activity-logs', [ActivityLogController::class, 'store']);
 
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])
-            ->middleware('role:super_admin,admin');
+            ->middleware('role:super_admin,admin,rhu_admin');
 
         // =====================================================================
         // AUTH
@@ -120,7 +148,7 @@ Route::prefix('v1')->group(function () {
         // PATIENT SELF SERVICE
         // =====================================================================
 
-        Route::get('/patient/me', [PatientController::class, 'me']);
+        Route::get('/patient/me',   [PatientController::class, 'me']);
         Route::patch('/patient/me', [PatientController::class, 'update']);
 
         // =====================================================================
@@ -148,7 +176,6 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('chat')->group(function () {
-
             Route::post('/message',  [ChatController::class, 'sendMessage']);
             Route::get('/history',   [ChatController::class, 'history']);
             Route::post('/end',      [ChatController::class, 'endSession']);
@@ -166,7 +193,6 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('appointments')->group(function () {
-
             Route::get('/',              [AppointmentController::class, 'index']);
             Route::post('/',             [AppointmentController::class, 'store']);
             Route::get('/my',            [AppointmentController::class, 'myAppointments']);
@@ -176,12 +202,15 @@ Route::prefix('v1')->group(function () {
         });
 
         // =====================================================================
-        // PROGRAMS / EVENTS
+        // PROGRAMS / EVENTS — MOBILE / RESIDENT SIDE
         // =====================================================================
 
-        Route::get('/programs',                [EventController::class, 'index']);
-        Route::get('/programs/{id}',           [EventController::class, 'show']);
-        Route::post('/programs/{id}/register', [EventController::class, 'register']);
+        Route::get('/programs',                  [EventController::class, 'index']);
+Route::get('/programs/{id}',             [EventController::class, 'show']);
+Route::post('/programs/{id}/register',   [EventController::class, 'register']);
+Route::delete('/programs/{id}/register', [EventController::class, 'cancelRegistration']);
+
+Route::get('/my-event-registrations', [EventController::class, 'myEventRegistrations']);
 
         // =====================================================================
         // NOTIFICATIONS
@@ -195,7 +224,6 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('queue')->group(function () {
-
             Route::get('/',              [QueueController::class, 'index']);
             Route::post('/issue',        [QueueController::class, 'issue']);
             Route::get('/my-ticket',     [QueueController::class, 'myTicket']);
@@ -210,8 +238,6 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('telemedicine')->group(function () {
-
-            // Sessions
             Route::get('/sessions',                     [SessionController::class, 'index']);
             Route::get('/sessions/{id}',                [SessionController::class, 'show']);
             Route::patch('/sessions/{id}/status',       [SessionController::class, 'updateStatus']);
@@ -221,7 +247,6 @@ Route::prefix('v1')->group(function () {
             Route::post('/sessions/{id}/transcribe',    [SessionController::class, 'transcribe']);
             Route::post('/sessions/{id}/summarize',     [SessionController::class, 'summarize']);
 
-            // Requests
             Route::get('/requests',               [TelemedicineController::class, 'indexRequests']);
             Route::post('/requests',              [TelemedicineController::class, 'createRequest']);
             Route::get('/requests/mine',          [TelemedicineController::class, 'myRequests']);
@@ -229,10 +254,8 @@ Route::prefix('v1')->group(function () {
             Route::patch('/requests/{id}/screen', [TelemedicineController::class, 'screenRequest']);
             Route::delete('/requests/{id}',       [TelemedicineController::class, 'cancelRequest']);
 
-            // Session Creation
             Route::post('/requests/{id}/session', [SessionController::class, 'create']);
 
-            // WebRTC
             Route::get('/sessions/{id}/join',           [WebRtcController::class, 'getJoinToken']);
             Route::post('/sessions/{id}/signal',        [WebRtcController::class, 'signal']);
             Route::get('/sessions/{id}/signals',        [WebRtcController::class, 'getSignals']);
@@ -244,16 +267,13 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('ocr')->group(function () {
+            Route::post('/upload',     [OcrController::class, 'upload']);
+            Route::get('/result/{id}', [OcrController::class, 'result']);
+            Route::post('/retry/{id}', [OcrController::class, 'retry']);
 
-            // Registration ID Scan
-            Route::post('/upload',      [OcrController::class, 'upload']);
-            Route::get('/result/{id}',  [OcrController::class, 'result']);
-            Route::post('/retry/{id}',  [OcrController::class, 'retry']);
-
-            // Telemedicine Prescription OCR
             Route::post('/prescription/{consultationId}', [
                 OcrController::class,
-                'scanPrescription'
+                'scanPrescription',
             ]);
         });
 
@@ -261,12 +281,13 @@ Route::prefix('v1')->group(function () {
         // HOME VISITS
         // =====================================================================
 
-        Route::get('/home-visits',             [HomeVisitController::class, 'index']);
-        Route::post('/home-visits',            [HomeVisitController::class, 'store']);
-        Route::get('/home-visits/{id}',        [HomeVisitController::class, 'show']);
+        Route::get('/home-visits',      [HomeVisitController::class, 'index']);
+        Route::post('/home-visits',     [HomeVisitController::class, 'store']);
+        Route::get('/home-visits/{id}', [HomeVisitController::class, 'show']);
+
         Route::patch('/home-visits/{id}/cancel', [
             HomeVisitController::class,
-            'cancel'
+            'cancel',
         ]);
 
         // =====================================================================
@@ -274,11 +295,11 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('ai')->group(function () {
-
             Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
             Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
             Route::get('/history',                   [AiController::class, 'history']);
             Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
+            Route::post('/summarize-events',         [AiController::class, 'summarizeEvents']);
         });
 
         // =====================================================================
@@ -287,12 +308,11 @@ Route::prefix('v1')->group(function () {
 
         Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')
             ->group(function () {
-
                 Route::apiResource('/patients', PatientController::class);
 
                 Route::get('/consultations/all', [
                     ConsultationController::class,
-                    'index'
+                    'index',
                 ]);
             });
 
@@ -301,9 +321,8 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('analytics')
-            ->middleware('role:admin,staff,super_admin')
+            ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
             ->group(function () {
-
                 Route::get('/overview',                [AnalyticsController::class, 'overview']);
                 Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
                 Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
@@ -319,17 +338,17 @@ Route::prefix('v1')->group(function () {
 
                 Route::get('/outbreak-alerts', [
                     AnalyticsController::class,
-                    'outbreakAlerts'
+                    'outbreakAlerts',
                 ]);
 
                 Route::post('/outbreak-alerts/{id}/resolve', [
                     AnalyticsController::class,
-                    'resolveAlert'
+                    'resolveAlert',
                 ]);
 
                 Route::get('/priority-dashboard', [
                     AnalyticsController::class,
-                    'priorityDashboard'
+                    'priorityDashboard',
                 ]);
             });
 
@@ -342,10 +361,10 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('inventory',     InventoryController::class);
 
         // =====================================================================
-        // ADMIN
+        // ADMIN WEB CMS
         // =====================================================================
 
-        Route::middleware('role:rhu_admin,super_admin')
+        Route::middleware('role:admin,staff,rhu_admin,super_admin,mho')
             ->prefix('admin')
             ->group(function () {
 
@@ -353,7 +372,6 @@ Route::prefix('v1')->group(function () {
                 Route::post('/users',                [AdminUserController::class, 'store']);
                 Route::put('/users/{id}',            [AdminUserController::class, 'update']);
                 Route::delete('/users/{id}',         [AdminUserController::class, 'destroy']);
-
                 Route::patch('/users/{id}/suspend',  [AdminUserController::class, 'suspend']);
                 Route::patch('/users/{id}/activate', [AdminUserController::class, 'activate']);
 
@@ -361,6 +379,13 @@ Route::prefix('v1')->group(function () {
 
                 Route::get('/ai-settings', [AiSettingsController::class, 'index']);
                 Route::put('/ai-settings', [AiSettingsController::class, 'update']);
+
+                Route::get('/events',                 [EventController::class, 'adminIndex']);
+                Route::post('/events',                [EventController::class, 'store']);
+                Route::put('/events/{id}',            [EventController::class, 'update']);
+                Route::post('/events/{id}',           [EventController::class, 'update']);
+                Route::patch('/events/{id}/publish',  [EventController::class, 'publish']);
+                Route::delete('/events/{id}',         [EventController::class, 'destroy']);
 
                 Route::post('/programs', [EventController::class, 'store']);
             });
@@ -372,15 +397,14 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:super_admin')
             ->prefix('superadmin')
             ->group(function () {
-
                 Route::put('/users/{id}/role', [
                     AdminUserController::class,
-                    'assignRole'
+                    'assignRole',
                 ]);
 
                 Route::get('/audit-logs', [
                     AuditController::class,
-                    'index'
+                    'index',
                 ]);
             });
 
@@ -391,10 +415,9 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:super_admin,mho_admin,it_staff')
             ->prefix('approvals')
             ->group(function () {
-
-                Route::get('/',                     [ApprovalController::class, 'index']);
-                Route::get('/pending',             [ApprovalController::class, 'pending']);
-                Route::get('/{id}',                [ApprovalController::class, 'show']);
+                Route::get('/',        [ApprovalController::class, 'index']);
+                Route::get('/pending', [ApprovalController::class, 'pending']);
+                Route::get('/{id}',    [ApprovalController::class, 'show']);
 
                 Route::patch('/{id}/approve',      [ApprovalController::class, 'approve']);
                 Route::patch('/{id}/reject',       [ApprovalController::class, 'reject']);
@@ -402,4 +425,3 @@ Route::prefix('v1')->group(function () {
             });
     });
 });
-

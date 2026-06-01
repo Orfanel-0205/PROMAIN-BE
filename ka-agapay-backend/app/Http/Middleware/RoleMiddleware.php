@@ -1,13 +1,5 @@
 <?php
 // app/Http/Middleware/RoleMiddleware.php
-// Enforces role-based access control at the route/middleware level.
-//
-// Usage in routes:
-//   Route::middleware(['auth:sanctum', 'role:doctor,nurse'])->group(...)
-//   Route::middleware(['auth:sanctum', 'role:super_admin'])->group(...)
-//
-// The middleware accepts ONE OR MORE comma-separated roles.
-// The authenticated user must have AT LEAST ONE of the specified roles.
 
 namespace App\Http\Middleware;
 
@@ -18,51 +10,53 @@ use Symfony\Component\HttpFoundation\Response;
 class RoleMiddleware
 {
     /**
-     * @param  string  $roles  Comma-separated list of allowed role names
+     * Handle an incoming request.
+     *
+     * Example:
+     * Route::middleware('role:admin,staff,rhu_admin,super_admin')->group(...)
      */
     public function handle(Request $request, Closure $next, string ...$roles): Response
     {
         $user = $request->user();
 
-        // Must be authenticated first (auth:sanctum handles this, but be defensive)
         if (!$user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
         }
 
-        // Load role relationship if not already eager-loaded
-        $roleName = $user->role?->name ?? $user->relationLoaded('role')
-            ? $user->role?->name
-            : $user->load('role')->role?->name;
+        $user->loadMissing('role');
 
-        // Super admin bypasses all role checks
-        if ($roleName === 'super_admin') {
-            return $next($request);
+        $roleName = null;
+
+        if ($user->role && is_object($user->role)) {
+            $roleName = $user->role->name
+                ?? $user->role->role_name
+                ?? null;
         }
 
-        // Check if user's role is in the allowed list
-        if (in_array($roleName, $roles, true)) {
-            return $next($request);
+        $roleName = $roleName
+            ?? $user->role_name
+            ?? $user->user_role
+            ?? $user->account_type
+            ?? null;
+
+        $roleName = strtolower(trim((string) $roleName));
+
+        $allowedRoles = collect($roles)
+            ->map(fn ($role) => strtolower(trim((string) $role)))
+            ->filter()
+            ->values()
+            ->all();
+
+        if (!in_array($roleName, $allowedRoles, true)) {
+            return response()->json([
+                'message' => 'Forbidden. Your role is not allowed to access this resource.',
+                'current_role' => $roleName ?: null,
+                'required_roles' => $allowedRoles,
+            ], 403);
         }
 
-        // Log unauthorised access attempts for audit
-        try {
-            \App\Models\ActivityLog::create([
-                'user_id'    => $user->user_id,
-                'action'     => 'UNAUTHORISED_ACCESS',
-                'module'     => 'security',
-                'metadata'   => [
-                    'required_roles' => $roles,
-                    'user_role'      => $roleName,
-                    'path'           => $request->path(),
-                ],
-                'ip_address' => $request->ip(),
-            ]);
-        } catch (\Throwable) {}
-
-        return response()->json([
-            'message'       => 'Forbidden. Insufficient permissions.',
-            'required_role' => $roles,
-            'your_role'     => $roleName,
-        ], 403);
+        return $next($request);
     }
 }
