@@ -3,6 +3,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -50,8 +51,37 @@ class User extends Authenticatable
         'last_login_at' => 'datetime',
     ];
 
+    protected $appends = [
+        'full_name',
+    ];
+
+    public function getFullNameAttribute(): string
+    {
+        return trim(($this->first_name ?? '') . ' ' . ($this->last_name ?? ''));
+    }
+
     public function role()
     {
         return $this->belongsTo(UserRole::class, 'role_id', 'role_id');
+    }
+
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class, 'user_id', 'user_id');
+    }
+
+    public function handledAppointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class, 'handled_by', 'user_id');
+    }
+
+    public function consultations(): HasMany
+    {
+        return $this->hasMany(Consultation::class, 'user_id', 'user_id');
+    }
+
+    public function attendedConsultations(): HasMany
+    {
+        return $this->hasMany(Consultation::class, 'attended_by', 'user_id');
     }
 }

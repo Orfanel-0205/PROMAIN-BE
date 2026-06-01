@@ -82,29 +82,6 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:30,1');
 
     // =========================================================================
-    // ADMIN EVENTS ROUTES
-    // =========================================================================
-    // Added as requested.
-    // Full URL examples:
-    // GET    /api/v1/admin/events
-    // POST   /api/v1/admin/events
-    // POST   /api/v1/admin/events/{id}
-    // PATCH  /api/v1/admin/events/{id}/publish
-    // DELETE /api/v1/admin/events/{id}
-    // GET    /api/v1/admin/events/{id}/registrants
-
-    Route::middleware(['auth:sanctum', 'role:admin,staff,super_admin'])
-        ->group(function () {
-            Route::get('/admin/events', [EventController::class, 'adminIndex']);
-            Route::post('/admin/events', [EventController::class, 'store']);
-            Route::post('/admin/events/{id}', [EventController::class, 'update']);
-            Route::patch('/admin/events/{id}/publish', [EventController::class, 'publish']);
-            Route::delete('/admin/events/{id}', [EventController::class, 'destroy']);
-
-            Route::get('/admin/events/{id}/registrants', [EventController::class, 'registrants']);
-        });
-
-    // =========================================================================
     // AUTHENTICATED ROUTES
     // =========================================================================
 
@@ -183,34 +160,70 @@ Route::prefix('v1')->group(function () {
         });
 
         // =====================================================================
-        // CONSULTATIONS
+        // CONSULTATIONS — MOBILE PATIENT
         // =====================================================================
 
-        Route::get('/consultations', [ConsultationController::class, 'mine']);
+        Route::get('/consultations',       [ConsultationController::class, 'mine']);
+        Route::get('/consultations/all',   [ConsultationController::class, 'mine']);
+        Route::get('/consultations/{id}',  [ConsultationController::class, 'mineShow']);
 
         // =====================================================================
-        // APPOINTMENTS
+        // APPOINTMENTS — MOBILE PATIENT ONLY FOR NOW
         // =====================================================================
+        //
+        // These are the only appointment routes needed for testing:
+        // - patient creates appointment
+        // - patient views own appointments
+        // - patient views appointment details
+        // - patient cancels appointment
+        //
+        // Admin appointment routes are intentionally removed for now.
 
         Route::prefix('appointments')->group(function () {
             Route::get('/',              [AppointmentController::class, 'index']);
             Route::post('/',             [AppointmentController::class, 'store']);
             Route::get('/my',            [AppointmentController::class, 'myAppointments']);
             Route::get('/show/{id}',     [AppointmentController::class, 'show']);
+            Route::get('/detail/{id}',   [AppointmentController::class, 'show']);
             Route::get('/{userId}',      [AppointmentController::class, 'userAppointments']);
             Route::patch('/{id}/status', [AppointmentController::class, 'updateStatus']);
         });
+
+        // =====================================================================
+        // ADMIN CONSULTATIONS — WEB ADMIN
+        // =====================================================================
+        //
+        // Keeping consultation admin routes here because they are separate from
+        // the mobile appointment test. Do not test these yet if your goal is
+        // only patient appointment posting/listing.
+
+       Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
+    ->prefix('admin')
+    ->group(function () {
+        // ADMIN APPOINTMENTS
+        Route::get('/appointments', [AppointmentController::class, 'adminIndex']);
+        Route::get('/appointments/{id}', [AppointmentController::class, 'adminShow']);
+        Route::patch('/appointments/{id}/status', [AppointmentController::class, 'adminUpdateStatus']);
+        Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
+
+        // ADMIN CONSULTATIONS
+        Route::get('/consultations', [ConsultationController::class, 'index']);
+        Route::post('/consultations', [ConsultationController::class, 'store']);
+        Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
+        Route::put('/consultations/{id}/soap', [ConsultationController::class, 'updateSoap']);
+        Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
+    });
 
         // =====================================================================
         // PROGRAMS / EVENTS — MOBILE / RESIDENT SIDE
         // =====================================================================
 
         Route::get('/programs',                  [EventController::class, 'index']);
-Route::get('/programs/{id}',             [EventController::class, 'show']);
-Route::post('/programs/{id}/register',   [EventController::class, 'register']);
-Route::delete('/programs/{id}/register', [EventController::class, 'cancelRegistration']);
+        Route::get('/programs/{id}',             [EventController::class, 'show']);
+        Route::post('/programs/{id}/register',   [EventController::class, 'register']);
+        Route::delete('/programs/{id}/register', [EventController::class, 'cancelRegistration']);
 
-Route::get('/my-event-registrations', [EventController::class, 'myEventRegistrations']);
+        Route::get('/my-event-registrations', [EventController::class, 'myEventRegistrations']);
 
         // =====================================================================
         // NOTIFICATIONS
@@ -309,11 +322,6 @@ Route::get('/my-event-registrations', [EventController::class, 'myEventRegistrat
         Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')
             ->group(function () {
                 Route::apiResource('/patients', PatientController::class);
-
-                Route::get('/consultations/all', [
-                    ConsultationController::class,
-                    'index',
-                ]);
             });
 
         // =====================================================================
@@ -380,12 +388,17 @@ Route::get('/my-event-registrations', [EventController::class, 'myEventRegistrat
                 Route::get('/ai-settings', [AiSettingsController::class, 'index']);
                 Route::put('/ai-settings', [AiSettingsController::class, 'update']);
 
-                Route::get('/events',                 [EventController::class, 'adminIndex']);
-                Route::post('/events',                [EventController::class, 'store']);
-                Route::put('/events/{id}',            [EventController::class, 'update']);
-                Route::post('/events/{id}',           [EventController::class, 'update']);
-                Route::patch('/events/{id}/publish',  [EventController::class, 'publish']);
-                Route::delete('/events/{id}',         [EventController::class, 'destroy']);
+                Route::get('/events',                [EventController::class, 'adminIndex']);
+                Route::post('/events',               [EventController::class, 'store']);
+                Route::put('/events/{id}',           [EventController::class, 'update']);
+                Route::post('/events/{id}',          [EventController::class, 'update']);
+                Route::patch('/events/{id}/publish', [EventController::class, 'publish']);
+                Route::delete('/events/{id}',        [EventController::class, 'destroy']);
+
+                Route::get('/events/{id}/registrants', [
+                    EventController::class,
+                    'registrants',
+                ]);
 
                 Route::post('/programs', [EventController::class, 'store']);
             });

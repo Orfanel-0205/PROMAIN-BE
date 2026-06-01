@@ -15,14 +15,21 @@ class Appointment extends Model
         'purpose',
         'status',
         'notes',
+
+        'consultation_type',
+        'reason',
+        'symptoms',
+
+        'rejection_reason',
+        'approved_at',
+        'scheduled_at',
     ];
 
-    protected function casts(): array
-    {
-        return [
-            'appointment_date' => 'date',
-        ];
-    }
+    protected $casts = [
+        'appointment_date' => 'date',
+        'approved_at' => 'datetime',
+        'scheduled_at' => 'datetime',
+    ];
 
     public function resident(): BelongsTo
     {

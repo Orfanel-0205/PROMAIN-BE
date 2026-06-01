@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Consultation extends Model
 {
     protected $fillable = [
+        'appointment_id',
         'user_id',
         'attended_by',
         'consultation_date',
@@ -16,13 +17,24 @@ class Consultation extends Model
         'diagnosis',
         'treatment',
         'status',
+        'subjective',
+        'objective',
+        'assessment',
+        'plan',
+        'notes',
+        'started_at',
+        'completed_at',
     ];
 
-    protected function casts(): array
+    protected $casts = [
+        'consultation_date' => 'date:Y-m-d',
+        'started_at' => 'datetime',
+        'completed_at' => 'datetime',
+    ];
+
+    public function appointment(): BelongsTo
     {
-        return [
-            'consultation_date' => 'date',
-        ];
+        return $this->belongsTo(Appointment::class, 'appointment_id');
     }
 
     public function resident(): BelongsTo
