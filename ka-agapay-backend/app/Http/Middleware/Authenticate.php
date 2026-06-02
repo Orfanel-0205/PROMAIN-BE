@@ -8,10 +8,12 @@ use Illuminate\Http\Request;
 class Authenticate extends Middleware
 {
     /**
-     * Get the path the user should be redirected to when they are not authenticated.
+     * For API-only backend:
+     * Do not redirect unauthenticated users to route('login'),
+     * because this Laravel project does not use a web login route.
      */
     protected function redirectTo(Request $request): ?string
     {
-        return $request->expectsJson() ? null : route('login');
+        return null;
     }
 }

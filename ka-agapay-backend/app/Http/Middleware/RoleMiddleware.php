@@ -5,45 +5,55 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 class RoleMiddleware
 {
-    // Role hierarchy — higher number = more access
-    private array $hierarchy = [
-        'resident'    => 1,
-        'bhw'         => 2,
-        'nurse'       => 3,
-        'doctor'      => 4,
-        'it_staff'    => 4,
-        'mho_admin'   => 5,
-        'super_admin' => 6,
-    ];
-
-    public function handle(Request $request, Closure $next, string ...$roles): mixed
+    /**
+     * Handle an incoming request.
+     *
+     * Example:
+     * Route::middleware('role:admin,staff,rhu_admin,super_admin')->group(...)
+     */
+    public function handle(Request $request, Closure $next, string ...$roles): Response
     {
         $user = $request->user();
 
         if (!$user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
-        }
-
-        if ($user->account_status !== 'active') {
             return response()->json([
-                'message' => 'Account is not active.',
-                'status'  => $user->account_status,
-            ], 403);
+                'message' => 'Unauthenticated.',
+            ], 401);
         }
 
-        $userRole = $user->role?->name;
+        $user->loadMissing('role');
 
-        // Super admin bypasses all role checks
-        if ($userRole === 'super_admin') {
-            return $next($request);
+        $roleName = null;
+
+        if ($user->role && is_object($user->role)) {
+            $roleName = $user->role->name
+                ?? $user->role->role_name
+                ?? null;
         }
 
-        if (!in_array($userRole, $roles)) {
+        $roleName = $roleName
+            ?? $user->role_name
+            ?? $user->user_role
+            ?? $user->account_type
+            ?? null;
+
+        $roleName = strtolower(trim((string) $roleName));
+
+        $allowedRoles = collect($roles)
+            ->map(fn ($role) => strtolower(trim((string) $role)))
+            ->filter()
+            ->values()
+            ->all();
+
+        if (!in_array($roleName, $allowedRoles, true)) {
             return response()->json([
-                'message' => "Access denied. Required role: " . implode(' or ', $roles),
+                'message' => 'Forbidden. Your role is not allowed to access this resource.',
+                'current_role' => $roleName ?: null,
+                'required_roles' => $allowedRoles,
             ], 403);
         }
 

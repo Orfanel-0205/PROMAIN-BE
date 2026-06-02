@@ -3,10 +3,15 @@
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Facades\Log;
+
 use App\Services\Audit\AuditService;
 use App\Services\Prescription\PrescriptionService;
 use App\Services\Referral\ReferralService;
-use Illuminate\Support\Facades\Log;
+
+use App\Services\Analytics\HeatmapAnalyticsService;
+use App\Services\Queue\QueuePrioritizationService;
+use App\Services\Analytics\HeatmapAlertService;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -18,6 +23,11 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(AuditService::class);
         $this->app->singleton(PrescriptionService::class);
         $this->app->singleton(ReferralService::class);
+
+        // Analytics services
+        $this->app->singleton(HeatmapAnalyticsService::class);
+        $this->app->singleton(QueuePrioritizationService::class);
+        $this->app->singleton(HeatmapAlertService::class);
     }
 
     /**
@@ -25,7 +35,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Mask mobile numbers and passwords from appearing in application logs
+        // Global log context
         Log::withContext([
             'app' => 'ka-agapay',
         ]);

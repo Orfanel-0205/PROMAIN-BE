@@ -1,8 +1,9 @@
 <?php
+// app/Models/User.php
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -15,20 +16,22 @@ class User extends Authenticatable
 
     protected $fillable = [
         'role_id',
-        'barangay_id',        // FK to barangays table (nullable)
         'first_name',
         'last_name',
         'email',
         'mobile_number',
         'password',
+        'barangay',
+        'birthday',
+        'sex',
         'account_status',
-        'avatar',             // legacy field
-        'profile_picture',    // NEW: stored path in public disk
-        'barangay',           // NEW: plain string from fixed barangay list
-        'birthday',           // NEW: date
-        'sex',                // NEW: enum
-        'biometric_enabled',  // NEW: bool flag
-        'biometric_token_hash', // NEW: hashed biometric token
+        'id_verified',
+        'biometric_enabled',
+        'biometric_token_hash',
+        'profile_picture',
+        'avatar',
+        'failed_login_count',
+        'locked_until',
         'last_login_at',
         'last_login_ip',
     ];
@@ -39,39 +42,46 @@ class User extends Authenticatable
         'biometric_token_hash',
     ];
 
-    protected function casts(): array
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'birthday' => 'date',
+        'id_verified' => 'boolean',
+        'biometric_enabled' => 'boolean',
+        'locked_until' => 'datetime',
+        'last_login_at' => 'datetime',
+    ];
+
+    protected $appends = [
+        'full_name',
+    ];
+
+    public function getFullNameAttribute(): string
     {
-        return [
-            'password'          => 'hashed',
-            'birthday'          => 'date',
-            'last_login_at'     => 'datetime',
-            'biometric_enabled' => 'boolean',
-        ];
+        return trim(($this->first_name ?? '') . ' ' . ($this->last_name ?? ''));
     }
 
-    // ── Relationships ─────────────────────────────────────────────────────
-
-    public function role(): BelongsTo
+    public function role()
     {
         return $this->belongsTo(UserRole::class, 'role_id', 'role_id');
     }
 
-    public function barangayRelation(): BelongsTo
+    public function appointments(): HasMany
     {
-        return $this->belongsTo(Barangay::class, 'barangay_id', 'barangay_id');
+        return $this->hasMany(Appointment::class, 'user_id', 'user_id');
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
-
-    /**
-     * Full URL for the profile picture.
-     * Returns null if no picture is set.
-     */
-    public function getProfilePictureUrlAttribute(): ?string
+    public function handledAppointments(): HasMany
     {
-        if (!$this->profile_picture) {
-            return null;
-        }
-        return \Illuminate\Support\Facades\Storage::disk('public')->url($this->profile_picture);
+        return $this->hasMany(Appointment::class, 'handled_by', 'user_id');
+    }
+
+    public function consultations(): HasMany
+    {
+        return $this->hasMany(Consultation::class, 'user_id', 'user_id');
+    }
+
+    public function attendedConsultations(): HasMany
+    {
+        return $this->hasMany(Consultation::class, 'attended_by', 'user_id');
     }
 }

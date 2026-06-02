@@ -10,12 +10,26 @@ return new class extends Migration
     {
         Schema::create('event_registrations', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('event_id')->constrained('events')->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained('users', 'user_id')->cascadeOnDelete();
-            $table->enum('status', ['registered', 'attended', 'cancelled'])->default('registered');
+
+            $table->foreignId('event_id')
+                ->constrained('events')
+                ->cascadeOnDelete();
+
+            $table->foreignId('user_id')
+                ->constrained('users', 'user_id')
+                ->cascadeOnDelete();
+
+            $table->string('status')->default('registered');
+            // registered, cancelled, attended, no_show
+
+            $table->timestamp('registered_at')->useCurrent();
+            $table->timestamp('cancelled_at')->nullable();
+
             $table->timestamps();
 
             $table->unique(['event_id', 'user_id']);
+            $table->index(['event_id', 'status']);
+            $table->index(['user_id', 'status']);
         });
     }
 

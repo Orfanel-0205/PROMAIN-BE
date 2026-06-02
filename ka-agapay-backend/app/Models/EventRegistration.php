@@ -11,11 +11,24 @@ class EventRegistration extends Model
         'event_id',
         'user_id',
         'status',
+        'queue_number',
+        'registered_at',
+        'cancelled_at',
     ];
+
+    protected $casts = [
+        'registered_at' => 'datetime',
+        'cancelled_at' => 'datetime',
+    ];
+
+    public const STATUS_REGISTERED = 'registered';
+    public const STATUS_CANCELLED = 'cancelled';
+    public const STATUS_ATTENDED = 'attended';
+    public const STATUS_NO_SHOW = 'no_show';
 
     public function event(): BelongsTo
     {
-        return $this->belongsTo(Event::class, 'event_id');
+        return $this->belongsTo(Event::class, 'event_id', 'id');
     }
 
     public function user(): BelongsTo

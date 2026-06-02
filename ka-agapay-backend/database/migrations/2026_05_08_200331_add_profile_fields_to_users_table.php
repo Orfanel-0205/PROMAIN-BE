@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_05_08_200331_add_profile_fields_to_users_table.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

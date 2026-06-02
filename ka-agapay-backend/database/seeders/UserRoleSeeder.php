@@ -1,5 +1,5 @@
 <?php
-
+// database/seeders/UserRoleSeeder.php
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
@@ -9,13 +9,25 @@ class UserRoleSeeder extends Seeder
 {
     public function run(): void
     {
-        $roles = ['resident', 'doctor', 'nurse', 'midwife', 'admin', 'super_admin', 'it_staff', 'mho_admin'];
+        $roles = [
+            'super_admin',
+            'rhu_admin',
+            'doctor',
+            'nurse',
+            'midwife',
+            'bhw',
+            'resident',
+            'guardian',
+        ];
 
-        foreach ($roles as $role) {
-            DB::table('user_roles')->updateOrInsert(
-                ['name' => $role],
-                ['name' => $role]
-            );
+        foreach ($roles as $name) {
+            DB::table('user_roles')->insertOrIgnore([
+                'name'       => $name,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
         }
+
+        $this->command->info('✅ User roles seeded (' . count($roles) . ' roles)');
     }
 }
