@@ -66,7 +66,7 @@ class TelemedicineRequest extends Model
 
     public function rhu(): BelongsTo
     {
-        return $this->belongsTo(Barangay::class, 'rhu_id');
+        return $this->belongsTo(Barangay::class, 'rhu_id', 'barangay_id');
     }
 
     public function queueTicket(): BelongsTo

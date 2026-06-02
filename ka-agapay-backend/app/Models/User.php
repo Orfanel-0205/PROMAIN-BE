@@ -3,7 +3,9 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -60,9 +62,94 @@ class User extends Authenticatable
         return trim(($this->first_name ?? '') . ' ' . ($this->last_name ?? ''));
     }
 
-    public function role()
+    // =========================================================================
+    // ROLE HELPERS
+    // =========================================================================
+
+    public function role(): BelongsTo
     {
         return $this->belongsTo(UserRole::class, 'role_id', 'role_id');
+    }
+
+    public function hasRole(string|array $roles): bool
+    {
+        if (is_array($roles)) {
+            return $this->hasAnyRole($roles);
+        }
+
+        $currentRole = $this->getCurrentRoleName();
+
+        if (!$currentRole) {
+            return false;
+        }
+
+        return $this->normalizeRoleName($currentRole) === $this->normalizeRoleName($roles);
+    }
+
+    public function hasAnyRole(array|string $roles): bool
+    {
+        if (is_string($roles)) {
+            $roles = [$roles];
+        }
+
+        $currentRole = $this->getCurrentRoleName();
+
+        if (!$currentRole) {
+            return false;
+        }
+
+        $currentRole = $this->normalizeRoleName($currentRole);
+
+        foreach ($roles as $role) {
+            if ($currentRole === $this->normalizeRoleName((string) $role)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function getCurrentRoleName(): ?string
+    {
+        $role = $this->relationLoaded('role')
+            ? $this->role
+            : $this->role()->first();
+
+        if (!$role) {
+            return null;
+        }
+
+        /*
+         * Supports different possible role table columns:
+         * role_name, name, slug, role, title, code
+         */
+        foreach (['role_name', 'name', 'slug', 'role', 'title', 'code'] as $field) {
+            if (!empty($role->{$field})) {
+                return (string) $role->{$field};
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeRoleName(string $role): string
+    {
+        return strtolower(
+            str_replace(
+                [' ', '-'],
+                '_',
+                trim($role)
+            )
+        );
+    }
+
+    // =========================================================================
+    // RELATIONSHIPS
+    // =========================================================================
+
+    public function residentProfile(): HasOne
+    {
+        return $this->hasOne(ResidentProfile::class, 'user_id', 'user_id');
     }
 
     public function appointments(): HasMany

@@ -14,8 +14,10 @@ class QueueTicketResource extends JsonResource
             'ticket_number' => $this->ticket_number,
             'status' => $this->status,
             'service_type' => $this->service_type,
+            'queue_type' => $this->queue_type,
             'queue_position' => $this->queue_position,
             'call_attempt' => $this->call_attempt,
+
             'priority' => [
                 'score' => $this->priority_score,
                 'category' => $this->priority_category,
@@ -28,6 +30,7 @@ class QueueTicketResource extends JsonResource
                     'is_bhw_endorsed' => $this->is_bhw_endorsed,
                 ],
             ],
+
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];

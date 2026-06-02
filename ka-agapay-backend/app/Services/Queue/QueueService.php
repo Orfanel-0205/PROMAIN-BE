@@ -281,10 +281,25 @@ class QueueService
         return $counter->refresh();
     }
 
-    private function formatTicketNumber(int $rhuId, string $serviceType, int $num): string
+  private function formatTicketNumber(int $rhuId, string $serviceType, int $num): string
     {
-        return "RHU{$rhuId}-{$serviceType}-" . now()->year . "-" . str_pad($num, 4, '0', STR_PAD_LEFT);
-    }
+        $serviceCodes = [
+            'opd_consultation' => 'OPD',
+            'prenatal_checkup' => 'PRE',
+            'immunization' => 'IMM',
+            'family_planning' => 'FP',
+        'tb_dots' => 'TB',
+        'laboratory' => 'LAB',
+        'dental' => 'DEN',
+        'emergency' => 'ER',
+        'medicine_release' => 'MED',
+        'bhw_assisted' => 'BHW',
+    ];
+
+    $code = $serviceCodes[$serviceType] ?? strtoupper(substr($serviceType, 0, 3));
+
+    return 'R' . $rhuId . '-' . $code . '-' . now()->format('ymd') . '-' . str_pad((string) $num, 4, '0', STR_PAD_LEFT);
+}
 
     private function computeQueuePosition(int $rhuId, string $serviceType, int $score): int
     {

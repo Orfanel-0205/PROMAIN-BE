@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Telemedicine\CreateTelemedicineRequestRequest;
 use App\Http\Requests\Telemedicine\ScreenTelemedicineRequestRequest;
 use App\Http\Resources\Telemedicine\TelemedicineRequestResource;
+use App\Models\Barangay;
 use App\Models\TelemedicineRequest;
 use App\Services\Telemedicine\TelemedicineService;
 use Illuminate\Http\JsonResponse;
@@ -19,50 +20,68 @@ class TelemedicineController extends Controller
     ) {}
 
     /**
-     * GET /telemedicine/requests
+     * GET /api/v1/telemedicine/requests
      */
     public function index(Request $request): AnonymousResourceCollection
     {
-        $this->authorize('viewAny', TelemedicineRequest::class);
-
-        $request->validate([
-            'rhu_id'        => ['required', 'integer', 'exists:barangays,barangay_id'],
+        $validated = $request->validate([
+            'rhu_id'        => ['nullable', 'integer', 'exists:barangays,barangay_id'],
             'status'        => ['nullable', 'string'],
             'urgency_level' => ['nullable', 'string'],
             'date'          => ['nullable', 'date'],
             'per_page'      => ['nullable', 'integer', 'min:5', 'max:100'],
         ]);
 
+        $rhuId = $validated['rhu_id']
+            ?? Barangay::query()->orderBy('barangay_id')->value('barangay_id');
+
         $requests = TelemedicineRequest::with([
                 'residentProfile.user',
                 'residentProfile.barangay',
+                'requestedBy',
+                'endorsedByBhw',
                 'rhu',
                 'screenedBy',
-                'session',
+                'queueTicket',
+                'session.assignedDoctor',
+                'session.bhwCompanion',
             ])
-            ->forRhu($request->integer('rhu_id'))
+            ->when($rhuId, fn ($query) => $query->forRhu((int) $rhuId))
             ->when(
-                $request->filled('status'),
-                fn($q) => $q->where('status', $request->status)
+                $request->filled('status') && $request->status !== 'all',
+                fn ($query) => $query->where('status', $request->status)
             )
             ->when(
                 $request->filled('urgency_level'),
-                fn($q) => $q->where('urgency_level', $request->urgency_level)
+                fn ($query) => $query->where('urgency_level', $request->urgency_level)
+            )
+            ->when(
+                $request->filled('date'),
+                fn ($query) => $query->whereDate('created_at', $request->date)
             )
             ->latest()
-            ->paginate($request->integer('per_page', 20));
+            ->paginate($request->integer('per_page', 50));
 
         return TelemedicineRequestResource::collection($requests);
     }
 
     /**
-     * POST /telemedicine/requests
+     * POST /api/v1/telemedicine/requests
      */
     public function store(CreateTelemedicineRequestRequest $request): JsonResponse
     {
         $telemedicineRequest = $this->service->createRequest(
             $request->validated()
         );
+
+        $telemedicineRequest->load([
+            'residentProfile.user',
+            'residentProfile.barangay',
+            'requestedBy',
+            'rhu',
+            'queueTicket',
+            'session.assignedDoctor',
+        ]);
 
         return response()->json([
             'message' => 'Telemedicine request submitted successfully.',
@@ -71,12 +90,10 @@ class TelemedicineController extends Controller
     }
 
     /**
-     * GET /telemedicine/requests/{request}
+     * GET /api/v1/telemedicine/requests/{request}
      */
     public function show(TelemedicineRequest $request): JsonResponse
     {
-        $this->authorize('view', $request);
-
         $request->load([
             'residentProfile.user',
             'residentProfile.barangay',
@@ -85,7 +102,10 @@ class TelemedicineController extends Controller
             'screenedBy',
             'rhu',
             'queueTicket',
-            'session',
+            'session.assignedDoctor',
+            'session.bhwCompanion',
+            'session.notes',
+            'session.referrals',
         ]);
 
         return response()->json([
@@ -94,18 +114,27 @@ class TelemedicineController extends Controller
     }
 
     /**
-     * PATCH /telemedicine/requests/{request}/screen
+     * PATCH /api/v1/telemedicine/requests/{request}/screen
      */
     public function screen(
         ScreenTelemedicineRequestRequest $httpRequest,
         TelemedicineRequest $request
     ): JsonResponse {
-        $this->authorize('screen', $request);
-
         $result = $this->service->screenRequest(
             $request,
             $httpRequest->validated()
         );
+
+        $result->load([
+            'residentProfile.user',
+            'residentProfile.barangay',
+            'requestedBy',
+            'screenedBy',
+            'rhu',
+            'queueTicket',
+            'session.assignedDoctor',
+            'session.bhwCompanion',
+        ]);
 
         return response()->json([
             'message' => 'Request screened successfully.',
@@ -114,14 +143,12 @@ class TelemedicineController extends Controller
     }
 
     /**
-     * DELETE /telemedicine/requests/{request}
+     * DELETE /api/v1/telemedicine/requests/{telemedicineRequest}
      */
     public function destroy(
         Request $request,
         TelemedicineRequest $telemedicineRequest
     ): JsonResponse {
-        $this->authorize('cancel', $telemedicineRequest);
-
         $request->validate([
             'cancellation_reason' => ['required', 'string', 'max:500'],
         ]);
@@ -138,7 +165,7 @@ class TelemedicineController extends Controller
     }
 
     /**
-     * GET /telemedicine/requests/mine
+     * GET /api/v1/telemedicine/requests/mine
      */
     public function mine(Request $request): AnonymousResourceCollection
     {
@@ -146,7 +173,12 @@ class TelemedicineController extends Controller
 
         abort_if(!$resident, 404, 'Resident profile not found.');
 
-        $requests = TelemedicineRequest::with(['rhu', 'session'])
+        $requests = TelemedicineRequest::with([
+                'rhu',
+                'queueTicket',
+                'session.assignedDoctor',
+                'session.bhwCompanion',
+            ])
             ->where('resident_profile_id', $resident->id)
             ->latest()
             ->paginate(15);

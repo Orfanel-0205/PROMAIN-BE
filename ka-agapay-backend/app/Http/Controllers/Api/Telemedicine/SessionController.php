@@ -21,18 +21,56 @@ class SessionController extends Controller
     ) {}
 
     /**
-     * POST /telemedicine/requests/{request}/session
+     * GET /api/v1/telemedicine/sessions
+     */
+    public function index(Request $request): AnonymousResourceCollection
+    {
+        $user = $request->user();
+
+        $sessions = TelemedicineSession::with([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
+                'assignedDoctor',
+                'bhwCompanion',
+                'notes.recordedBy',
+                'referrals',
+            ])
+            ->where(function ($query) use ($user) {
+                $query->where('assigned_doctor_id', $user->user_id)
+                    ->orWhereHas('request', function ($requestQuery) use ($user) {
+                        $requestQuery->where('requested_by', $user->user_id)
+                            ->orWhereHas('residentProfile', function ($profileQuery) use ($user) {
+                                $profileQuery->where('user_id', $user->user_id);
+                            });
+                    });
+            })
+            ->latest()
+            ->paginate(20);
+
+        return TelemedicineSessionResource::collection($sessions);
+    }
+
+    /**
+     * POST /api/v1/telemedicine/requests/{telemedicineRequest}/session
      */
     public function store(
         ScheduleSessionRequest $request,
         TelemedicineRequest $telemedicineRequest
     ): JsonResponse {
-        $this->authorize('createSession', $telemedicineRequest);
-
         $session = $this->service->createSession(
             $telemedicineRequest,
             $request->validated()
         );
+
+        $session->load([
+            'request.residentProfile.user',
+            'request.rhu',
+            'assignedDoctor',
+            'bhwCompanion',
+            'notes',
+            'referrals',
+        ]);
 
         return response()->json([
             'message' => 'Telemedicine session scheduled.',
@@ -41,15 +79,16 @@ class SessionController extends Controller
     }
 
     /**
-     * GET /telemedicine/sessions/{session}
+     * GET /api/v1/telemedicine/sessions/{session}
      */
     public function show(TelemedicineSession $session): JsonResponse
     {
-        $this->authorize('view', $session);
-
         $session->load([
             'request.residentProfile.user',
+            'request.residentProfile.barangay',
+            'request.rhu',
             'assignedDoctor',
+            'bhwCompanion',
             'notes.recordedBy',
             'referrals',
         ]);
@@ -60,19 +99,26 @@ class SessionController extends Controller
     }
 
     /**
-     * PATCH /telemedicine/sessions/{session}/status
+     * PATCH /api/v1/telemedicine/sessions/{session}/status
      */
     public function updateStatus(
         UpdateSessionStatusRequest $request,
         TelemedicineSession $session
     ): JsonResponse {
-        $this->authorize('updateStatus', $session);
-
         $session = $this->service->transitionSessionStatus(
             $session,
             $request->status,
             $request->validated()
         );
+
+        $session->load([
+            'request.residentProfile.user',
+            'request.rhu',
+            'assignedDoctor',
+            'bhwCompanion',
+            'notes',
+            'referrals',
+        ]);
 
         return response()->json([
             'message' => 'Session status updated.',
@@ -81,14 +127,12 @@ class SessionController extends Controller
     }
 
     /**
-     * PUT /telemedicine/sessions/{session}/notes
+     * PUT /api/v1/telemedicine/sessions/{session}/notes
      */
     public function saveNotes(
         SaveSessionNotesRequest $request,
         TelemedicineSession $session
     ): JsonResponse {
-        $this->authorize('saveNotes', $session);
-
         $notes = $this->service->saveNotes(
             $session,
             $request->validated()
@@ -101,13 +145,15 @@ class SessionController extends Controller
     }
 
     /**
-     * GET /telemedicine/sessions/mine
+     * GET /api/v1/telemedicine/sessions/mine
      */
     public function mine(Request $request): AnonymousResourceCollection
     {
         $sessions = TelemedicineSession::with([
                 'request.residentProfile.user',
                 'request.rhu',
+                'assignedDoctor',
+                'bhwCompanion',
             ])
             ->where('assigned_doctor_id', $request->user()->user_id)
             ->latest()

@@ -20,6 +20,7 @@ class QueueTicket extends Model
         'issued_by',
         'served_by',
         'service_type',
+        'queue_type',
         'priority_score',
         'priority_category',
         'is_senior',
@@ -43,20 +44,18 @@ class QueueTicket extends Model
     ];
 
     protected $casts = [
-        'is_senior'       => 'boolean',
-        'is_pregnant'     => 'boolean',
-        'is_pwd'          => 'boolean',
-        'is_pediatric'    => 'boolean',
-        'is_emergency'    => 'boolean',
-        'is_bhw_endorsed' => 'boolean',
-        'issued_at'       => 'datetime',
-        'called_at'       => 'datetime',
+        'is_senior'          => 'boolean',
+        'is_pregnant'        => 'boolean',
+        'is_pwd'             => 'boolean',
+        'is_pediatric'       => 'boolean',
+        'is_emergency'       => 'boolean',
+        'is_bhw_endorsed'    => 'boolean',
+        'issued_at'          => 'datetime',
+        'called_at'          => 'datetime',
         'service_started_at' => 'datetime',
         'service_ended_at'   => 'datetime',
-        'cancelled_at'    => 'datetime',
+        'cancelled_at'       => 'datetime',
     ];
-
-    // --- Relationships ---
 
     public function residentProfile(): BelongsTo
     {
@@ -70,25 +69,23 @@ class QueueTicket extends Model
 
     public function rhu(): BelongsTo
     {
-        return $this->belongsTo(Barangay::class, 'rhu_id');
+        return $this->belongsTo(Barangay::class, 'rhu_id', 'barangay_id');
     }
 
     public function issuedBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'issued_by');
+        return $this->belongsTo(User::class, 'issued_by', 'user_id');
     }
 
     public function servedBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'served_by');
+        return $this->belongsTo(User::class, 'served_by', 'user_id');
     }
 
     public function logs(): HasMany
     {
         return $this->hasMany(QueueLog::class, 'queue_ticket_id');
     }
-
-    // --- Scopes ---
 
     public function scopeWaiting($query)
     {
@@ -112,11 +109,8 @@ class QueueTicket extends Model
 
     public function scopePrioritized($query)
     {
-        // High priority score first, then FIFO on issued_at
         return $query->orderByDesc('priority_score')->orderBy('issued_at');
     }
-
-    // --- Helpers ---
 
     public function isTerminal(): bool
     {

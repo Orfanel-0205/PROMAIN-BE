@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Appointment extends Model
 {
@@ -39,5 +40,20 @@ class Appointment extends Model
     public function handler(): BelongsTo
     {
         return $this->belongsTo(User::class, 'handled_by', 'user_id');
+    }
+
+    public function consultation(): HasOne
+    {
+        return $this->hasOne(Consultation::class, 'appointment_id');
+    }
+
+    public function telemedicineRequest(): HasOne
+    {
+        return $this->hasOne(TelemedicineRequest::class, 'appointment_id');
+    }
+
+    public function queueTicket(): HasOne
+    {
+        return $this->hasOne(QueueTicket::class, 'appointment_id');
     }
 }

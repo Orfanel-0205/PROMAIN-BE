@@ -163,21 +163,13 @@ Route::prefix('v1')->group(function () {
         // CONSULTATIONS — MOBILE PATIENT
         // =====================================================================
 
-        Route::get('/consultations',       [ConsultationController::class, 'mine']);
-        Route::get('/consultations/all',   [ConsultationController::class, 'mine']);
-        Route::get('/consultations/{id}',  [ConsultationController::class, 'mineShow']);
+        Route::get('/consultations',      [ConsultationController::class, 'mine']);
+        Route::get('/consultations/all',  [ConsultationController::class, 'mine']);
+        Route::get('/consultations/{id}', [ConsultationController::class, 'mineShow']);
 
         // =====================================================================
         // APPOINTMENTS — MOBILE PATIENT ONLY FOR NOW
         // =====================================================================
-        //
-        // These are the only appointment routes needed for testing:
-        // - patient creates appointment
-        // - patient views own appointments
-        // - patient views appointment details
-        // - patient cancels appointment
-        //
-        // Admin appointment routes are intentionally removed for now.
 
         Route::prefix('appointments')->group(function () {
             Route::get('/',              [AppointmentController::class, 'index']);
@@ -192,27 +184,23 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
         // ADMIN CONSULTATIONS — WEB ADMIN
         // =====================================================================
-        //
-        // Keeping consultation admin routes here because they are separate from
-        // the mobile appointment test. Do not test these yet if your goal is
-        // only patient appointment posting/listing.
 
-       Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
-    ->prefix('admin')
-    ->group(function () {
-        // ADMIN APPOINTMENTS
-        Route::get('/appointments', [AppointmentController::class, 'adminIndex']);
-        Route::get('/appointments/{id}', [AppointmentController::class, 'adminShow']);
-        Route::patch('/appointments/{id}/status', [AppointmentController::class, 'adminUpdateStatus']);
-        Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
+        Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
+            ->prefix('admin')
+            ->group(function () {
+                // ADMIN APPOINTMENTS
+                Route::get('/appointments',                       [AppointmentController::class, 'adminIndex']);
+                Route::get('/appointments/{id}',                  [AppointmentController::class, 'adminShow']);
+                Route::patch('/appointments/{id}/status',         [AppointmentController::class, 'adminUpdateStatus']);
+                Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
 
-        // ADMIN CONSULTATIONS
-        Route::get('/consultations', [ConsultationController::class, 'index']);
-        Route::post('/consultations', [ConsultationController::class, 'store']);
-        Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
-        Route::put('/consultations/{id}/soap', [ConsultationController::class, 'updateSoap']);
-        Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
-    });
+                // ADMIN CONSULTATIONS
+                Route::get('/consultations',                [ConsultationController::class, 'index']);
+                Route::post('/consultations',               [ConsultationController::class, 'store']);
+                Route::get('/consultations/{id}',           [ConsultationController::class, 'show']);
+                Route::put('/consultations/{id}/soap',      [ConsultationController::class, 'updateSoap']);
+                Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
+            });
 
         // =====================================================================
         // PROGRAMS / EVENTS — MOBILE / RESIDENT SIDE
@@ -251,28 +239,23 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('telemedicine')->group(function () {
-            Route::get('/sessions',                     [SessionController::class, 'index']);
-            Route::get('/sessions/{id}',                [SessionController::class, 'show']);
-            Route::patch('/sessions/{id}/status',       [SessionController::class, 'updateStatus']);
-            Route::put('/sessions/{id}/notes',          [SessionController::class, 'saveNotes']);
-            Route::post('/sessions/{id}/prescriptions', [SessionController::class, 'issuePrescription']);
-            Route::post('/sessions/{id}/referrals',     [SessionController::class, 'issueReferral']);
-            Route::post('/sessions/{id}/transcribe',    [SessionController::class, 'transcribe']);
-            Route::post('/sessions/{id}/summarize',     [SessionController::class, 'summarize']);
+            Route::get('/sessions', [SessionController::class, 'index']);
+            Route::get('/sessions/{session}', [SessionController::class, 'show']);
+            Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
+            Route::put('/sessions/{session}/notes', [SessionController::class, 'saveNotes']);
 
-            Route::get('/requests',               [TelemedicineController::class, 'indexRequests']);
-            Route::post('/requests',              [TelemedicineController::class, 'createRequest']);
-            Route::get('/requests/mine',          [TelemedicineController::class, 'myRequests']);
-            Route::get('/requests/{id}',          [TelemedicineController::class, 'showRequest']);
-            Route::patch('/requests/{id}/screen', [TelemedicineController::class, 'screenRequest']);
-            Route::delete('/requests/{id}',       [TelemedicineController::class, 'cancelRequest']);
+            Route::get('/requests', [TelemedicineController::class, 'index']);
+            Route::post('/requests', [TelemedicineController::class, 'store']);
+            Route::get('/requests/mine', [TelemedicineController::class, 'mine']);
+            Route::get('/requests/{request}', [TelemedicineController::class, 'show']);
+            Route::patch('/requests/{request}/screen', [TelemedicineController::class, 'screen']);
+            Route::delete('/requests/{telemedicineRequest}', [TelemedicineController::class, 'destroy']);
 
-            Route::post('/requests/{id}/session', [SessionController::class, 'create']);
+            Route::post('/requests/{telemedicineRequest}/session', [SessionController::class, 'store']);
 
-            Route::get('/sessions/{id}/join',           [WebRtcController::class, 'getJoinToken']);
-            Route::post('/sessions/{id}/signal',        [WebRtcController::class, 'signal']);
-            Route::get('/sessions/{id}/signals',        [WebRtcController::class, 'getSignals']);
-            Route::post('/sessions/{id}/ice-candidate', [WebRtcController::class, 'iceCandidate']);
+            Route::get('/sessions/{id}/join', [WebRtcController::class, 'getJoinToken']);
+            Route::post('/sessions/{id}/signal', [WebRtcController::class, 'signal']);
+            Route::get('/sessions/{id}/signals', [WebRtcController::class, 'getSignals']);
         });
 
         // =====================================================================
