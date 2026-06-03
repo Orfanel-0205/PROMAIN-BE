@@ -16,8 +16,8 @@ php artisan optimize:clear || true
 echo "Creating storage link..."
 php artisan storage:link || true
 
-echo "Running database migrations..."
-php artisan migrate --force
+echo "Skipping database migrations on Render startup..."
+# php artisan migrate --force
 
 echo "Caching Laravel config..."
 php artisan config:cache
