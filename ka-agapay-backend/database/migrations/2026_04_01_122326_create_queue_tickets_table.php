@@ -1,5 +1,5 @@
 <?php
-
+//migrations/2026_04_01_122326_create_queue_tickets_table
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

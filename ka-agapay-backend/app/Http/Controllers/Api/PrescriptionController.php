@@ -1,201 +1,259 @@
 <?php
-// app/Http/Controllers/Api/PrescriptionController.php
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Prescription\IssuePrescriptionRequest;
-use App\Http\Requests\Prescription\DispensePrescriptionRequest;
-use App\Http\Requests\Prescription\VoidPrescriptionRequest;
-use App\Http\Resources\Prescription\PrescriptionResource;
-use App\Models\Prescription;
-use App\Services\Prescription\PrescriptionService;
-use App\Services\Audit\AuditActions;
-use App\Services\Audit\AuditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class PrescriptionController extends Controller
 {
-    public function __construct(
-        private readonly PrescriptionService $service,
-        private readonly AuditService        $audit
-    ) {}
-
-    /**
-     * GET /api/v1/prescriptions
-     * Staff/admin — full list with filters.
-     */
     public function index(Request $request): JsonResponse
     {
-        abort_unless(
-            $request->user()->hasAnyRole(['mho', 'super_admin', 'staff_admin']),
-            403
-        );
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
 
-        $request->validate([
-            'resident_profile_id' => ['nullable', 'integer'],
-            'status'              => ['nullable', 'in:' . implode(',', Prescription::STATUSES)],
-            'rhu_id'              => ['nullable', 'integer'],
-            'from'                => ['nullable', 'date'],
-            'to'                  => ['nullable', 'date'],
-            'controlled_only'     => ['nullable', 'boolean'],
-            'per_page'            => ['nullable', 'integer', 'min:5', 'max:100'],
-        ]);
+        $query = DB::table('prescriptions as p')
+            ->leftJoin('resident_profiles as rp', 'rp.id', '=', 'p.resident_profile_id')
+            ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
+            ->leftJoin('users as d', 'd.user_id', '=', 'p.prescribed_by')
+            ->selectRaw("p.*, CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as patient_name")
+            ->selectRaw("CONCAT(COALESCE(d.first_name, ''), ' ', COALESCE(d.last_name, '')) as prescriber_name");
 
-        $prescriptions = Prescription::with([
-                'residentProfile.user',
-                'prescribedBy',
-                'dispensedBy',
-            ])
-            ->when(fn() => $request->filled('resident_profile_id'),
-                fn($q) => $q->forResident($request->integer('resident_profile_id')))
-            ->when(fn() => $request->filled('status'),
-                fn($q) => $q->where('status', $request->status))
-            ->when(fn() => $request->filled('rhu_id'),
-                fn($q) => $q->forRhu($request->integer('rhu_id')))
-            ->when(fn() => $request->filled('from'),
-                fn($q) => $q->where('prescription_date', '>=', $request->from))
-            ->when(fn() => $request->filled('to'),
-                fn($q) => $q->where('prescription_date', '<=', $request->to))
-            ->when(fn() => $request->boolean('controlled_only'),
-                fn($q) => $q->controlled())
-            ->latest('prescription_date')
-            ->paginate($request->integer('per_page', 20));
+        if ($request->filled('status')) {
+            $query->where('p.status', $request->query('status'));
+        }
+        if ($request->filled('consultation_id')) {
+            $query->where('p.consultation_id', $request->integer('consultation_id'));
+        }
+        if ($request->filled('resident_profile_id')) {
+            $query->where('p.resident_profile_id', $request->integer('resident_profile_id'));
+        }
 
-        return response()->json(
-            PrescriptionResource::collection($prescriptions)->response()->getData()
-        );
+        $rows = $query->latest('p.prescription_date')->paginate($request->integer('per_page', 20));
+
+        $rows->getCollection()->transform(fn ($row) => $this->formatPrescription($row));
+
+        return response()->json($rows);
     }
 
-    /**
-     * POST /api/v1/prescriptions
-     * MHO / doctor issues a new prescription.
-     */
-    public function store(IssuePrescriptionRequest $request): JsonResponse
+    public function store(Request $request): JsonResponse
     {
-        $prescription = $this->service->issue($request->validated());
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+
+        $validated = $request->validate([
+            'resident_profile_id' => ['required', 'integer'],
+            'consultation_id' => ['nullable', 'integer'],
+            'telemedicine_session_id' => ['nullable', 'integer'],
+            'rhu_id' => ['nullable', 'integer'],
+            'diagnosis' => ['nullable', 'string', 'max:1000'],
+            'diagnosis_code' => ['nullable', 'string', 'max:20'],
+            'medications' => ['required', 'array', 'min:1'],
+            'additional_instructions' => ['nullable', 'string', 'max:2000'],
+            'dispensing_notes' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $user = $request->user();
+        $rhuId = (int) ($validated['rhu_id'] ?? $user->barangay_id ?? 1);
+        $number = $this->nextPrescriptionNumber($rhuId);
+        $pdfPath = 'prescriptions/manual/' . $number . '.pdf';
+
+        Storage::disk('public')->put($pdfPath, $this->buildPdf([
+            'Prescription No' => $number,
+            'Date' => now()->format('Y-m-d'),
+            'Diagnosis' => $validated['diagnosis'] ?? 'Not specified',
+            'Medicines' => $this->medicinesToText($validated['medications']),
+            'Instructions' => $validated['additional_instructions'] ?? '',
+            'Prescriber ID' => (string) ($user->user_id ?? $user->id),
+        ]));
+
+        $id = DB::table('prescriptions')->insertGetId([
+            'resident_profile_id' => $validated['resident_profile_id'],
+            'prescribed_by' => $user->user_id ?? $user->id,
+            'consultation_id' => $validated['consultation_id'] ?? null,
+            'telemedicine_session_id' => $validated['telemedicine_session_id'] ?? null,
+            'prescription_number' => $number,
+            'rhu_id' => $rhuId,
+            'prescription_date' => now()->toDateString(),
+            'valid_until' => now()->addDays(7)->toDateString(),
+            'diagnosis' => $validated['diagnosis'] ?? null,
+            'diagnosis_code' => $validated['diagnosis_code'] ?? null,
+            'medications' => json_encode($validated['medications']),
+            'has_controlled_substances' => collect($validated['medications'])->contains(fn ($m) => (bool) ($m['is_controlled'] ?? false)),
+            'additional_instructions' => $validated['additional_instructions'] ?? null,
+            'dispensing_notes' => $validated['dispensing_notes'] ?? null,
+            'status' => 'active',
+            'file_path' => $pdfPath,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         return response()->json([
             'message' => 'Prescription issued successfully.',
-            'data'    => new PrescriptionResource($prescription),
+            'data' => $this->formatPrescription(DB::table('prescriptions')->where('id', $id)->first()),
         ], 201);
     }
 
-    /**
-     * GET /api/v1/prescriptions/{prescription}
-     * Full prescription detail.
-     */
-    public function show(Request $request, Prescription $prescription): JsonResponse
+    public function show(int $id): JsonResponse
     {
-        $this->authorizeView($request, $prescription);
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        $row = DB::table('prescriptions')->where('id', $id)->first();
+        abort_unless($row, 404, 'Prescription not found.');
 
-        $prescription->load([
-            'residentProfile.user',
-            'residentProfile.barangay',
-            'prescribedBy',
-            'dispensedBy',
-            'voidedBy',
-            'consultation',
-            'telemedicineSession',
-            'dispensingLogs.dispensedBy',
+        return response()->json(['data' => $this->formatPrescription($row)]);
+    }
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+
+        $validated = $request->validate([
+            'status' => ['nullable', 'string', 'max:30'],
+            'diagnosis' => ['nullable', 'string', 'max:1000'],
+            'medications' => ['nullable', 'array'],
+            'additional_instructions' => ['nullable', 'string', 'max:2000'],
+            'dispensing_notes' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        // Log PHI access
-        $this->audit->info(AuditActions::RECORD_VIEWED, 'prescription', [
-            'subject'       => $prescription,
-            'subject_label' => $prescription->getAuditLabel(),
+        $updates = collect($validated)
+            ->map(fn ($v, $k) => $k === 'medications' ? json_encode($v) : $v)
+            ->all();
+        $updates['updated_at'] = now();
+
+        DB::table('prescriptions')->where('id', $id)->update($updates);
+
+        return $this->show($id);
+    }
+
+    public function destroy(int $id): JsonResponse
+    {
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+
+        DB::table('prescriptions')->where('id', $id)->update([
+            'status' => 'cancelled',
+            'updated_at' => now(),
         ]);
 
-        return response()->json(['data' => new PrescriptionResource($prescription)]);
+        return response()->json(['message' => 'Prescription cancelled.']);
     }
 
     /**
-     * GET /api/v1/prescriptions/mine
-     * Resident sees their own prescriptions.
+     * GET /api/v1/prescriptions/{prescription}/pdf
      */
-    public function mine(Request $request): JsonResponse
+    public function downloadPdf(int $id)
     {
-        $resident = $request->user()->residentProfile;
-        abort_unless($resident, 404, 'No resident profile found.');
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        $row = DB::table('prescriptions')->where('id', $id)->first();
+        abort_unless($row, 404, 'Prescription not found.');
 
-        $prescriptions = Prescription::with(['prescribedBy', 'dispensedBy'])
-            ->forResident($resident->id)
-            ->latest('prescription_date')
-            ->paginate(15);
-
-        return response()->json(
-            PrescriptionResource::collection($prescriptions)->response()->getData()
-        );
-    }
-
-    /**
-     * POST /api/v1/prescriptions/{prescription}/dispense
-     * Staff marks a prescription as dispensed.
-     */
-    public function dispense(
-        DispensePrescriptionRequest $request,
-        Prescription $prescription
-    ): JsonResponse {
-        $prescription = $this->service->dispense($prescription, $request->validated());
-
-        return response()->json([
-            'message' => 'Prescription dispensed successfully.',
-            'data'    => new PrescriptionResource($prescription),
-        ]);
-    }
-
-    /**
-     * PATCH /api/v1/prescriptions/{prescription}/void
-     * MHO voids a prescription with a reason.
-     */
-    public function void(VoidPrescriptionRequest $request, Prescription $prescription): JsonResponse
-    {
-        $prescription = $this->service->void($prescription, $request->void_reason);
-
-        return response()->json([
-            'message' => 'Prescription voided.',
-            'data'    => new PrescriptionResource($prescription),
-        ]);
-    }
-
-    /**
-     * GET /api/v1/prescriptions/resident/{residentProfileId}
-     * Admin/staff views all prescriptions for a specific resident.
-     */
-    public function forResident(Request $request, int $residentProfileId): JsonResponse
-    {
-        abort_unless(
-            $request->user()->hasAnyRole(['mho', 'super_admin', 'staff_admin']),
-            403
-        );
-
-        $prescriptions = Prescription::with(['prescribedBy', 'dispensedBy'])
-            ->forResident($residentProfileId)
-            ->latest('prescription_date')
-            ->paginate(20);
-
-        return response()->json(
-            PrescriptionResource::collection($prescriptions)->response()->getData()
-        );
-    }
-
-    // ── Private ───────────────────────────────────────────────────────────────
-
-    private function authorizeView(Request $request, Prescription $prescription): void
-    {
-        $user = $request->user();
-
-        if ($user->hasAnyRole(['mho', 'super_admin', 'staff_admin'])) {
-            return;
+        $path = $row->file_path;
+        if ($path && Storage::disk('public')->exists($path)) {
+            return response(Storage::disk('public')->get($path), 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="' . ($row->prescription_number ?? 'prescription') . '.pdf"',
+            ]);
         }
 
-        // Resident can only see their own
-        $residentId = $user->residentProfile?->id;
-        abort_unless(
-            $residentId === $prescription->resident_profile_id,
-            403,
-            'You do not have permission to view this prescription.'
-        );
+        $pdf = $this->buildPdf([
+            'Prescription No' => $row->prescription_number ?? ('RX-' . $row->id),
+            'Date' => $row->prescription_date ?? now()->format('Y-m-d'),
+            'Diagnosis' => $row->diagnosis ?? 'Not specified',
+            'Medicines' => $this->medicinesToText($this->decodeMedications($row->medications ?? '[]')),
+        ]);
+
+        return response($pdf, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="prescription-' . $row->id . '.pdf"',
+        ]);
+    }
+
+    private function formatPrescription(object $row): array
+    {
+        $data = (array) $row;
+        $data['medications'] = $this->decodeMedications($row->medications ?? '[]');
+        $data['pdf_url'] = !empty($row->file_path) ? Storage::disk('public')->url($row->file_path) : null;
+        $data['pdf_endpoint'] = url('/api/v1/prescriptions/' . $row->id . '/pdf');
+        return $data;
+    }
+
+    private function decodeMedications(mixed $raw): array
+    {
+        if (is_array($raw)) {
+            return $raw;
+        }
+        $decoded = json_decode((string) $raw, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function nextPrescriptionNumber(int $rhuId): string
+    {
+        $prefix = 'RHU' . $rhuId . '-RX-' . now()->format('Y');
+        $count = DB::table('prescriptions')->where('prescription_number', 'like', $prefix . '%')->count() + 1;
+        return $prefix . '-' . str_pad((string) $count, 5, '0', STR_PAD_LEFT);
+    }
+
+    private function medicinesToText(array $medicines): string
+    {
+        if (empty($medicines)) {
+            return 'No medicines listed.';
+        }
+
+        return collect($medicines)->map(function ($med, $i) {
+            if (is_string($med)) {
+                return ($i + 1) . '. ' . $med;
+            }
+
+            return ($i + 1) . '. ' . ($med['name'] ?? 'Medicine')
+                . (!empty($med['dosage']) ? ' - ' . $med['dosage'] : '')
+                . (!empty($med['frequency']) ? ' - ' . $med['frequency'] : '')
+                . (!empty($med['duration']) ? ' - ' . $med['duration'] : '')
+                . (!empty($med['instructions']) ? ' - ' . $med['instructions'] : '');
+        })->implode("\n");
+    }
+
+    private function buildPdf(array $fields): string
+    {
+        $lines = ['Ka-Agapay E-Prescription', ''];
+        foreach ($fields as $key => $value) {
+            $valueLines = preg_split('/\r?\n/', (string) $value) ?: [''];
+            $lines[] = $key . ': ' . array_shift($valueLines);
+            foreach ($valueLines as $extra) {
+                $lines[] = '    ' . $extra;
+            }
+            $lines[] = '';
+        }
+
+        $stream = "BT\n/F1 12 Tf\n50 780 Td\n14 TL\n";
+        foreach ($lines as $line) {
+            $safe = str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], Str::limit($line, 100, ''));
+            $stream .= "({$safe}) Tj\nT*\n";
+        }
+        $stream .= "ET";
+
+        $objects = [
+            "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+            "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+            "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
+            "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+            "5 0 obj << /Length " . strlen($stream) . " >> stream\n{$stream}\nendstream endobj",
+        ];
+
+        $pdf = "%PDF-1.4\n";
+        $offsets = [0];
+        foreach ($objects as $object) {
+            $offsets[] = strlen($pdf);
+            $pdf .= $object . "\n";
+        }
+        $xref = strlen($pdf);
+        $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
+        for ($i = 1; $i <= count($objects); $i++) {
+            $pdf .= str_pad((string) $offsets[$i], 10, '0', STR_PAD_LEFT) . " 00000 n \n";
+        }
+        $pdf .= "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n{$xref}\n%%EOF";
+
+        return $pdf;
     }
 }

@@ -290,13 +290,17 @@ Route::prefix('v1')->group(function () {
         // AI
         // =====================================================================
 
-        Route::prefix('ai')->group(function () {
-            Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
-            Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
-            Route::get('/history',                   [AiController::class, 'history']);
-            Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
-            Route::post('/summarize-events',         [AiController::class, 'summarizeEvents']);
-        });
+       Route::prefix('ai')->group(function () {
+        Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
+        Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
+        Route::get('/history',                   [AiController::class, 'history']);
+        Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
+        Route::post('/summarize-events',         [AiController::class, 'summarizeEvents']);
+
+        // AI consultation / telemedicine SOAP summary
+        Route::post('/summarize-consultation/{id}', [AiController::class, 'summarizeConsultation']);
+        Route::post('/summarize-telemedicine-session/{id}', [AiController::class, 'summarizeTelemedicineSession']);
+       });
 
         // =====================================================================
         // CLINICAL STAFF
@@ -308,45 +312,46 @@ Route::prefix('v1')->group(function () {
             });
 
         // =====================================================================
-        // ANALYTICS
-        // =====================================================================
+// ANALYTICS
+// =====================================================================
 
-        Route::prefix('analytics')
-            ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
-            ->group(function () {
-                Route::get('/overview',                [AnalyticsController::class, 'overview']);
-                Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
-                Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
-                Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
-                Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
-                Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
-                Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
+Route::prefix('analytics')
+    ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
+    ->group(function () {
+        Route::get('/overview',                [AnalyticsController::class, 'overview']);
+        Route::get('/heatmap',                 [AnalyticsController::class, 'heatmap']);
+        Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
+        Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
+        Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
+        Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
+        Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
+        Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
 
-                Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
-                Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
-                Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);
-                Route::get('/disease-clusters', [AnalyticsController::class, 'diseaseClusters']);
+        Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
+        Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
+        Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);
+        Route::get('/disease-clusters', [AnalyticsController::class, 'diseaseClusters']);
 
-                Route::get('/outbreak-alerts', [
-                    AnalyticsController::class,
-                    'outbreakAlerts',
-                ]);
+        Route::get('/outbreak-alerts', [
+            AnalyticsController::class,
+            'outbreakAlerts',
+        ]);
 
-                Route::post('/outbreak-alerts/{id}/resolve', [
-                    AnalyticsController::class,
-                    'resolveAlert',
-                ]);
+        Route::post('/outbreak-alerts/{id}/resolve', [
+            AnalyticsController::class,
+                'resolveAlert',
+            ]);
 
-                Route::get('/priority-dashboard', [
-                    AnalyticsController::class,
-                    'priorityDashboard',
-                ]);
-            });
+           Route::get('/priority-dashboard', [
+                AnalyticsController::class,
+             'priorityDashboard',
+        ]);
+        });
 
         // =====================================================================
         // RESOURCES
         // =====================================================================
-
+        Route::get('/prescriptions/{id}/pdf', [PrescriptionController::class, 'downloadPdf']);
         Route::apiResource('prescriptions', PrescriptionController::class);
         Route::apiResource('referrals',     ReferralController::class);
         Route::apiResource('inventory',     InventoryController::class);

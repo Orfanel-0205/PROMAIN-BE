@@ -1,5 +1,5 @@
 <?php
-
+//2026_03_27_160721_create_resident_profiles_table
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

@@ -1,5 +1,5 @@
 <?php
-
+//app/models/Barangay.php
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;

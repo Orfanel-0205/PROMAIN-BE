@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_04_28_111913_create_inventory_items_table
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

@@ -1,396 +1,409 @@
 <?php
-// app/Http/Controllers/Api/OcrController.php
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Consultation;
-use App\Models\OcrResult;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
-use Intervention\Image\ImageManager;
-use Intervention\Image\Drivers\Gd\Driver;
+use Illuminate\Support\Str;
 
 class OcrController extends Controller
 {
-    // =========================================================================
-    // FLOW A — POST /ocr/upload
-    // Resident uploads a valid ID during or after registration.
-    // Extracts: name, birthdate, PhilHealth number, ID number.
-    // Auto-fills the profile and marks the account as ID-verified.
-    // =========================================================================
-
+    /**
+     * POST /api/v1/ocr/upload
+     * ID verification OCR. Keeps your mobile flow working.
+     */
     public function upload(Request $request): JsonResponse
     {
-        $request->validate([
-            'id_image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
-            'id_type'  => ['required', 'string', 'max:100'],
+        $validated = $request->validate([
+            'id_type' => ['required', 'string', 'max:100'],
+            'id_image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
         ]);
 
         $user = $request->user();
         $file = $request->file('id_image');
+        $path = $file->store('ocr/id-verification/' . ($user->user_id ?? $user->id), 'public');
+        $fullPath = Storage::disk('public')->path($path);
 
-        // Store file privately (not publicly accessible)
-        $path     = $file->store("id_uploads/{$user->user_id}");
-        $fullPath = storage_path("app/{$path}");
+        $text = $this->runOcr($fullPath, (string) $file->getMimeType());
+        $name = $this->extractName($text);
+        $birthdate = $this->extractBirthdate($text);
+        $idNumber = $this->extractIdNumber($text);
+        $philhealth = $this->extractPhilHealthNumber($text);
+        $verified = $this->validateOcr($text);
+        $confidence = $verified ? 90 : 40;
 
-        // Run OCR
-        $extractedText = $this->runOcr($fullPath, $file->getMimeType());
-        $couldRead     = $this->validateOcr($extractedText);
+        $ocrId = null;
+        if (Schema::hasTable('ocr_results')) {
+            $ocrId = DB::table('ocr_results')->insertGetId([
+                'user_id' => $user->user_id ?? $user->id,
+                'id_type' => $validated['id_type'],
+                'file_path' => $path,
+                'extracted_text' => $text,
+                'extracted_name' => $name,
+                'extracted_birthdate' => $birthdate,
+                'extracted_id_number' => $idNumber,
+                'confidence_score' => $confidence,
+                'status' => $verified ? 'approved' : 'failed',
+                'processed_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
 
-        // Extract the fields the registration form needs
-        $name        = $this->extractName($extractedText);
-        $birthdate   = $this->extractBirthdate($extractedText);
-        $idNumber    = $this->extractIdNumber($extractedText);
-        $philhealth  = $this->extractPhilHealthNumber($extractedText);
-
-        $confidence = $couldRead ? 90 : 40;
-
-        // Persist OCR result
-        $ocr = OcrResult::create([
-            'user_id'             => $user->user_id,
-            'id_type'             => $request->input('id_type'),
-            'file_path'           => $path,
-            'extracted_text'      => $extractedText,
-            'extracted_name'      => $name,
-            'extracted_birthdate' => $birthdate,
-            'extracted_id_number' => $idNumber,
-            'confidence_score'    => $confidence,
-            'status'              => $couldRead ? 'approved' : 'failed',
-            'processed_at'        => now(),
-        ]);
-
-        // Auto-fill user profile with the data OCR extracted
-        // Only overwrite fields that are still empty — don't stomp existing data
-        if ($couldRead) {
-            $updates = ['id_verified' => true];
-
-            if ($name && empty($user->first_name)) {
-                $parts = explode(' ', trim($name), 2);
-                $updates['first_name'] = $parts[0]          ?? $user->first_name;
-                $updates['last_name']  = $parts[1] ?? null  ?? $user->last_name;
+        if ($verified && Schema::hasTable('users')) {
+            $updates = [];
+            if (Schema::hasColumn('users', 'id_verified')) {
+                $updates['id_verified'] = true;
             }
-
-            if ($birthdate && empty($user->birthday)) {
-                $updates['birthday'] = $birthdate;
+            if ($name && Schema::hasColumn('users', 'first_name')) {
+                $parts = preg_split('/\s+/', trim($name), 2);
+                $updates['first_name'] = $parts[0] ?? null;
+                if (Schema::hasColumn('users', 'last_name')) {
+                    $updates['last_name'] = $parts[1] ?? ($user->last_name ?? '');
+                }
             }
-
-            // PhilHealth number goes to the resident profile if the relation exists
-            if ($philhealth) {
-                $user->residentProfile?->updateOrCreate(
-                    ['user_id' => $user->user_id],
-                    ['philhealth_number' => $philhealth]
-                );
+            if (!empty($updates)) {
+                DB::table('users')->where('user_id', $user->user_id ?? $user->id)->update($updates);
             }
-
-            $user->update($updates);
         }
 
         return response()->json([
-            'message'          => $couldRead
+            'message' => $verified
                 ? 'ID scanned successfully. Your information has been pre-filled.'
                 : 'Could not read the ID clearly. Please upload a clearer photo.',
-            'ocr_id'           => $ocr->id,
-            'status'           => $ocr->status,
-            'verified'         => $couldRead,
+            'ocr_id' => $ocrId,
+            'status' => $verified ? 'approved' : 'failed',
+            'verified' => $verified,
             'confidence_score' => $confidence,
-
-            // These go straight back to the mobile registration form
+            'extracted_text' => $text,
+            'extracted_name' => $name,
+            'birthdate' => $birthdate,
+            'id_number' => $idNumber,
             'auto_fill' => [
-                'full_name'        => $name,
-                'birthdate'        => $birthdate,
-                'id_number'        => $idNumber,
-                'philhealth_number'=> $philhealth,
+                'full_name' => $name,
+                'birthdate' => $birthdate,
+                'id_number' => $idNumber,
+                'philhealth_number' => $philhealth,
             ],
         ]);
     }
 
-    // =========================================================================
-    // FLOW B — POST /ocr/prescription/{consultationId}
-    // Called after a telemedicine consultation ends.
-    // Accepts a photo/scan of the prescription, converts to PDF or JPG,
-    // extracts the structured medicine list, links it to the consultation.
-    // =========================================================================
-
-    public function scanPrescription(Request $request, int $consultationId): JsonResponse
+    public function result(int $id): JsonResponse
     {
-        $request->validate([
-            'prescription_image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
-            'output_format'      => ['sometimes', 'in:jpg,pdf'],
-        ]);
-
-        $user         = $request->user();
-        $file         = $request->file('prescription_image');
-        $outputFormat = $request->input('output_format', 'pdf');
-
-        // Scope to this patient's own consultations only
-        $consultation = Consultation::where('id', $consultationId)
-            ->where('patient_id', $user->user_id)
-            ->firstOrFail();
-
-        // Store the original upload
-        $storagePath = "prescriptions/{$user->user_id}/{$consultationId}";
-        $rawPath     = $file->store($storagePath);
-        $fullPath    = storage_path("app/{$rawPath}");
-
-        // Convert to requested format (JPG or PDF)
-        $convertedPath = $this->convertPrescription($fullPath, $outputFormat, $storagePath);
-
-        // Run OCR to extract the medicine list
-        $extractedText = $this->runOcr($fullPath, $file->getMimeType());
-        $medicines     = $this->parsePrescription($extractedText);
-
-        // Attach prescription to the consultation record
-        $consultation->update([
-            'prescription_path'   => $convertedPath,
-            'prescription_format' => $outputFormat,
-            'prescription_medicines' => $medicines,
-        ]);
-
-        // Persist OCR result (audit trail)
-        OcrResult::create([
-            'user_id'        => $user->user_id,
-            'id_type'        => 'prescription',
-            'file_path'      => $convertedPath,
-            'extracted_text' => $extractedText,
-            'raw_ocr_response' => ['medicines' => $medicines],
-            'confidence_score' => empty($medicines) ? 40 : 85,
-            'status'         => empty($medicines) ? 'failed' : 'approved',
-            'processed_at'   => now(),
-        ]);
-
-        return response()->json([
-            'message'        => 'Prescription scanned and saved.',
-            'consultation_id'=> $consultationId,
-            'file_format'    => $outputFormat,
-            'download_url'   => route('prescription.download', $consultationId),
-            'medicines'      => $medicines,      // structured list for the app UI
-            'raw_text'       => $extractedText,
-        ]);
+        abort_unless(Schema::hasTable('ocr_results'), 404);
+        $row = DB::table('ocr_results')->where('id', $id)->first();
+        abort_unless($row, 404);
+        return response()->json(['data' => $row]);
     }
-
-    // =========================================================================
-    // RESULT — GET /ocr/result/{id}
-    // =========================================================================
-
-    public function result(Request $request, int $id): JsonResponse
-    {
-        $ocr = OcrResult::where('id', $id)
-            ->where('user_id', $request->user()->user_id)
-            ->firstOrFail();
-
-        return response()->json([
-            'ocr_id'           => $ocr->id,
-            'status'           => $ocr->status,
-            'verified'         => $ocr->status === 'approved',
-            'confidence_score' => $ocr->confidence_score,
-            'auto_fill' => [
-                'full_name'  => $ocr->extracted_name,
-                'birthdate'  => $ocr->extracted_birthdate,
-                'id_number'  => $ocr->extracted_id_number,
-            ],
-        ]);
-    }
-
-    // =========================================================================
-    // RETRY — POST /ocr/retry/{id}
-    // =========================================================================
 
     public function retry(Request $request, int $id): JsonResponse
     {
-        $ocr       = OcrResult::where('id', $id)
-            ->where('user_id', $request->user()->user_id)
-            ->firstOrFail();
-
-        $fullPath      = storage_path("app/{$ocr->file_path}");
-        $extractedText = $this->runOcr($fullPath, 'image/jpeg');
-        $couldRead     = $this->validateOcr($extractedText);
-
-        $ocr->update([
-            'extracted_text' => $extractedText,
-            'status'         => $couldRead ? 'approved' : 'failed',
-            'processed_at'   => now(),
-        ]);
-
-        if ($couldRead) {
-            $request->user()->update(['id_verified' => true]);
-        }
-
-        return response()->json([
-            'message'  => $couldRead ? 'Retry successful.' : 'Still could not read the ID.',
-            'status'   => $ocr->status,
-            'verified' => $couldRead,
-        ]);
-    }
-
-    // =========================================================================
-    // Private — OCR helpers
-    // =========================================================================
-
-    private function runOcr(string $filePath, string $mimeType): string
-    {
-        $processedPath = null;
-        try {
-            $processedPath = $this->preprocessImage($filePath);
-            $apiKey        = config('services.ocr_space.key');
-
-            $response = Http::timeout(60)
-                ->attach('file', file_get_contents($processedPath), 'image.jpg')
-                ->post('https://api.ocr.space/parse/image', [
-                    'apikey'    => $apiKey,
-                    'language'  => 'eng',
-                    'OCREngine' => 2,
-                    'isTable'   => false,
-                ]);
-
-            if (!$response->successful()) {
-                Log::warning('[OCR] non-200 from OCR.space', ['status' => $response->status()]);
-                return '';
-            }
-
-            return trim($response->json('ParsedResults.0.ParsedText') ?? '');
-
-        } catch (\Throwable $e) {
-            Log::error('[OCR] runOcr failed: ' . $e->getMessage());
-            return '';
-        } finally {
-            if ($processedPath && file_exists($processedPath) && $processedPath !== $filePath) {
-                @unlink($processedPath);
-            }
-        }
-    }
-
-    private function preprocessImage(string $filePath): string
-    {
-        if (strtolower(pathinfo($filePath, PATHINFO_EXTENSION)) === 'pdf') {
-            return $filePath;
-        }
-
-        $manager = new ImageManager(new Driver());
-        $image   = $manager->read($filePath);
-        $image->greyscale()->contrast(20)->brightness(5)->sharpen(15);
-
-        $tempDir = storage_path('app/temp');
-        if (!file_exists($tempDir)) {
-            mkdir($tempDir, 0755, true);
-        }
-
-        $tempPath = $tempDir . '/' . uniqid() . '.jpg';
-        $image->save($tempPath);
-        return $tempPath;
+        return $this->result($id);
     }
 
     /**
-     * Convert prescription image to JPG or PDF for download.
+     * POST /api/v1/ocr/prescription/{consultationId}
+     * Uploads prescription image/PDF, extracts medicines, generates PDF, and links it to consultation.
      */
-    private function convertPrescription(string $inputPath, string $format, string $storagePath): string
+    public function scanPrescription(Request $request, int $consultationId): JsonResponse
     {
-        $manager  = new ImageManager(new Driver());
-        $image    = $manager->read($inputPath);
-        $filename = uniqid('rx_') . '.' . $format;
-        $outPath  = storage_path("app/{$storagePath}/{$filename}");
+        $validated = $request->validate([
+            'prescription_image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
+            'diagnosis' => ['nullable', 'string', 'max:1000'],
+            'notes' => ['nullable', 'string', 'max:2000'],
+        ]);
 
-        if ($format === 'pdf') {
-            // Use FPDF/DomPDF if available; fallback: store as high-quality JPG
-            // and rename with .pdf so the browser downloads it correctly
-            $image->scale(width: 1240); // A4-ish width at 150dpi
-            $image->save($outPath);     // swap for PDF renderer if installed
-        } else {
-            $image->scale(width: 1240)->save($outPath);
+        abort_unless(Schema::hasTable('consultations'), 500, 'Consultations table is missing.');
+        abort_unless(Schema::hasTable('prescriptions'), 500, 'Prescriptions table is missing.');
+
+        $user = $request->user();
+        $consultation = DB::table('consultations')->where('id', $consultationId)->first();
+        abort_unless($consultation, 404, 'Consultation not found.');
+
+        $file = $request->file('prescription_image');
+        $folder = 'prescriptions/' . $consultationId;
+        $originalPath = $file->store($folder . '/uploads', 'public');
+        $fullPath = Storage::disk('public')->path($originalPath);
+
+        $extractedText = $this->runOcr($fullPath, (string) $file->getMimeType());
+        $medicines = $this->parsePrescription($extractedText);
+
+        $residentProfileId = $this->residentProfileId((int) $consultation->user_id);
+        $prescriptionNo = $this->nextPrescriptionNumber((int) ($user->barangay_id ?? 1));
+        $diagnosis = $validated['diagnosis'] ?? ($consultation->diagnosis ?? null);
+
+        $pdfPath = $folder . '/' . $prescriptionNo . '.pdf';
+        Storage::disk('public')->put($pdfPath, $this->buildPdf([
+            'Prescription No' => $prescriptionNo,
+            'Date' => now()->format('Y-m-d'),
+            'Patient ID' => (string) $consultation->user_id,
+            'Diagnosis' => $diagnosis ?: 'Not specified',
+            'Medicines' => $this->medicinesToText($medicines),
+            'Doctor / Staff ID' => (string) ($user->user_id ?? $user->id),
+            'Notes' => $validated['notes'] ?? '',
+        ]));
+
+        $prescriptionId = DB::table('prescriptions')->insertGetId([
+            'resident_profile_id' => $residentProfileId,
+            'prescribed_by' => $user->user_id ?? $user->id,
+            'consultation_id' => $consultationId,
+            'telemedicine_session_id' => null,
+            'prescription_number' => $prescriptionNo,
+            'rhu_id' => (int) ($user->barangay_id ?? 1),
+            'prescription_date' => now()->toDateString(),
+            'valid_until' => now()->addDays(7)->toDateString(),
+            'diagnosis' => $diagnosis,
+            'diagnosis_code' => null,
+            'medications' => json_encode($medicines),
+            'has_controlled_substances' => false,
+            'additional_instructions' => $validated['notes'] ?? null,
+            'dispensing_notes' => null,
+            'status' => 'active',
+            'file_path' => $pdfPath,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $consultationUpdates = [];
+        if (Schema::hasColumn('consultations', 'prescription_path')) {
+            $consultationUpdates['prescription_path'] = $pdfPath;
+        }
+        if (Schema::hasColumn('consultations', 'prescription_format')) {
+            $consultationUpdates['prescription_format'] = 'pdf';
+        }
+        if (Schema::hasColumn('consultations', 'prescription_medicines')) {
+            $consultationUpdates['prescription_medicines'] = json_encode($medicines);
+        }
+        if (!empty($consultationUpdates)) {
+            DB::table('consultations')->where('id', $consultationId)->update($consultationUpdates + ['updated_at' => now()]);
         }
 
-        return "{$storagePath}/{$filename}";
+        if (Schema::hasTable('ocr_results')) {
+            DB::table('ocr_results')->insert([
+                'user_id' => $user->user_id ?? $user->id,
+                'id_type' => 'prescription',
+                'file_path' => $originalPath,
+                'extracted_text' => $extractedText,
+                'raw_ocr_response' => json_encode(['medicines' => $medicines, 'pdf_path' => $pdfPath]),
+                'confidence_score' => $extractedText ? 85 : 25,
+                'status' => $extractedText ? 'approved' : 'failed',
+                'processed_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Prescription scanned and PDF generated.',
+            'data' => [
+                'prescription_id' => $prescriptionId,
+                'prescription_number' => $prescriptionNo,
+                'pdf_path' => $pdfPath,
+                'pdf_url' => Storage::disk('public')->url($pdfPath),
+                'original_path' => $originalPath,
+                'extracted_text' => $extractedText,
+                'medicines' => $medicines,
+            ],
+        ], 201);
+    }
+
+    private function runOcr(string $fullPath, string $mimeType): string
+    {
+        if (str_contains($mimeType, 'pdf')) {
+            return 'PDF uploaded. OCR text extraction is only available for images unless a PDF OCR engine is configured.';
+        }
+
+        $key = config('services.ocr_space.key') ?: env('OCR_SPACE_API_KEY');
+        if (!$key) {
+            return '';
+        }
+
+        try {
+            $response = Http::timeout(45)
+                ->attach('file', file_get_contents($fullPath), basename($fullPath))
+                ->post('https://api.ocr.space/parse/image', [
+                    'apikey' => $key,
+                    'language' => 'eng',
+                    'OCREngine' => 2,
+                    'isOverlayRequired' => 'false',
+                ]);
+
+            if (!$response->successful()) {
+                return '';
+            }
+
+            return trim((string) data_get($response->json(), 'ParsedResults.0.ParsedText', ''));
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     private function validateOcr(string $text): bool
     {
-        if (empty(trim($text))) return false;
-
-        $keywords = [
-            'name', 'student', 'license', 'passport', 'philippines',
-            'barangay', 'university', 'identification', 'republic',
-            'philhealth', 'rx', 'prescription', 'tablets', 'capsules',
-        ];
-
-        $matches = 0;
-        foreach ($keywords as $word) {
-            if (stripos($text, $word) !== false) $matches++;
-        }
-
-        return $matches >= 2;
+        return strlen(trim($text)) >= 20;
     }
-
-    // ── Extraction helpers ────────────────────────────────────────────────────
 
     private function extractName(string $text): ?string
     {
-        preg_match('/(?:Name|PANGALAN)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i', $text, $m);
-        return $m[1] ?? null;
+        if (preg_match('/(?:name|pangalan)[:\s]+([A-Z][A-Z\s,.-]{4,})/i', $text, $m)) {
+            return trim($m[1]);
+        }
+        $lines = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $text) ?: [])));
+        foreach ($lines as $line) {
+            if (preg_match('/^[A-Z][A-Z\s,.\'-]{5,}$/', $line) && !preg_match('/REPUBLIC|PHILIPPINES|CARD|LICENSE|IDENTIFICATION/i', $line)) {
+                return Str::title($line);
+            }
+        }
+        return null;
     }
 
     private function extractBirthdate(string $text): ?string
     {
-        preg_match('/\b(\d{2}[\/\-]\d{2}[\/\-]\d{4})\b/', $text, $m);
-        return $m[1] ?? null;
+        if (preg_match('/(?:birth|dob|date of birth)[:\s]*([0-9]{1,2}[\/\-.][0-9]{1,2}[\/\-.][0-9]{2,4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})/i', $text, $m)) {
+            return trim($m[1]);
+        }
+        return null;
     }
 
     private function extractIdNumber(string $text): ?string
     {
-        preg_match('/\b([A-Z0-9\-]{6,})\b(?=.*\d)/s', $text, $m);
-        return $m[1] ?? null;
+        if (preg_match('/(?:id|no\.?|number|pin)[:\s#-]*([A-Z0-9-]{5,})/i', $text, $m)) {
+            return trim($m[1]);
+        }
+        return null;
     }
 
-    /**
-     * Extracts PhilHealth number — format: 2 digits + hyphen + 9 digits + hyphen + 1 digit
-     * e.g. 01-234567890-1
-     */
     private function extractPhilHealthNumber(string $text): ?string
     {
-        preg_match(
-            '/(?:PhilHealth|PHIC)[:\s#]*(\d{2}[-\s]?\d{9}[-\s]?\d)/i',
-            $text,
-            $m
-        );
-
-        if (!empty($m[1])) return $m[1];
-
-        // Fallback: bare 12-digit number formatted as PhilHealth
-        preg_match('/\b(\d{2}-\d{9}-\d)\b/', $text, $m);
-        return $m[1] ?? null;
+        if (preg_match('/\b\d{2}-\d{9}-\d\b/', $text, $m)) {
+            return $m[0];
+        }
+        return null;
     }
 
-    /**
-     * Parse prescription text into a structured medicine list.
-     * Used by Flow B (telemedicine).
-     */
     private function parsePrescription(string $text): array
     {
+        $lines = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $text) ?: [])));
         $medicines = [];
 
-        preg_match_all(
-            '/(?:\d+\.\s*)?([A-Z][a-zA-Z]+(?:\s+[A-Z]?[a-zA-Z]+)*)\s+'
-            . '(\d+\s?(?:mg|mcg|g|ml|IU|units?))\s*'
-            . '(?:(Tab|Cap|Syrup|Susp|Inj|Cream|Oint|Drops?|Patch)\s+)?'
-            . '((?:OD|BID|TID|QID|PRN|q\d+h|once|twice|thrice|every\s+\d+\s+hours?)[^,\n]*)?'
-            . '(?:x\s*([\d]+\s+(?:days?|weeks?|months?)))?/i',
-            $text,
-            $matches,
-            PREG_SET_ORDER
-        );
+        foreach ($lines as $line) {
+            if (preg_match('/(tablet|tab|capsule|cap|syrup|mg|ml|ointment|drops|inject)/i', $line)) {
+                $medicines[] = [
+                    'name' => Str::limit($line, 120, ''),
+                    'dosage' => $this->matchOrNull('/\b\d+\s?(mg|ml|mcg|g)\b/i', $line),
+                    'frequency' => $this->matchOrNull('/\b(OD|BID|TID|QID|once|twice|daily|every\s+\d+\s+hours?)\b/i', $line),
+                    'duration' => $this->matchOrNull('/\b\d+\s?(day|days|week|weeks)\b/i', $line),
+                    'instructions' => $line,
+                ];
+            }
+        }
 
-        foreach ($matches as $m) {
+        if (empty($medicines) && trim($text) !== '') {
             $medicines[] = [
-                'name'      => trim($m[1]),
-                'dosage'    => trim($m[2]),
-                'form'      => trim($m[3] ?? ''),
-                'frequency' => trim($m[4] ?? ''),
-                'duration'  => trim($m[5] ?? ''),
+                'name' => 'See OCR extracted text',
+                'dosage' => null,
+                'frequency' => null,
+                'duration' => null,
+                'instructions' => Str::limit(trim($text), 500, ''),
             ];
         }
 
         return $medicines;
+    }
+
+    private function matchOrNull(string $pattern, string $text): ?string
+    {
+        return preg_match($pattern, $text, $m) ? $m[0] : null;
+    }
+
+    private function residentProfileId(int $userId): int
+    {
+        if (!Schema::hasTable('resident_profiles')) {
+            abort(500, 'Resident profiles table is missing.');
+        }
+
+        $profile = DB::table('resident_profiles')->where('user_id', $userId)->first();
+        if ($profile) {
+            return (int) $profile->id;
+        }
+
+        return (int) DB::table('resident_profiles')->insertGetId([
+            'user_id' => $userId,
+            'barangay_id' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function nextPrescriptionNumber(int $rhuId): string
+    {
+        $prefix = 'RHU' . $rhuId . '-RX-' . now()->format('Y');
+        $count = DB::table('prescriptions')->where('prescription_number', 'like', $prefix . '%')->count() + 1;
+        return $prefix . '-' . str_pad((string) $count, 5, '0', STR_PAD_LEFT);
+    }
+
+    private function medicinesToText(array $medicines): string
+    {
+        if (empty($medicines)) {
+            return 'No medicine text detected. Please verify manually.';
+        }
+
+        return collect($medicines)->map(function ($med, $index) {
+            return ($index + 1) . '. ' . ($med['name'] ?? 'Medicine')
+                . (!empty($med['dosage']) ? ' - ' . $med['dosage'] : '')
+                . (!empty($med['frequency']) ? ' - ' . $med['frequency'] : '')
+                . (!empty($med['duration']) ? ' - ' . $med['duration'] : '');
+        })->implode("\n");
+    }
+
+    /**
+     * Tiny dependency-free PDF generator for thesis/progress use.
+     * For production, replace with DomPDF or Snappy for prettier layout.
+     */
+    private function buildPdf(array $fields): string
+    {
+        $lines = ['Ka-Agapay E-Prescription', ''];
+        foreach ($fields as $key => $value) {
+            $valueLines = preg_split('/\r?\n/', (string) $value) ?: [''];
+            $lines[] = $key . ': ' . array_shift($valueLines);
+            foreach ($valueLines as $extra) {
+                $lines[] = '    ' . $extra;
+            }
+            $lines[] = '';
+        }
+
+        $stream = "BT\n/F1 12 Tf\n50 780 Td\n14 TL\n";
+        foreach ($lines as $line) {
+            $safe = str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], Str::limit($line, 100, ''));
+            $stream .= "({$safe}) Tj\nT*\n";
+        }
+        $stream .= "ET";
+
+        $objects = [];
+        $objects[] = "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj";
+        $objects[] = "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj";
+        $objects[] = "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj";
+        $objects[] = "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj";
+        $objects[] = "5 0 obj << /Length " . strlen($stream) . " >> stream\n{$stream}\nendstream endobj";
+
+        $pdf = "%PDF-1.4\n";
+        $offsets = [0];
+        foreach ($objects as $object) {
+            $offsets[] = strlen($pdf);
+            $pdf .= $object . "\n";
+        }
+        $xref = strlen($pdf);
+        $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
+        for ($i = 1; $i <= count($objects); $i++) {
+            $pdf .= str_pad((string) $offsets[$i], 10, '0', STR_PAD_LEFT) . " 00000 n \n";
+        }
+        $pdf .= "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n{$xref}\n%%EOF";
+
+        return $pdf;
     }
 }
