@@ -1,269 +1,341 @@
 <?php
+// app/Services/Ai/ClinicalSummaryService.php
 
 namespace App\Services\Ai;
 
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class ClinicalSummaryService
 {
+    /**
+     * Generates a SOAP-style clinical summary.
+     *
+     * This works even without Gemini/OpenAI.
+     * It uses rule-based extraction so the feature will not fail during demo.
+     */
     public function summarize(array $input): array
     {
-        $transcript = $this->cleanTranscript((string) ($input['transcript'] ?? ''));
+        $transcript = $this->clean($input['transcript'] ?? '');
+        $chiefComplaint = $this->clean($input['chief_complaint'] ?? '');
+        $existingSubjective = $this->clean($input['subjective'] ?? '');
+        $existingObjective = $this->clean($input['objective'] ?? '');
+        $existingAssessment = $this->clean($input['assessment'] ?? '');
+        $existingPlan = $this->clean($input['plan'] ?? '');
+        $existingDiagnosis = $this->clean($input['diagnosis'] ?? '');
+        $existingTreatment = $this->clean($input['treatment'] ?? '');
+        $existingNotes = $this->clean($input['notes'] ?? '');
 
-        $chiefComplaint = trim((string) ($input['chief_complaint'] ?? ''));
-        $subjective = trim((string) ($input['subjective'] ?? ''));
-        $objective = trim((string) ($input['objective'] ?? ''));
-        $assessment = trim((string) ($input['assessment'] ?? ''));
-        $plan = trim((string) ($input['plan'] ?? ''));
-        $diagnosis = trim((string) ($input['diagnosis'] ?? ''));
-        $treatment = trim((string) ($input['treatment'] ?? ''));
-        $notes = trim((string) ($input['notes'] ?? ''));
-
-        $sourceText = trim(implode("\n", array_filter([
+        $source = $this->clean(implode("\n", array_filter([
             $chiefComplaint ? "Chief complaint: {$chiefComplaint}" : null,
+            $existingSubjective ? "Subjective: {$existingSubjective}" : null,
+            $existingObjective ? "Objective: {$existingObjective}" : null,
+            $existingAssessment ? "Assessment: {$existingAssessment}" : null,
+            $existingPlan ? "Plan: {$existingPlan}" : null,
+            $existingDiagnosis ? "Diagnosis: {$existingDiagnosis}" : null,
+            $existingTreatment ? "Treatment: {$existingTreatment}" : null,
+            $existingNotes ? "Notes: {$existingNotes}" : null,
             $transcript ? "Transcript: {$transcript}" : null,
-            $subjective ? "Existing subjective: {$subjective}" : null,
-            $objective ? "Existing objective: {$objective}" : null,
-            $assessment ? "Existing assessment: {$assessment}" : null,
-            $plan ? "Existing plan: {$plan}" : null,
-            $diagnosis ? "Existing diagnosis: {$diagnosis}" : null,
-            $treatment ? "Existing treatment: {$treatment}" : null,
-            $notes ? "Existing notes: {$notes}" : null,
         ])));
 
-        if ($sourceText === '') {
-            return $this->fallbackSummary('', $chiefComplaint);
+        if ($source === '') {
+            return $this->emptySummary();
         }
 
-        $apiKey = config('services.google.gemini_api_key') ?: env('GEMINI_API_KEY');
+        $subjective = $existingSubjective ?: $this->extractSubjective($source, $chiefComplaint);
+        $objective = $existingObjective ?: $this->extractObjective($source);
+        $assessment = $existingAssessment ?: $existingDiagnosis ?: $this->extractAssessment($source);
+        $plan = $existingPlan ?: $existingTreatment ?: $this->extractPlan($source);
 
-        if (!$apiKey) {
-            return $this->fallbackSummary($sourceText, $chiefComplaint);
-        }
+        $diagnosis = $existingDiagnosis ?: $assessment;
+        $treatment = $existingTreatment ?: $plan;
 
-        try {
-            $prompt = <<<PROMPT
-You are assisting RHU medical staff in the Philippines.
-
-Convert the consultation transcript/notes into a structured SOAP clinical summary.
-
-Important rules:
-- Do not invent symptoms, medicines, diagnosis, vital signs, age, gender, or findings.
-- Use only details explicitly found in the transcript or notes.
-- If a section has no information, write "Not stated".
-- Keep the wording professional and concise.
-- Return valid JSON only.
-- Do not include markdown fences.
-
-Input:
-{$sourceText}
-
-Return exactly this JSON structure:
-{
-  "subjective": "",
-  "objective": "",
-  "assessment": "",
-  "plan": "",
-  "diagnosis": "",
-  "treatment": "",
-  "summary": "",
-  "confidence": 0
-}
-PROMPT;
-
-            $response = Http::timeout(45)->post(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={$apiKey}",
-                [
-                    'contents' => [
-                        [
-                            'parts' => [
-                                ['text' => $prompt],
-                            ],
-                        ],
-                    ],
-                    'generationConfig' => [
-                        'temperature' => 0.2,
-                        'maxOutputTokens' => 1200,
-                    ],
-                ]
-            );
-
-            if (!$response->successful()) {
-                Log::warning('Gemini clinical summary failed.', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-
-                return $this->fallbackSummary($sourceText, $chiefComplaint);
-            }
-
-            $text = data_get($response->json(), 'candidates.0.content.parts.0.text');
-
-            if (!$text) {
-                return $this->fallbackSummary($sourceText, $chiefComplaint);
-            }
-
-            $json = $this->parseJsonFromAiText($text);
-
-            if (!is_array($json)) {
-                return $this->fallbackSummary($sourceText, $chiefComplaint);
-            }
-
-            return [
-                'subjective' => $this->safeValue($json['subjective'] ?? null),
-                'objective'  => $this->safeValue($json['objective'] ?? null),
-                'assessment' => $this->safeValue($json['assessment'] ?? null),
-                'plan'       => $this->safeValue($json['plan'] ?? null),
-                'diagnosis'  => $this->safeValue($json['diagnosis'] ?? null),
-                'treatment'  => $this->safeValue($json['treatment'] ?? null),
-                'summary'    => $this->safeValue($json['summary'] ?? null),
-                'confidence' => is_numeric($json['confidence'] ?? null)
-                    ? max(0, min(100, (int) $json['confidence']))
-                    : 80,
-                'source' => 'gemini',
-            ];
-        } catch (\Throwable $e) {
-            Log::warning('AI clinical summary exception.', [
-                'message' => $e->getMessage(),
-            ]);
-
-            return $this->fallbackSummary($sourceText, $chiefComplaint);
-        }
-    }
-
-    private function parseJsonFromAiText(string $text): ?array
-    {
-        $text = trim($text);
-        $text = preg_replace('/^```json\s*/i', '', $text);
-        $text = preg_replace('/^```\s*/', '', $text);
-        $text = preg_replace('/\s*```$/', '', $text);
-        $text = trim($text);
-
-        $decoded = json_decode($text, true);
-
-        if (is_array($decoded)) {
-            return $decoded;
-        }
-
-        if (preg_match('/\{.*\}/s', $text, $matches)) {
-            $decoded = json_decode($matches[0], true);
-
-            if (is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        return null;
-    }
-
-    private function cleanTranscript(string $text): string
-    {
-        $text = strtolower($text);
-        $text = preg_replace('/\s+/', ' ', $text);
-        $text = trim($text);
-
-        if ($text === '') {
-            return '';
-        }
-
-        $words = explode(' ', $text);
-        $cleanWords = [];
-        $lastWord = null;
-        $repeatCount = 0;
-
-        foreach ($words as $word) {
-            $word = trim($word);
-
-            if ($word === '') {
-                continue;
-            }
-
-            if ($word === $lastWord) {
-                $repeatCount++;
-
-                if ($repeatCount >= 2) {
-                    continue;
-                }
-            } else {
-                $repeatCount = 0;
-            }
-
-            $cleanWords[] = $word;
-            $lastWord = $word;
-        }
-
-        $cleaned = implode(' ', $cleanWords);
-
-        $phrasesToReduce = [
-            'hello thank you i see here that you book consultation',
-            'hello thank you i see here',
-            'hello thank you',
-            'i see here',
-        ];
-
-        foreach ($phrasesToReduce as $phrase) {
-            $cleaned = preg_replace(
-                '/(' . preg_quote($phrase, '/') . '\s*){2,}/',
-                $phrase . ' ',
-                $cleaned
-            );
-        }
-
-        return trim($cleaned);
-    }
-
-    private function fallbackSummary(string $text, ?string $chiefComplaint = null): array
-    {
-        $lowerText = strtolower($text);
-
-        $subjectiveParts = [];
-
-        if ($chiefComplaint) {
-            $subjectiveParts[] = "Chief complaint: {$chiefComplaint}.";
-        }
-
-        if ($text) {
-            $subjectiveParts[] = $text;
-        }
-
-        $objective = 'Not stated';
-
-        if (preg_match('/temperature\s*(is|of)?\s*([0-9.]+)/i', $text, $match)) {
-            $objective = 'Temperature: ' . $match[2] . '°C.';
-        }
-
-        $assessment = 'Not stated';
-
-        if (str_contains($lowerText, 'fatigue') || str_contains($lowerText, 'dehydration')) {
-            $assessment = 'Possible fatigue or dehydration based on transcript.';
-        } elseif (str_contains($lowerText, 'fever') || str_contains($lowerText, 'cough')) {
-            $assessment = 'Possible acute respiratory or febrile illness based on transcript.';
-        }
-
-        $plan = 'Advise patient to follow RHU staff instructions and return for reassessment if symptoms worsen.';
-
-        if (str_contains($lowerText, 'drink plenty of water') || str_contains($lowerText, 'dehydration')) {
-            $plan = 'Encourage adequate fluid intake. Monitor symptoms and seek consultation if condition worsens.';
-        }
+        $summary = $this->buildPlainSummary([
+            'chief_complaint' => $chiefComplaint,
+            'subjective' => $subjective,
+            'objective' => $objective,
+            'assessment' => $assessment,
+            'plan' => $plan,
+        ]);
 
         return [
-            'subjective' => trim(implode(' ', $subjectiveParts)) ?: 'Not stated',
-            'objective'  => $objective,
+            'summary' => $summary,
+            'chief_complaint' => $chiefComplaint ?: $this->detectChiefComplaint($source),
+            'subjective' => $subjective,
+            'objective' => $objective,
             'assessment' => $assessment,
-            'plan'       => $plan,
-            'diagnosis'  => $assessment,
-            'treatment'  => $plan,
-            'summary'    => "SOAP summary generated from available consultation text. Assessment: {$assessment} Plan: {$plan}",
-            'confidence' => 50,
-            'source'     => 'fallback',
+            'plan' => $plan,
+            'diagnosis' => $diagnosis,
+            'treatment' => $treatment,
+            'red_flags' => $this->detectRedFlags($source),
+            'follow_up' => $this->suggestFollowUp($source),
+            'confidence' => $this->confidenceScore($source),
+            'source' => 'rule_based_summary',
         ];
     }
 
-    private function safeValue(?string $value): string
+    private function emptySummary(): array
+    {
+        return [
+            'summary' => 'No transcript or consultation notes were provided for summarization.',
+            'chief_complaint' => 'Not stated',
+            'subjective' => 'Not stated',
+            'objective' => 'Not stated',
+            'assessment' => 'Not stated',
+            'plan' => 'Not stated',
+            'diagnosis' => 'Not stated',
+            'treatment' => 'Not stated',
+            'red_flags' => [],
+            'follow_up' => 'Add consultation notes or transcript, then generate the summary again.',
+            'confidence' => 0,
+            'source' => 'rule_based_summary',
+        ];
+    }
+
+    private function clean(?string $value): string
     {
         $value = trim((string) $value);
 
-        return $value !== '' ? $value : 'Not stated';
+        if ($value === '') {
+            return '';
+        }
+
+        return trim(preg_replace('/\s+/', ' ', $value) ?? $value);
+    }
+
+    private function extractSubjective(string $source, string $chiefComplaint = ''): string
+    {
+        $symptoms = [];
+
+        $keywords = [
+            'fever' => 'fever',
+            'lagnat' => 'fever',
+            'ubo' => 'cough',
+            'cough' => 'cough',
+            'sipon' => 'colds',
+            'cold' => 'colds',
+            'sakit ng ulo' => 'headache',
+            'headache' => 'headache',
+            'sakit ng tiyan' => 'abdominal pain',
+            'stomach' => 'abdominal pain',
+            'diarrhea' => 'diarrhea',
+            'pagtatae' => 'diarrhea',
+            'vomit' => 'vomiting',
+            'suka' => 'vomiting',
+            'dizzy' => 'dizziness',
+            'nahihilo' => 'dizziness',
+            'rash' => 'rash',
+            'sugat' => 'wound',
+            'pain' => 'pain',
+            'masakit' => 'pain',
+        ];
+
+        $lower = strtolower($source);
+
+        foreach ($keywords as $keyword => $label) {
+            if (str_contains($lower, $keyword)) {
+                $symptoms[] = $label;
+            }
+        }
+
+        $symptoms = array_values(array_unique($symptoms));
+
+        if ($chiefComplaint !== '') {
+            return 'Patient reports ' . $chiefComplaint . '.'
+                . (!empty($symptoms) ? ' Associated symptoms include ' . implode(', ', $symptoms) . '.' : '');
+        }
+
+        if (!empty($symptoms)) {
+            return 'Patient reports symptoms including ' . implode(', ', $symptoms) . '.';
+        }
+
+        return Str::limit($source, 250, '...');
+    }
+
+    private function extractObjective(string $source): string
+    {
+        $objective = [];
+
+        if (preg_match('/\b(?:temp|temperature|t)\s*[:\-]?\s*(\d{2}(?:\.\d+)?)\s*°?\s*c?\b/i', $source, $m)) {
+            $objective[] = 'Temperature: ' . $m[1] . '°C';
+        }
+
+        if (preg_match('/\b(?:bp|blood pressure)\s*[:\-]?\s*(\d{2,3}\/\d{2,3})\b/i', $source, $m)) {
+            $objective[] = 'BP: ' . $m[1];
+        }
+
+        if (preg_match('/\b(?:hr|heart rate|pulse)\s*[:\-]?\s*(\d{2,3})\b/i', $source, $m)) {
+            $objective[] = 'HR: ' . $m[1] . ' bpm';
+        }
+
+        if (preg_match('/\b(?:spo2|oxygen|o2)\s*[:\-]?\s*(\d{2,3})%?\b/i', $source, $m)) {
+            $objective[] = 'SpO2: ' . $m[1] . '%';
+        }
+
+        if (preg_match('/\b(?:weight|wt|timbang)\s*[:\-]?\s*(\d{1,3}(?:\.\d+)?)\s*(?:kg)?\b/i', $source, $m)) {
+            $objective[] = 'Weight: ' . $m[1] . ' kg';
+        }
+
+        if (!empty($objective)) {
+            return implode('; ', $objective) . '.';
+        }
+
+        return 'No objective vital signs or physical findings were clearly stated.';
+    }
+
+    private function extractAssessment(string $source): string
+    {
+        $lower = strtolower($source);
+
+        if (str_contains($lower, 'fever') || str_contains($lower, 'lagnat')) {
+            return 'Fever; assess for common infectious causes and monitor for warning signs.';
+        }
+
+        if (str_contains($lower, 'cough') || str_contains($lower, 'ubo')) {
+            return 'Cough/upper respiratory symptoms; consider respiratory infection and monitor for breathing difficulty.';
+        }
+
+        if (str_contains($lower, 'diarrhea') || str_contains($lower, 'pagtatae')) {
+            return 'Diarrhea; assess hydration status and possible gastrointestinal infection.';
+        }
+
+        if (str_contains($lower, 'headache') || str_contains($lower, 'sakit ng ulo')) {
+            return 'Headache; assess severity, duration, triggers, fever, and neurologic warning signs.';
+        }
+
+        if (str_contains($lower, 'wound') || str_contains($lower, 'sugat')) {
+            return 'Wound concern; assess wound depth, bleeding, infection signs, and tetanus status.';
+        }
+
+        return 'Assessment requires clinician review based on history, examination, and available findings.';
+    }
+
+    private function extractPlan(string $source): string
+    {
+        $lower = strtolower($source);
+        $plans = [];
+
+        if (str_contains($lower, 'fever') || str_contains($lower, 'lagnat')) {
+            $plans[] = 'Encourage fluids and rest; monitor temperature.';
+        }
+
+        if (str_contains($lower, 'cough') || str_contains($lower, 'ubo')) {
+            $plans[] = 'Advise hydration and observe for difficulty breathing or worsening cough.';
+        }
+
+        if (str_contains($lower, 'diarrhea') || str_contains($lower, 'pagtatae')) {
+            $plans[] = 'Advise oral rehydration and monitor for dehydration.';
+        }
+
+        if (str_contains($lower, 'wound') || str_contains($lower, 'sugat')) {
+            $plans[] = 'Clean wound and assess need for dressing, tetanus update, or referral.';
+        }
+
+        if (empty($plans)) {
+            $plans[] = 'Continue clinical evaluation and provide management according to RHU protocol.';
+        }
+
+        $redFlags = $this->detectRedFlags($source);
+
+        if (!empty($redFlags)) {
+            $plans[] = 'Escalate urgently due to red flags: ' . implode(', ', $redFlags) . '.';
+        } else {
+            $plans[] = 'Advise follow-up if symptoms persist or worsen.';
+        }
+
+        return implode(' ', $plans);
+    }
+
+    private function detectChiefComplaint(string $source): string
+    {
+        $lower = strtolower($source);
+
+        $map = [
+            'fever' => ['fever', 'lagnat'],
+            'cough' => ['cough', 'ubo'],
+            'headache' => ['headache', 'sakit ng ulo'],
+            'abdominal pain' => ['abdominal pain', 'sakit ng tiyan', 'stomach pain'],
+            'diarrhea' => ['diarrhea', 'pagtatae'],
+            'wound' => ['wound', 'sugat'],
+            'dizziness' => ['dizzy', 'nahihilo', 'hilo'],
+        ];
+
+        foreach ($map as $label => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (str_contains($lower, $keyword)) {
+                    return $label;
+                }
+            }
+        }
+
+        return 'Not clearly stated';
+    }
+
+    private function detectRedFlags(string $source): array
+    {
+        $lower = strtolower($source);
+
+        $flags = [
+            'chest pain' => ['chest pain', 'sakit dibdib', 'pananakit ng dibdib'],
+            'difficulty breathing' => ['difficulty breathing', 'hirap huminga', 'shortness of breath'],
+            'severe bleeding' => ['severe bleeding', 'malakas na dugo', 'dumudugo nang malakas'],
+            'loss of consciousness' => ['loss of consciousness', 'nawalan ng malay', 'unconscious'],
+            'seizure' => ['seizure', 'kombulsyon', 'atake'],
+            'stroke signs' => ['stroke', 'facial droop', 'slurred speech', 'panghihina ng kalahating katawan'],
+            'high fever' => ['40°', '40 c', 'very high fever', 'mataas na lagnat'],
+        ];
+
+        $found = [];
+
+        foreach ($flags as $label => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (str_contains($lower, $keyword)) {
+                    $found[] = $label;
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique($found));
+    }
+
+    private function suggestFollowUp(string $source): string
+    {
+        $redFlags = $this->detectRedFlags($source);
+
+        if (!empty($redFlags)) {
+            return 'Immediate referral or urgent clinician review is recommended.';
+        }
+
+        return 'Follow up at RHU if symptoms persist, worsen, or new warning signs appear.';
+    }
+
+    private function confidenceScore(string $source): int
+    {
+        $length = strlen($source);
+
+        if ($length > 700) {
+            return 85;
+        }
+
+        if ($length > 300) {
+            return 75;
+        }
+
+        if ($length > 80) {
+            return 60;
+        }
+
+        return 40;
+    }
+
+    private function buildPlainSummary(array $data): string
+    {
+        return trim(
+            "Chief Complaint: " . ($data['chief_complaint'] ?: 'Not stated') . "\n" .
+            "Subjective: " . ($data['subjective'] ?: 'Not stated') . "\n" .
+            "Objective: " . ($data['objective'] ?: 'Not stated') . "\n" .
+            "Assessment: " . ($data['assessment'] ?: 'Not stated') . "\n" .
+            "Plan: " . ($data['plan'] ?: 'Not stated')
+        );
     }
 }

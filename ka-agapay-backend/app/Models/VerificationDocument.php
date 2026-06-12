@@ -1,5 +1,5 @@
 <?php
-
+// app/Models/VerificationDocument.php
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;

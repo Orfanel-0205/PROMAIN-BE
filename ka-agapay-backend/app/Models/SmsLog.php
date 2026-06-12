@@ -1,4 +1,5 @@
 <?php
+// app/Models/SmsLog.php
 
 namespace App\Models;
 
@@ -7,28 +8,34 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class SmsLog extends Model
 {
-    public const UPDATED_AT = null; // sms_logs only has created_at per migration
-
     protected $fillable = [
         'user_id',
+        'sent_by',
+        'recipient_name',
         'mobile_number',
         'message',
+        'mode',
+        'target_filters',
         'notification_type',
         'provider',
         'provider_message_id',
         'status',
         'error_message',
         'sent_at',
-        'delivered_at',
     ];
 
     protected $casts = [
-        'sent_at'      => 'datetime',
-        'delivered_at' => 'datetime',
+        'target_filters' => 'array',
+        'sent_at' => 'datetime',
     ];
 
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function sender(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'sent_by', 'user_id');
     }
 }

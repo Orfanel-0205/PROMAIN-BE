@@ -245,24 +245,119 @@ class AiController extends Controller
 
     /**
      * POST /api/v1/ai/summarize-events
+     *
+     * Supports both:
+     * 1. Mobile Dashboard:
+     *    { events: "...", language: "English" }
+     *
+     * 2. Admin/Event form:
+     *    { title: "...", description: "..." }
      */
     public function summarizeEvents(Request $request): JsonResponse
     {
         $validated = $request->validate([
+            'events' => ['nullable', 'string', 'max:10000'],
+            'language' => ['nullable', 'string', 'max:100'],
             'title' => ['nullable', 'string', 'max:255'],
-            'description' => ['required', 'string', 'max:5000'],
+            'description' => ['nullable', 'string', 'max:10000'],
         ]);
 
-        $text = trim(($validated['title'] ?? '') . "\n" . $validated['description']);
-        $summary = Str::limit(preg_replace('/\s+/', ' ', $text) ?? $text, 155, '...');
+        $language = $validated['language'] ?? 'English';
+
+        $sourceText = trim(
+            (string) ($validated['events'] ?? '')
+            . "\n"
+            . (string) ($validated['title'] ?? '')
+            . "\n"
+            . (string) ($validated['description'] ?? '')
+        );
+
+        if ($sourceText === '') {
+            return response()->json([
+                'message' => 'No events available to summarize.',
+                'summary' => 'No events available to summarize.',
+                'data' => [
+                    'summary' => 'No events available to summarize.',
+                    'sms_summary' => 'No events available to summarize.',
+                    'character_count' => 33,
+                ],
+            ]);
+        }
+
+        $cleanText = preg_replace('/\s+/', ' ', $sourceText) ?? $sourceText;
+
+        $summary = $this->generateEventSummary($cleanText, $language);
+
+        $smsSummary = Str::limit($summary, 155, '...');
 
         return response()->json([
-            'message' => 'Event SMS summary generated.',
+            'message' => 'Events AI summary generated.',
+
+            // Mobile Dashboard expects this:
+            'summary' => $summary,
+
+            // Admin/event form can use this:
             'data' => [
-                'sms_summary' => $summary,
-                'character_count' => strlen($summary),
+                'summary' => $summary,
+                'sms_summary' => $smsSummary,
+                'character_count' => strlen($smsSummary),
             ],
         ]);
+    }
+
+    private function generateEventSummary(string $text, string $language = 'English'): string
+    {
+        $lowerLanguage = strtolower($language);
+
+        $lines = preg_split('/(?=\d+\.\s)/', $text) ?: [$text];
+
+        $events = collect($lines)
+            ->map(fn ($line) => trim($line))
+            ->filter()
+            ->values();
+
+        $count = $events->count();
+
+        if ($count === 0) {
+            return 'No events available to summarize.';
+        }
+
+        $firstEvents = $events
+            ->take(3)
+            ->map(function ($event) {
+                $event = preg_replace('/^\d+\.\s*/', '', $event) ?? $event;
+
+                return Str::limit(trim($event), 90, '...');
+            })
+            ->values();
+
+        if (str_contains($lowerLanguage, 'tagalog') || str_contains($lowerLanguage, 'filipino')) {
+            if ($count === 1) {
+                return 'May isang paparating na RHU event: ' . $firstEvents->first() . '. I-tap ang Events para sa buong detalye.';
+            }
+
+            return 'May ' . $count . ' paparating na RHU events. Kabilang dito ang: '
+                . $firstEvents->implode('; ')
+                . '. I-tap ang Events para makita ang buong detalye at mag-register kung kailangan.';
+        }
+
+        if (str_contains($lowerLanguage, 'pangasinense')) {
+            if ($count === 1) {
+                return 'Wala iray onsublay ya aktibidad na RHU: ' . $firstEvents->first() . '. I-tap so Events pian nanengneng so detalye.';
+            }
+
+            return 'Wala ray ' . $count . ' onsublay ya aktibidad na RHU. Kabiangan na: '
+                . $firstEvents->implode('; ')
+                . '. I-tap so Events pian nanengneng so kompletun detalye.';
+        }
+
+        if ($count === 1) {
+            return 'There is one upcoming RHU event: ' . $firstEvents->first() . '. Tap Events to view the full details.';
+        }
+
+        return 'There are ' . $count . ' upcoming RHU events. Highlights include: '
+            . $firstEvents->implode('; ')
+            . '. Tap Events to view full details and register if needed.';
     }
 
     private function authorizeAi(Request $request): void

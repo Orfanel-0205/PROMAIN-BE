@@ -1,8 +1,7 @@
 <?php
-// database/migrations/2026_06_01_000001_upgrade_events_table_full.php
+// database/migrations/2026_05_31_185129_upgrade_events_table_full.php
 
 use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -10,224 +9,178 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('events', function (Blueprint $table) {
+        /*
+         * PostgreSQL-safe migration.
+         * This avoids duplicate-column crashes by using ADD COLUMN IF NOT EXISTS.
+         * It also avoids calling Schema::hasColumn after a failed ALTER statement.
+         */
 
-            // -----------------------------------------------------------------
-            // Image banner stored in public disk
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'banner_image')) {
-                $table->string('banner_image')->nullable()->after('max_slots');
-            }
+        DB::statement("
+            CREATE TABLE IF NOT EXISTS events (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL
+            )
+        ");
 
-            // -----------------------------------------------------------------
-            // Publish workflow
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'is_published')) {
-                $table->boolean('is_published')->default(false)->after('banner_image');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS title VARCHAR(255) NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS description TEXT NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS body TEXT NULL");
 
-            if (!Schema::hasColumn('events', 'published_at')) {
-                $table->timestamp('published_at')->nullable()->after('is_published');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_type VARCHAR(50) DEFAULT 'event'");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS category VARCHAR(100) DEFAULT 'general'");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'draft'");
 
-            // -----------------------------------------------------------------
-            // Main CMS posting type
-            // Values:
-            // event        = scheduled RHU activity
-            // program      = health program post
-            // announcement = general RHU announcement
-            //
-            // IMPORTANT:
-            // Use string instead of enum to avoid painful enum migration issues.
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'event_type')) {
-                $table->string('event_type', 30)->default('event')->after('published_at');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS location VARCHAR(255) NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS target_audience VARCHAR(255) NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS barangay_target VARCHAR(255) DEFAULT 'all'");
 
-            // -----------------------------------------------------------------
-            // Category stores specific program/event classification.
-            //
-            // Examples:
-            // event_type = program, category = Immunization
-            // event_type = event, category = Medical Mission
-            // event_type = announcement, category = General Advisory
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'category')) {
-                $table->string('category', 100)->nullable()->after('event_type');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_date TIMESTAMP NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS starts_at TIMESTAMP NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS ends_at TIMESTAMP NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS published_at TIMESTAMP NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP NULL");
 
-            // -----------------------------------------------------------------
-            // Barangay targeting
-            // all or specific barangay name
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'barangay_target')) {
-                $table->string('barangay_target', 150)->default('all')->after('category');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS max_slots INTEGER NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS slots_available INTEGER NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS total_registered INTEGER DEFAULT 0");
 
-            // -----------------------------------------------------------------
-            // End datetime
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'ends_at')) {
-                $table->dateTime('ends_at')->nullable()->after('event_date');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT FALSE");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE");
 
-            // -----------------------------------------------------------------
-            // Available slots tracker
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'slots_available')) {
-                $table->integer('slots_available')->nullable()->after('max_slots');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS banner_url TEXT NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS banner_path TEXT NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS image_url TEXT NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS image_path TEXT NULL");
 
-            // -----------------------------------------------------------------
-            // GPS for distance calculation in mobile
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'latitude')) {
-                $table->decimal('latitude', 10, 7)->nullable()->after('location');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS created_by BIGINT NULL");
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS archived_by BIGINT NULL");
 
-            if (!Schema::hasColumn('events', 'longitude')) {
-                $table->decimal('longitude', 10, 7)->nullable()->after('latitude');
-            }
+        DB::statement("ALTER TABLE events ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL");
 
-            // -----------------------------------------------------------------
-            // Description fallback
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'description')) {
-                $table->text('description')->nullable()->after('title');
-            }
+        /*
+         * Backfill values so frontend fields are not null.
+         */
+        DB::statement("
+            UPDATE events
+            SET event_type = COALESCE(NULLIF(event_type, ''), 'event')
+            WHERE event_type IS NULL OR event_type = ''
+        ");
 
-            // -----------------------------------------------------------------
-            // CMS extra fields
-            // -----------------------------------------------------------------
-            if (!Schema::hasColumn('events', 'target_audience')) {
-                $table->string('target_audience', 255)->nullable()->after('barangay_target');
-            }
+        DB::statement("
+            UPDATE events
+            SET category = COALESCE(NULLIF(category, ''), 'general')
+            WHERE category IS NULL OR category = ''
+        ");
 
-            if (!Schema::hasColumn('events', 'tags')) {
-                $table->json('tags')->nullable()->after('target_audience');
-            }
+        DB::statement("
+            UPDATE events
+            SET status = CASE
+                WHEN is_published = TRUE THEN 'published'
+                WHEN status IS NULL OR status = '' THEN 'draft'
+                ELSE status
+            END
+        ");
 
-            if (!Schema::hasColumn('events', 'sms_summary')) {
-                $table->string('sms_summary', 160)->nullable()->after('tags');
-            }
+        DB::statement("
+            UPDATE events
+            SET total_registered = 0
+            WHERE total_registered IS NULL
+        ");
 
-            if (!Schema::hasColumn('events', 'priority')) {
-                $table->string('priority', 20)->default('normal')->after('sms_summary');
-            }
+        DB::statement("
+            UPDATE events
+            SET slots_available = max_slots
+            WHERE slots_available IS NULL
+              AND max_slots IS NOT NULL
+        ");
 
-            if (!Schema::hasColumn('events', 'visibility')) {
-                $table->string('visibility', 30)->default('public')->after('priority');
-            }
-        });
+        /*
+         * Drop old incompatible check constraints if they exist.
+         * This prevents future event_type/status errors.
+         */
+        DB::statement("
+            DO $$
+            DECLARE
+                constraint_name text;
+            BEGIN
+                FOR constraint_name IN
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conrelid = 'events'::regclass
+                      AND contype = 'c'
+                      AND conname ILIKE '%event_type%'
+                LOOP
+                    EXECUTE format('ALTER TABLE events DROP CONSTRAINT IF EXISTS %I', constraint_name);
+                END LOOP;
+            END $$;
+        ");
 
-        // ---------------------------------------------------------------------
-        // Convert old enum event_type column to string if it already exists.
-        // This prevents errors when changing old enum values.
-        // ---------------------------------------------------------------------
-        if (Schema::hasColumn('events', 'event_type')) {
-            try {
-                DB::statement("ALTER TABLE events MODIFY event_type VARCHAR(30) NOT NULL DEFAULT 'event'");
-            } catch (\Throwable $e) {
-                // Ignore if database driver does not support MODIFY.
-                // The column may already be a string.
-            }
-        }
+        DB::statement("
+            DO $$
+            DECLARE
+                constraint_name text;
+            BEGIN
+                FOR constraint_name IN
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conrelid = 'events'::regclass
+                      AND contype = 'c'
+                      AND conname ILIKE '%status%'
+                LOOP
+                    EXECUTE format('ALTER TABLE events DROP CONSTRAINT IF EXISTS %I', constraint_name);
+                END LOOP;
+            END $$;
+        ");
 
-        // ---------------------------------------------------------------------
-        // Migrate old event_type values into new event_type + category structure.
-        //
-        // OLD:
-        // immunization     -> NEW: event_type = program, category = Immunization
-        // medical_mission  -> NEW: event_type = event,   category = Medical Mission
-        // health_seminar   -> NEW: event_type = event,   category = Health Seminar
-        // other            -> NEW: event_type = event,   category = Other
-        // ---------------------------------------------------------------------
-        if (
-            Schema::hasColumn('events', 'event_type') &&
-            Schema::hasColumn('events', 'category')
-        ) {
-            DB::table('events')
-                ->where('event_type', 'immunization')
-                ->update([
-                    'event_type' => 'program',
-                    'category' => 'Immunization',
-                ]);
+        /*
+         * Add safe check constraints.
+         */
+        DB::statement("
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'events_event_type_check'
+                ) THEN
+                    ALTER TABLE events
+                    ADD CONSTRAINT events_event_type_check
+                    CHECK (event_type IN ('event', 'program', 'announcement'));
+                END IF;
+            END $$;
+        ");
 
-            DB::table('events')
-                ->where('event_type', 'medical_mission')
-                ->update([
-                    'event_type' => 'event',
-                    'category' => 'Medical Mission',
-                ]);
+        DB::statement("
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'events_status_check'
+                ) THEN
+                    ALTER TABLE events
+                    ADD CONSTRAINT events_status_check
+                    CHECK (status IN ('draft', 'published', 'archived', 'cancelled'));
+                END IF;
+            END $$;
+        ");
 
-            DB::table('events')
-                ->where('event_type', 'health_seminar')
-                ->update([
-                    'event_type' => 'event',
-                    'category' => 'Health Seminar',
-                ]);
-
-            DB::table('events')
-                ->where('event_type', 'other')
-                ->update([
-                    'event_type' => 'event',
-                    'category' => 'Other',
-                ]);
-
-            DB::table('events')
-                ->whereNull('event_type')
-                ->orWhereNotIn('event_type', ['event', 'program', 'announcement'])
-                ->update([
-                    'event_type' => 'event',
-                ]);
-        }
-
-        // ---------------------------------------------------------------------
-        // Index for mobile feed queries
-        // ---------------------------------------------------------------------
-        try {
-            DB::statement(
-                'CREATE INDEX idx_events_published_date ON events (is_published, event_date)'
-            );
-        } catch (\Throwable $e) {
-            // Ignore if index already exists.
-        }
+        /*
+         * Helpful indexes.
+         */
+        DB::statement("CREATE INDEX IF NOT EXISTS events_event_type_index ON events (event_type)");
+        DB::statement("CREATE INDEX IF NOT EXISTS events_status_index ON events (status)");
+        DB::statement("CREATE INDEX IF NOT EXISTS events_is_published_index ON events (is_published)");
+        DB::statement("CREATE INDEX IF NOT EXISTS events_event_date_index ON events (event_date)");
+        DB::statement("CREATE INDEX IF NOT EXISTS events_deleted_at_index ON events (deleted_at)");
     }
 
     public function down(): void
     {
-        Schema::table('events', function (Blueprint $table) {
-            $columns = [
-                'banner_image',
-                'is_published',
-                'published_at',
-                'category',
-                'barangay_target',
-                'ends_at',
-                'slots_available',
-                'latitude',
-                'longitude',
-                'target_audience',
-                'tags',
-                'sms_summary',
-                'priority',
-                'visibility',
-            ];
-
-            foreach ($columns as $column) {
-                if (Schema::hasColumn('events', $column)) {
-                    $table->dropColumn($column);
-                }
-            }
-        });
-
-        // Keep event_type because older parts of your app may still depend on it.
-        // If you really want to remove it during rollback, uncomment this:
-        //
-        // Schema::table('events', function (Blueprint $table) {
-        //     if (Schema::hasColumn('events', 'event_type')) {
-        //         $table->dropColumn('event_type');
-        //     }
-        // });
+        /*
+         * Do not drop columns here because this is an upgrade migration
+         * and other newer migrations/pages may depend on these fields.
+         */
     }
 };

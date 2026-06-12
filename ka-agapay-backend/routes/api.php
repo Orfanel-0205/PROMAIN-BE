@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\Telemedicine\SessionController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AdminSmsController;
 use App\Http\Controllers\Api\AiSettingsController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\AppointmentController;
@@ -88,6 +89,22 @@ Route::prefix('v1')->group(function () {
     Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
         // =====================================================================
+        // ADMIN SMS
+        // Final URLs:
+        // GET  /api/v1/admin/sms/account
+        // GET  /api/v1/admin/sms/logs
+        // POST /api/v1/admin/sms/preview
+        // POST /api/v1/admin/sms/send
+        // =====================================================================
+
+        Route::prefix('admin/sms')->middleware('auth:sanctum')->group(function () {
+            Route::get('/account', [AdminSmsController::class, 'account']);
+            Route::get('/logs', [AdminSmsController::class, 'logs']);
+            Route::post('/preview', [AdminSmsController::class, 'preview']);
+            Route::post('/send', [AdminSmsController::class, 'send']);
+        });
+
+        // =====================================================================
         // ACTIVITY LOGS
         // =====================================================================
 
@@ -136,7 +153,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/dashboard/admin', [DashboardController::class, 'admin']);
 
         // =====================================================================
-        // ANNOUNCEMENTS
+        // ANNOUNCEMENTS — PUBLIC / MOBILE RESIDENT SIDE
         // =====================================================================
 
         Route::get('/announcements',      [AnnouncementController::class, 'index']);
@@ -160,6 +177,24 @@ Route::prefix('v1')->group(function () {
         });
 
         // =====================================================================
+        // RESOURCES
+        // =====================================================================
+
+        Route::get('/prescriptions/{id}/pdf',       [PrescriptionController::class, 'downloadPdf']);
+        Route::post('/prescriptions/{id}/release',  [PrescriptionController::class, 'release']);
+        Route::post('/prescriptions/{id}/dispense', [PrescriptionController::class, 'dispense']);
+        Route::apiResource('prescriptions', PrescriptionController::class);
+
+        Route::apiResource('referrals', ReferralController::class);
+
+        Route::get('/inventory/alerts',              [InventoryController::class, 'alerts']);
+        Route::post('/inventory/{item}/stock-in',    [InventoryController::class, 'stockIn']);
+        Route::post('/inventory/{item}/stock-out',   [InventoryController::class, 'stockOut']);
+        Route::post('/inventory/{item}/adjust',      [InventoryController::class, 'adjust']);
+        Route::get('/inventory/{item}/transactions', [InventoryController::class, 'transactions']);
+        Route::apiResource('inventory', InventoryController::class);
+
+        // =====================================================================
         // CONSULTATIONS — MOBILE PATIENT
         // =====================================================================
 
@@ -168,7 +203,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/consultations/{id}', [ConsultationController::class, 'mineShow']);
 
         // =====================================================================
-        // APPOINTMENTS — MOBILE PATIENT ONLY FOR NOW
+        // APPOINTMENTS — MOBILE PATIENT
         // =====================================================================
 
         Route::prefix('appointments')->group(function () {
@@ -188,17 +223,16 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
             ->prefix('admin')
             ->group(function () {
-                // ADMIN APPOINTMENTS
-                Route::get('/appointments',                       [AppointmentController::class, 'adminIndex']);
-                Route::get('/appointments/{id}',                  [AppointmentController::class, 'adminShow']);
-                Route::patch('/appointments/{id}/status',         [AppointmentController::class, 'adminUpdateStatus']);
+
+                Route::get('/appointments',                         [AppointmentController::class, 'adminIndex']);
+                Route::get('/appointments/{id}',                    [AppointmentController::class, 'adminShow']);
+                Route::patch('/appointments/{id}/status',           [AppointmentController::class, 'adminUpdateStatus']);
                 Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
 
-                // ADMIN CONSULTATIONS
-                Route::get('/consultations',                [ConsultationController::class, 'index']);
-                Route::post('/consultations',               [ConsultationController::class, 'store']);
-                Route::get('/consultations/{id}',           [ConsultationController::class, 'show']);
-                Route::put('/consultations/{id}/soap',      [ConsultationController::class, 'updateSoap']);
+                Route::get('/consultations',                 [ConsultationController::class, 'index']);
+                Route::post('/consultations',                [ConsultationController::class, 'store']);
+                Route::get('/consultations/{id}',            [ConsultationController::class, 'show']);
+                Route::put('/consultations/{id}/soap',       [ConsultationController::class, 'updateSoap']);
                 Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
             });
 
@@ -239,21 +273,21 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('telemedicine')->group(function () {
-            Route::get('/sessions', [SessionController::class, 'index']);
-            Route::get('/sessions/{session}', [SessionController::class, 'show']);
+            Route::get('/sessions',                    [SessionController::class, 'index']);
+            Route::get('/sessions/{session}',          [SessionController::class, 'show']);
             Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
-            Route::put('/sessions/{session}/notes', [SessionController::class, 'saveNotes']);
+            Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
 
-            Route::get('/requests', [TelemedicineController::class, 'index']);
-            Route::post('/requests', [TelemedicineController::class, 'store']);
-            Route::get('/requests/mine', [TelemedicineController::class, 'mine']);
-            Route::get('/requests/{request}', [TelemedicineController::class, 'show']);
-            Route::patch('/requests/{request}/screen', [TelemedicineController::class, 'screen']);
+            Route::get('/requests',                         [TelemedicineController::class, 'index']);
+            Route::post('/requests',                        [TelemedicineController::class, 'store']);
+            Route::get('/requests/mine',                    [TelemedicineController::class, 'mine']);
+            Route::get('/requests/{request}',               [TelemedicineController::class, 'show']);
+            Route::patch('/requests/{request}/screen',      [TelemedicineController::class, 'screen']);
             Route::delete('/requests/{telemedicineRequest}', [TelemedicineController::class, 'destroy']);
 
             Route::post('/requests/{telemedicineRequest}/session', [SessionController::class, 'store']);
 
-            Route::get('/sessions/{id}/join', [WebRtcController::class, 'getJoinToken']);
+            Route::get('/sessions/{id}/join',    [WebRtcController::class, 'getJoinToken']);
             Route::post('/sessions/{id}/signal', [WebRtcController::class, 'signal']);
             Route::get('/sessions/{id}/signals', [WebRtcController::class, 'getSignals']);
         });
@@ -290,17 +324,23 @@ Route::prefix('v1')->group(function () {
         // AI
         // =====================================================================
 
-       Route::prefix('ai')->group(function () {
-        Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
-        Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
-        Route::get('/history',                   [AiController::class, 'history']);
-        Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
-        Route::post('/summarize-events',         [AiController::class, 'summarizeEvents']);
+        Route::prefix('ai')->group(function () {
+            Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
+            Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
+            Route::get('/history',                   [AiController::class, 'history']);
+            Route::patch('/triage/{id}/override',    [AiController::class, 'override']);
+            Route::post('/summarize-events',         [AiController::class, 'summarizeEvents']);
 
-        // AI consultation / telemedicine SOAP summary
-        Route::post('/summarize-consultation/{id}', [AiController::class, 'summarizeConsultation']);
-        Route::post('/summarize-telemedicine-session/{id}', [AiController::class, 'summarizeTelemedicineSession']);
-       });
+            Route::post('/summarize-consultation/{id}', [
+                AiController::class,
+                'summarizeConsultation',
+            ]);
+
+            Route::post('/summarize-telemedicine-session/{id}', [
+                AiController::class,
+                'summarizeTelemedicineSession',
+            ]);
+        });
 
         // =====================================================================
         // CLINICAL STAFF
@@ -308,53 +348,45 @@ Route::prefix('v1')->group(function () {
 
         Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')
             ->group(function () {
-                Route::apiResource('/patients', PatientController::class);
+                Route::apiResource('patients', PatientController::class);
             });
 
         // =====================================================================
-// ANALYTICS
-// =====================================================================
-
-Route::prefix('analytics')
-    ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
-    ->group(function () {
-        Route::get('/overview',                [AnalyticsController::class, 'overview']);
-        Route::get('/heatmap',                 [AnalyticsController::class, 'heatmap']);
-        Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
-        Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
-        Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
-        Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
-        Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
-        Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
-
-        Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
-        Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
-        Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);
-        Route::get('/disease-clusters', [AnalyticsController::class, 'diseaseClusters']);
-
-        Route::get('/outbreak-alerts', [
-            AnalyticsController::class,
-            'outbreakAlerts',
-        ]);
-
-        Route::post('/outbreak-alerts/{id}/resolve', [
-            AnalyticsController::class,
-                'resolveAlert',
-            ]);
-
-           Route::get('/priority-dashboard', [
-                AnalyticsController::class,
-             'priorityDashboard',
-        ]);
-        });
-
+        // ANALYTICS
         // =====================================================================
-        // RESOURCES
-        // =====================================================================
-        Route::get('/prescriptions/{id}/pdf', [PrescriptionController::class, 'downloadPdf']);
-        Route::apiResource('prescriptions', PrescriptionController::class);
-        Route::apiResource('referrals',     ReferralController::class);
-        Route::apiResource('inventory',     InventoryController::class);
+
+        Route::prefix('analytics')
+            ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
+            ->group(function () {
+                Route::get('/overview',                [AnalyticsController::class, 'overview']);
+                Route::get('/heatmap',                 [AnalyticsController::class, 'heatmap']);
+                Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
+                Route::get('/telemedicine-summary',    [AnalyticsController::class, 'telemedicineSummary']);
+                Route::get('/barangay-health-profile', [AnalyticsController::class, 'barangayHealthProfile']);
+                Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
+                Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
+                Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
+
+                Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
+                Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
+                Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);
+                Route::get('/disease-clusters', [AnalyticsController::class, 'diseaseClusters']);
+
+                Route::get('/outbreak-alerts', [
+                    AnalyticsController::class,
+                    'outbreakAlerts',
+                ]);
+
+                Route::post('/outbreak-alerts/{id}/resolve', [
+                    AnalyticsController::class,
+                    'resolveAlert',
+                ]);
+
+                Route::get('/priority-dashboard', [
+                    AnalyticsController::class,
+                    'priorityDashboard',
+                ]);
+            });
 
         // =====================================================================
         // ADMIN WEB CMS
@@ -367,9 +399,19 @@ Route::prefix('analytics')
                 Route::get('/users',                 [AdminUserController::class, 'index']);
                 Route::post('/users',                [AdminUserController::class, 'store']);
                 Route::put('/users/{id}',            [AdminUserController::class, 'update']);
+                Route::patch('/users/{id}',          [AdminUserController::class, 'update']);
                 Route::delete('/users/{id}',         [AdminUserController::class, 'destroy']);
+                Route::patch('/users/{id}/status',   [AdminUserController::class, 'status']);
                 Route::patch('/users/{id}/suspend',  [AdminUserController::class, 'suspend']);
                 Route::patch('/users/{id}/activate', [AdminUserController::class, 'activate']);
+
+                Route::get('/announcements',                [AnnouncementController::class, 'adminIndex']);
+                Route::post('/announcements',               [AnnouncementController::class, 'store']);
+                Route::put('/announcements/{id}',           [AnnouncementController::class, 'update']);
+                Route::post('/announcements/{id}',          [AnnouncementController::class, 'update']);
+                Route::patch('/announcements/{id}/publish', [AnnouncementController::class, 'publish']);
+                Route::patch('/announcements/{id}/archive', [AnnouncementController::class, 'archive']);
+                Route::delete('/announcements/{id}',        [AnnouncementController::class, 'destroy']);
 
                 Route::get('/system-stats', [AdminController::class, 'systemStats']);
 

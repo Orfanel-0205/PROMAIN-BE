@@ -4,200 +4,415 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Announcement;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class AnnouncementController extends Controller
 {
-    // =========================================================================
-    // MOBILE  GET /api/v1/announcements
-    // Returns published announcements for the mobile feed.
-    // =========================================================================
+    private string $table = 'announcements';
 
+    /**
+     * MOBILE/PUBLIC
+     * GET /api/v1/announcements
+     */
     public function index(Request $request): JsonResponse
     {
-        $announcements = Announcement::where('status', 'published')
-            ->latest('published_at')
-            ->paginate((int) $request->query('per_page', 10));
+        abort_unless(Schema::hasTable($this->table), 404, 'Announcements table not found.');
 
-        $announcements->getCollection()->transform(fn($a) => $this->formatMobile($a));
+        $request->validate([
+            'search' => ['nullable', 'string', 'max:100'],
+            'category' => ['nullable', 'string', 'max:50'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
 
-        return response()->json(['data' => $announcements]);
-    }
-
-    public function show(int $id): JsonResponse
-    {
-        $a = Announcement::where('status', 'published')->findOrFail($id);
-        return response()->json(['data' => $this->formatMobile($a)]);
-    }
-
-    // =========================================================================
-    // ADMIN  GET /api/v1/admin/announcements
-    // =========================================================================
-
-    public function adminIndex(Request $request): JsonResponse
-    {
-        $query = Announcement::with('creator:user_id,first_name,last_name')->latest();
-
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
-
-        if ($request->filled('category')) {
-            $query->where('category', $request->category);
-        }
+        $query = $this->baseQuery()
+            ->when(Schema::hasColumn($this->table, 'status'), fn (Builder $q) => $q->where('status', 'published'))
+            ->when(Schema::hasColumn($this->table, 'published_at'), fn (Builder $q) => $q->whereNotNull('published_at'));
 
         if ($request->filled('search')) {
-            $s = '%' . $request->search . '%';
-            $query->where(fn($q) => $q->where('title', 'like', $s)->orWhere('body', 'like', $s));
+            $this->applySearch($query, (string) $request->query('search'));
         }
 
-        return response()->json(['data' => $query->paginate(20)]);
+        if ($request->filled('category') && Schema::hasColumn($this->table, 'category')) {
+            $query->where('category', $request->query('category'));
+        }
+
+        $sortColumn = Schema::hasColumn($this->table, 'published_at') ? 'published_at' : 'created_at';
+
+        $items = $query
+            ->orderByDesc($sortColumn)
+            ->paginate($request->integer('per_page', 20));
+
+        $items->getCollection()->transform(fn ($row) => $this->format($row));
+
+        return response()->json($items);
     }
 
-    // =========================================================================
-    // ADMIN  POST /api/v1/admin/announcements
-    // =========================================================================
-
-    public function store(Request $request): JsonResponse
+    /**
+     * ADMIN
+     * GET /api/v1/admin/announcements
+     */
+    public function adminIndex(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'title'       => ['required', 'string', 'max:255'],
-            'body'        => ['required', 'string'],
-            'category'    => ['required', Rule::in(['health_alert', 'program', 'general'])],
-            'banner_image'=> ['nullable', 'image', 'mimes:jpeg,png,jpg,webp', 'max:5120'],
-            'status'      => ['sometimes', Rule::in(['draft', 'published'])],
+        $this->authorizeCms($request);
+
+        abort_unless(Schema::hasTable($this->table), 404, 'Announcements table not found.');
+
+        $request->validate([
+            'search' => ['nullable', 'string', 'max:100'],
+            'status' => ['nullable', Rule::in(['draft', 'published', 'archived'])],
+            'category' => ['nullable', 'string', 'max:50'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $bannerPath = null;
-        if ($request->hasFile('banner_image')) {
-            $bannerPath = $request->file('banner_image')
-                ->store('announcements/banners', 'public');
+        $query = $this->baseQuery();
+
+        if ($request->filled('search')) {
+            $this->applySearch($query, (string) $request->query('search'));
         }
 
-        $announcement = Announcement::create([
-            'created_by'   => $request->user()->user_id,
-            'title'        => $validated['title'],
-            'body'         => $validated['body'],
-            'category'     => $validated['category'],
-            'banner_image' => $bannerPath,
-            'status'       => $validated['status'] ?? 'draft',
-            'published_at' => ($validated['status'] ?? 'draft') === 'published' ? now() : null,
+        if ($request->filled('status') && Schema::hasColumn($this->table, 'status')) {
+            $query->where('status', $request->query('status'));
+        }
+
+        if ($request->filled('category') && Schema::hasColumn($this->table, 'category')) {
+            $query->where('category', $request->query('category'));
+        }
+
+        $sortColumn = Schema::hasColumn($this->table, 'created_at') ? 'created_at' : 'id';
+
+        $items = $query
+            ->orderByDesc($sortColumn)
+            ->paginate($request->integer('per_page', 20));
+
+        $items->getCollection()->transform(fn ($row) => $this->format($row));
+
+        return response()->json($items);
+    }
+
+    /**
+     * PUBLIC
+     * GET /api/v1/announcements/{id}
+     */
+    public function show(int $id): JsonResponse
+    {
+        abort_unless(Schema::hasTable($this->table), 404, 'Announcements table not found.');
+
+        $row = $this->baseQuery()
+            ->where('id', $id)
+            ->first();
+
+        abort_unless($row, 404, 'Announcement not found.');
+
+        return response()->json([
+            'data' => $this->format($row),
         ]);
+    }
+
+    /**
+     * ADMIN
+     * POST /api/v1/admin/announcements
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $this->authorizeCms($request);
+
+        $validated = $this->validatePayload($request);
+
+        $data = $this->payloadToDb($validated, $request);
+
+        if (Schema::hasColumn($this->table, 'created_by')) {
+            $data['created_by'] = $request->user()?->user_id ?? $request->user()?->id;
+        }
+
+        if (($data['status'] ?? 'draft') === 'published' && Schema::hasColumn($this->table, 'published_at')) {
+            $data['published_at'] = now();
+        }
+
+        if (Schema::hasColumn($this->table, 'created_at')) {
+            $data['created_at'] = now();
+        }
+
+        if (Schema::hasColumn($this->table, 'updated_at')) {
+            $data['updated_at'] = now();
+        }
+
+        $id = DB::table($this->table)->insertGetId($this->onlyExistingColumns($data));
+
+        $row = $this->baseQuery()->where('id', $id)->first();
 
         return response()->json([
             'message' => 'Announcement created.',
-            'data'    => $this->formatAdmin($announcement->load('creator')),
+            'data' => $this->format($row),
         ], 201);
     }
 
-    // =========================================================================
-    // ADMIN  PUT /api/v1/admin/announcements/{id}
-    // =========================================================================
-
+    /**
+     * ADMIN
+     * PUT/PATCH/POST /api/v1/admin/announcements/{id}
+     */
     public function update(Request $request, int $id): JsonResponse
     {
-        $announcement = Announcement::findOrFail($id);
+        $this->authorizeCms($request);
 
-        $validated = $request->validate([
-            'title'        => ['sometimes', 'string', 'max:255'],
-            'body'         => ['sometimes', 'string'],
-            'category'     => ['sometimes', Rule::in(['health_alert', 'program', 'general'])],
-            'banner_image' => ['nullable', 'image', 'mimes:jpeg,png,jpg,webp', 'max:5120'],
-        ]);
+        $validated = $this->validatePayload($request, true);
 
-        if ($request->hasFile('banner_image')) {
-            if ($announcement->banner_image) {
-                Storage::disk('public')->delete($announcement->banner_image);
+        $row = DB::table($this->table)->where('id', $id)->first();
+        abort_unless($row, 404, 'Announcement not found.');
+
+        $data = $this->payloadToDb($validated, $request, true);
+
+        if (array_key_exists('status', $data) && Schema::hasColumn($this->table, 'published_at')) {
+            if ($data['status'] === 'published' && empty($row->published_at)) {
+                $data['published_at'] = now();
             }
-            $validated['banner_image'] = $request->file('banner_image')
-                ->store('announcements/banners', 'public');
+
+            if ($data['status'] === 'draft') {
+                $data['published_at'] = null;
+            }
         }
 
-        $announcement->update($validated);
+        if (Schema::hasColumn($this->table, 'updated_at')) {
+            $data['updated_at'] = now();
+        }
+
+        if (!empty($data)) {
+            DB::table($this->table)
+                ->where('id', $id)
+                ->update($this->onlyExistingColumns($data));
+        }
+
+        $fresh = $this->baseQuery()->where('id', $id)->first();
 
         return response()->json([
             'message' => 'Announcement updated.',
-            'data'    => $this->formatAdmin($announcement->fresh()->load('creator')),
+            'data' => $this->format($fresh),
         ]);
     }
 
-    // =========================================================================
-    // ADMIN  PATCH /api/v1/admin/announcements/{id}/publish
-    // =========================================================================
-
+    /**
+     * ADMIN
+     * PATCH /api/v1/admin/announcements/{id}/publish
+     */
     public function publish(Request $request, int $id): JsonResponse
     {
-        $announcement    = Announcement::findOrFail($id);
-        $shouldPublish   = $request->input('publish', true);
+        $this->authorizeCms($request);
 
-        $announcement->update([
-            'status'       => $shouldPublish ? 'published' : 'draft',
-            'published_at' => $shouldPublish ? ($announcement->published_at ?? now()) : null,
-        ]);
+        $row = DB::table($this->table)->where('id', $id)->first();
+        abort_unless($row, 404, 'Announcement not found.');
 
-        return response()->json([
-            'message' => $shouldPublish
-                ? 'Announcement published and visible to all residents.'
-                : 'Announcement unpublished.',
-            'data' => $this->formatAdmin($announcement->fresh()->load('creator')),
-        ]);
-    }
+        $publish = $request->boolean('is_published', $request->boolean('publish', true));
 
-    // =========================================================================
-    // ADMIN  DELETE /api/v1/admin/announcements/{id}
-    // =========================================================================
+        $data = [];
 
-    public function destroy(int $id): JsonResponse
-    {
-        $announcement = Announcement::findOrFail($id);
-
-        if ($announcement->banner_image) {
-            Storage::disk('public')->delete($announcement->banner_image);
+        if (Schema::hasColumn($this->table, 'status')) {
+            $data['status'] = $publish ? 'published' : 'draft';
         }
 
-        $announcement->delete();
+        if (Schema::hasColumn($this->table, 'published_at')) {
+            $data['published_at'] = $publish ? now() : null;
+        }
 
-        return response()->json(['message' => 'Announcement deleted.']);
+        if (Schema::hasColumn($this->table, 'archived_at') && $publish) {
+            $data['archived_at'] = null;
+        }
+
+        if (Schema::hasColumn($this->table, 'updated_at')) {
+            $data['updated_at'] = now();
+        }
+
+        DB::table($this->table)->where('id', $id)->update($data);
+
+        $fresh = $this->baseQuery()->where('id', $id)->first();
+
+        return response()->json([
+            'message' => $publish ? 'Announcement published.' : 'Announcement moved to draft.',
+            'data' => $this->format($fresh),
+        ]);
     }
 
-    // =========================================================================
-    // Helpers
-    // =========================================================================
-
-    private function formatMobile(Announcement $a): array
+    /**
+     * ADMIN
+     * PATCH /api/v1/admin/announcements/{id}/archive
+     */
+    public function archive(Request $request, int $id): JsonResponse
     {
+        $this->authorizeCms($request);
+
+        $row = DB::table($this->table)->where('id', $id)->first();
+        abort_unless($row, 404, 'Announcement not found.');
+
+        $data = [];
+
+        if (Schema::hasColumn($this->table, 'status')) {
+            $data['status'] = 'archived';
+        }
+
+        if (Schema::hasColumn($this->table, 'archived_at')) {
+            $data['archived_at'] = now();
+        }
+
+        if (Schema::hasColumn($this->table, 'archived_by')) {
+            $data['archived_by'] = $request->user()?->user_id ?? $request->user()?->id;
+        }
+
+        if (Schema::hasColumn($this->table, 'updated_at')) {
+            $data['updated_at'] = now();
+        }
+
+        DB::table($this->table)->where('id', $id)->update($data);
+
+        $fresh = $this->baseQuery()->where('id', $id)->first();
+
+        return response()->json([
+            'message' => 'Announcement archived.',
+            'data' => $this->format($fresh),
+        ]);
+    }
+
+    /**
+     * ADMIN
+     * DELETE /api/v1/admin/announcements/{id}
+     */
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        $this->authorizeCms($request);
+
+        $row = DB::table($this->table)->where('id', $id)->first();
+        abort_unless($row, 404, 'Announcement not found.');
+
+        if (Schema::hasColumn($this->table, 'deleted_at')) {
+            DB::table($this->table)->where('id', $id)->update([
+                'deleted_at' => now(),
+                'updated_at' => Schema::hasColumn($this->table, 'updated_at') ? now() : null,
+            ]);
+        } else {
+            DB::table($this->table)->where('id', $id)->delete();
+        }
+
+        return response()->json([
+            'message' => 'Announcement deleted.',
+        ]);
+    }
+
+    private function validatePayload(Request $request, bool $partial = false): array
+    {
+        $required = $partial ? 'sometimes' : 'required';
+
+        return $request->validate([
+            'title' => [$required, 'string', 'max:255'],
+            'body' => [$required, 'string'],
+            'description' => ['nullable', 'string'],
+            'category' => ['nullable', Rule::in(['health_alert', 'program', 'general'])],
+            'status' => ['nullable', Rule::in(['draft', 'published', 'archived'])],
+            'banner_image' => ['nullable', 'file', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+        ]);
+    }
+
+    private function payloadToDb(array $validated, Request $request, bool $partial = false): array
+    {
+        $data = [];
+
+        foreach (['title', 'body', 'category', 'status'] as $key) {
+            if (array_key_exists($key, $validated)) {
+                $data[$key] = $validated[$key];
+            }
+        }
+
+        if (!$partial) {
+            $data['category'] = $data['category'] ?? 'general';
+            $data['status'] = $data['status'] ?? 'draft';
+        }
+
+        if ($request->hasFile('banner_image')) {
+            $data['banner_path'] = $request
+                ->file('banner_image')
+                ->store('announcements/banners', 'public');
+        }
+
+        return $data;
+    }
+
+    private function baseQuery(): Builder
+    {
+        $query = DB::table($this->table);
+
+        if (Schema::hasColumn($this->table, 'deleted_at')) {
+            $query->whereNull('deleted_at');
+        }
+
+        return $query;
+    }
+
+    private function applySearch(Builder $query, string $search): void
+    {
+        $query->where(function (Builder $q) use ($search) {
+            $q->where('title', 'like', "%{$search}%")
+                ->orWhere('body', 'like', "%{$search}%");
+
+            if (Schema::hasColumn($this->table, 'category')) {
+                $q->orWhere('category', 'like', "%{$search}%");
+            }
+        });
+    }
+
+    private function onlyExistingColumns(array $data): array
+    {
+        return collect($data)
+            ->filter(fn ($value, $key) => Schema::hasColumn($this->table, (string) $key) && $value !== null)
+            ->all();
+    }
+
+    private function format(object $row): array
+    {
+        $bannerPath = $row->banner_path ?? null;
+
         return [
-            'id'           => $a->id,
-            'title'        => $a->title,
-            'body'         => $a->body,
-            'category'     => $a->category,
-            'banner_url'   => $a->banner_image
-                ? Storage::disk('public')->url($a->banner_image)
-                : null,
-            'published_at' => optional($a->published_at)->toISOString(),
+            'id' => (int) $row->id,
+            'title' => (string) ($row->title ?? ''),
+            'body' => (string) ($row->body ?? ''),
+            'description' => (string) ($row->body ?? ''),
+            'category' => (string) ($row->category ?? 'general'),
+            'status' => (string) ($row->status ?? 'draft'),
+            'banner_path' => $bannerPath,
+            'banner_url' => $bannerPath ? Storage::disk('public')->url($bannerPath) : null,
+            'image_url' => $bannerPath ? Storage::disk('public')->url($bannerPath) : null,
+            'published_at' => $row->published_at ?? null,
+            'archived_at' => $row->archived_at ?? null,
+            'archived_by' => $row->archived_by ?? null,
+            'created_by' => $row->created_by ?? null,
+            'created_at' => $row->created_at ?? null,
+            'updated_at' => $row->updated_at ?? null,
         ];
     }
 
-    private function formatAdmin(Announcement $a): array
+    private function authorizeCms(Request $request): void
     {
-        return [
-            'id'           => $a->id,
-            'title'        => $a->title,
-            'body'         => $a->body,
-            'category'     => $a->category,
-            'banner_url'   => $a->banner_image
-                ? Storage::disk('public')->url($a->banner_image)
-                : null,
-            'status'       => $a->status,
-            'published_at' => optional($a->published_at)->toISOString(),
-            'created_by'   => $a->creator
-                ? $a->creator->first_name . ' ' . $a->creator->last_name
-                : null,
-            'updated_at'   => optional($a->updated_at)->toISOString(),
+        $user = $request->user();
+
+        abort_unless($user, 401, 'Unauthenticated.');
+
+        $role = strtolower((string) ($user->role?->name ?? $user->role?->role_name ?? $user->role?->slug ?? ''));
+
+        $allowed = [
+            'super_admin',
+            'superadmin',
+            'admin',
+            'rhu_admin',
+            'staff_admin',
+            'staff',
+            'mho',
+            'doctor',
+            'nurse',
+            'midwife',
+            'bhw',
         ];
+
+        abort_unless(in_array($role, $allowed, true), 403, 'You are not allowed to manage announcements.');
     }
 }

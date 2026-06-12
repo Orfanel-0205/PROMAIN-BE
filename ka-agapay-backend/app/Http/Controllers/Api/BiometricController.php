@@ -1,31 +1,37 @@
 <?php
+// app/Http/Controllers/Api/BiometricController.php
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\BiometricAuthService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 
 class BiometricController extends Controller
 {
+    public function __construct(
+        private readonly BiometricAuthService $biometrics
+    ) {}
+
     /**
      * POST /api/v1/biometric/enable
      *
-     * Requires normal Sanctum login token.
+     * Requires a normal Sanctum login token.
      * Returns a raw 64-character biometric exchange token.
+     * Store this token only in Expo SecureStore on the phone.
      */
     public function enable(Request $request): JsonResponse
     {
         $user = $request->user();
 
-        $rawToken = Str::random(64);
+        if (!$user) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
 
-        $user->forceFill([
-            'biometric_enabled' => true,
-            'biometric_token_hash' => Hash::make($rawToken),
-        ])->save();
+        $rawToken = $this->biometrics->enable($user, $request);
 
         return response()->json([
             'message' => 'Biometric login enabled.',
@@ -35,15 +41,20 @@ class BiometricController extends Controller
 
     /**
      * POST /api/v1/biometric/disable
+     *
+     * Revokes all biometric device tokens for the current user.
      */
     public function disable(Request $request): JsonResponse
     {
         $user = $request->user();
 
-        $user->forceFill([
-            'biometric_enabled' => false,
-            'biometric_token_hash' => null,
-        ])->save();
+        if (!$user) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        $this->biometrics->disableAll($user);
 
         return response()->json([
             'message' => 'Biometric login disabled.',

@@ -34,5 +34,10 @@ return [
     'ocr_space' => [
     'key' => env('OCR_SPACE_API_KEY'),
 ],
+'semaphore' => [
+    'api_key' => env('SEMAPHORE_API_KEY'),
+    'sendername' => env('SEMAPHORE_SENDERNAME'),
+    'base_url' => env('SEMAPHORE_BASE_URL', 'https://api.semaphore.co/api/v4'),
+],
 
 ];
