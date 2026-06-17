@@ -138,8 +138,8 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('admin/sms')->group(function () {
-            Route::get('/account', [AdminSmsController::class, 'account']);
-            Route::get('/logs',    [AdminSmsController::class, 'logs']);
+            Route::get('/account',  [AdminSmsController::class, 'account']);
+            Route::get('/logs',     [AdminSmsController::class, 'logs']);
             Route::post('/preview', [AdminSmsController::class, 'preview']);
             Route::post('/send',    [AdminSmsController::class, 'send']);
         });
@@ -277,7 +277,6 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
             ->prefix('admin')
             ->group(function () {
-
                 Route::get('/appointments',                         [AppointmentController::class, 'adminIndex']);
                 Route::get('/appointments/{id}',                    [AppointmentController::class, 'adminShow']);
                 Route::patch('/appointments/{id}/status',           [AppointmentController::class, 'adminUpdateStatus']);
@@ -305,41 +304,59 @@ Route::prefix('v1')->group(function () {
         // NOTIFICATIONS
         // =====================================================================
 
-        Route::prefix('notifications')->group(function () {
-            Route::get('/',             [NotificationController::class, 'index']);
-            Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+       Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+    Route::patch('/notifications/{id}/read', [NotificationController::class, 'markRead']);
+    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+    Route::delete('/notifications/{id}', [NotificationController::class, 'destroy']);
 
-            Route::get('/preferences', [NotificationController::class, 'preferences']);
-            Route::put('/preferences', [NotificationController::class, 'updatePreferences']);
-
-            Route::post('/read-all',    [NotificationController::class, 'markAllRead']);
-            Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
-            Route::delete('/{id}',      [NotificationController::class, 'destroy']);
-        });
+    Route::get('/notifications/preferences', [NotificationController::class, 'preferences']);
+    Route::put('/notifications/preferences', [NotificationController::class, 'updatePreferences']);
+});
 
         // =====================================================================
         // QUEUE
         // =====================================================================
 
         Route::prefix('queue')->group(function () {
-            Route::get('/',              [QueueController::class, 'index']);
-            Route::post('/issue',        [QueueController::class, 'issue']);
-            Route::get('/my-ticket',     [QueueController::class, 'myTicket']);
-            Route::get('/live',          [QueueController::class, 'live']);
-            Route::get('/summary',       [QueueController::class, 'summary']);
-            Route::post('/call-next',    [QueueController::class, 'callNext']);
-            Route::patch('/{id}/status', [QueueController::class, 'updateStatus']);
+            Route::get('/',          [QueueController::class, 'index']);
+            Route::post('/issue',    [QueueController::class, 'issue']);
+
+            Route::get('/live',      [QueueController::class, 'live']);
+            Route::get('/summary',   [QueueController::class, 'summary']);
+            Route::get('/my-ticket', [QueueController::class, 'myTicket']);
+
+            Route::post('/call-next', [QueueController::class, 'callNext']);
+
+            // IMPORTANT: use {ticket}, not {id}
+            Route::patch('/{ticket}/status', [QueueController::class, 'updateStatus']);
+            Route::put('/{ticket}/status',   [QueueController::class, 'updateStatus']);
+
+            Route::get('/{ticket}', [QueueController::class, 'show']);
         });
 
         // =====================================================================
         // TELEMEDICINE
+        // Final URLs:
+        // GET    /api/v1/telemedicine/requests
+        // POST   /api/v1/telemedicine/requests
+        // GET    /api/v1/telemedicine/requests/mine
+        // GET    /api/v1/telemedicine/requests/{request}
+        // PATCH  /api/v1/telemedicine/requests/{request}/screen
+        // DELETE /api/v1/telemedicine/requests/{telemedicineRequest}
+        //
+        // GET    /api/v1/telemedicine/sessions
+        // GET    /api/v1/telemedicine/sessions/{session}
+        // PATCH  /api/v1/telemedicine/sessions/{session}/status
+        // PUT    /api/v1/telemedicine/sessions/{session}/notes
         // =====================================================================
 
         Route::prefix('telemedicine')->group(function () {
-            Route::get('/sessions',                    [SessionController::class, 'index']);
-            Route::get('/sessions/{session}',          [SessionController::class, 'show']);
-            Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
-            Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
+
+            // -----------------------------------------------------------------
+            // TELEMEDICINE REQUESTS
+            // -----------------------------------------------------------------
 
             Route::get('/requests',                         [TelemedicineController::class, 'index']);
             Route::post('/requests',                        [TelemedicineController::class, 'store']);
@@ -348,7 +365,20 @@ Route::prefix('v1')->group(function () {
             Route::patch('/requests/{request}/screen',      [TelemedicineController::class, 'screen']);
             Route::delete('/requests/{telemedicineRequest}', [TelemedicineController::class, 'destroy']);
 
+            // -----------------------------------------------------------------
+            // TELEMEDICINE SESSIONS
+            // -----------------------------------------------------------------
+
+            Route::get('/sessions',                    [SessionController::class, 'index']);
+            Route::get('/sessions/{session}',          [SessionController::class, 'show']);
+            Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
+            Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
+
             Route::post('/requests/{telemedicineRequest}/session', [SessionController::class, 'store']);
+
+            // -----------------------------------------------------------------
+            // WEBRTC / SIGNALING
+            // -----------------------------------------------------------------
 
             Route::get('/sessions/{id}/join',    [WebRtcController::class, 'getJoinToken']);
             Route::post('/sessions/{id}/signal', [WebRtcController::class, 'signal']);

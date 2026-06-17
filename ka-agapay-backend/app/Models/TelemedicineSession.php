@@ -40,8 +40,6 @@ class TelemedicineSession extends Model
         'cancelled_at'   => 'datetime',
     ];
 
-    // --- Relationships ---
-
     public function request(): BelongsTo
     {
         return $this->belongsTo(TelemedicineRequest::class, 'request_id');
@@ -77,12 +75,10 @@ class TelemedicineSession extends Model
         return $this->morphMany(TelemedicineLog::class, 'loggable');
     }
 
-    // --- Helpers ---
-
     public function canTransitionTo(string $newStatus): bool
     {
         $allowed = [
-            'scheduled' => ['waiting', 'no_show', 'cancelled'],
+            'scheduled' => ['waiting', 'active', 'no_show', 'cancelled'],
             'waiting'   => ['active', 'no_show', 'cancelled'],
             'active'    => ['paused', 'ended'],
             'paused'    => ['active', 'ended'],
@@ -91,11 +87,11 @@ class TelemedicineSession extends Model
             'cancelled' => [],
         ];
 
-        return in_array($newStatus, $allowed[$this->status] ?? []);
+        return in_array($newStatus, $allowed[$this->status] ?? [], true);
     }
 
     public function isTerminal(): bool
     {
-        return in_array($this->status, ['ended', 'no_show', 'cancelled']);
+        return in_array($this->status, ['ended', 'no_show', 'cancelled'], true);
     }
 }

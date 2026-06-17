@@ -1,5 +1,5 @@
 <?php
-//app/Models/Prescription.php
+//app/Models/Consultation.php
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;

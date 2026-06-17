@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_05_27_010400_create_heatmap_analytics_views.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 

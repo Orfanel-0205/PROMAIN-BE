@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/Telemedicine/SessionController.php
 
 namespace App\Http\Controllers\Api\Telemedicine;
 
@@ -18,7 +19,8 @@ class SessionController extends Controller
 {
     public function __construct(
         private readonly TelemedicineService $service
-    ) {}
+    ) {
+    }
 
     /**
      * GET /api/v1/telemedicine/sessions
@@ -35,6 +37,7 @@ class SessionController extends Controller
                 'bhwCompanion',
                 'notes.recordedBy',
                 'referrals',
+                'consultation',
             ])
             ->where(function ($query) use ($user) {
                 $query->where('assigned_doctor_id', $user->user_id)
@@ -65,11 +68,13 @@ class SessionController extends Controller
 
         $session->load([
             'request.residentProfile.user',
+            'request.residentProfile.barangay',
             'request.rhu',
             'assignedDoctor',
             'bhwCompanion',
             'notes',
             'referrals',
+            'consultation',
         ]);
 
         return response()->json([
@@ -91,6 +96,7 @@ class SessionController extends Controller
             'bhwCompanion',
             'notes.recordedBy',
             'referrals',
+            'consultation',
         ]);
 
         return response()->json([
@@ -107,17 +113,19 @@ class SessionController extends Controller
     ): JsonResponse {
         $session = $this->service->transitionSessionStatus(
             $session,
-            $request->status,
+            (string) $request->input('status'),
             $request->validated()
         );
 
         $session->load([
             'request.residentProfile.user',
+            'request.residentProfile.barangay',
             'request.rhu',
             'assignedDoctor',
             'bhwCompanion',
             'notes',
             'referrals',
+            'consultation',
         ]);
 
         return response()->json([
@@ -151,9 +159,13 @@ class SessionController extends Controller
     {
         $sessions = TelemedicineSession::with([
                 'request.residentProfile.user',
+                'request.residentProfile.barangay',
                 'request.rhu',
                 'assignedDoctor',
                 'bhwCompanion',
+                'notes',
+                'referrals',
+                'consultation',
             ])
             ->where('assigned_doctor_id', $request->user()->user_id)
             ->latest()

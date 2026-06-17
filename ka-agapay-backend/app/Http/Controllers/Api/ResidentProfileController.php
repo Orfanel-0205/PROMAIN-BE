@@ -1,40 +1,93 @@
 <?php
-// app/Http/Controllers/Api/ResidentProfileController.php
+// app/Models/ResidentProfile.php
 
-namespace App\Http\Controllers\Api;
+namespace App\Models;
 
-use App\Http\Controllers\Controller;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class ResidentProfileController extends Controller
+class ResidentProfile extends Model
 {
-    public function show(Request $request): JsonResponse
+    protected $table = 'resident_profiles';
+
+    protected $fillable = [
+        'user_id',
+        'barangay_id',
+
+        'first_name',
+        'middle_name',
+        'last_name',
+        'suffix',
+
+        // Your project has used different names across versions.
+        // Keep all so updateOrCreate does not fail.
+        'birth_date',
+        'birthdate',
+        'date_of_birth',
+
+        'sex',
+        'gender',
+        'civil_status',
+
+        'mobile_number',
+        'contact_number',
+
+        'address',
+        'street',
+        'purok',
+        'household_number',
+
+        'philhealth_no',
+        'philhealth_number',
+        'philhealth_pin',
+
+        'emergency_contact_name',
+        'emergency_contact_number',
+
+        'medical_history',
+        'allergies',
+        'maintenance_medications',
+
+        'is_senior',
+        'is_pwd',
+        'is_pregnant',
+
+        'created_at',
+        'updated_at',
+    ];
+
+    protected $casts = [
+        'birth_date' => 'date',
+        'birthdate' => 'date',
+        'date_of_birth' => 'date',
+
+        'medical_history' => 'array',
+        'allergies' => 'array',
+        'maintenance_medications' => 'array',
+
+        'is_senior' => 'boolean',
+        'is_pwd' => 'boolean',
+        'is_pregnant' => 'boolean',
+    ];
+
+    public function user(): BelongsTo
     {
-        $profile = $request->user()->residentProfile()->with('barangay')->first();
-
-        if (!$profile) {
-            return response()->json(['message' => 'Profile not found.'], 404);
-        }
-
-        return response()->json(['profile' => $profile]);
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
     }
 
-    public function update(Request $request): JsonResponse
+    public function barangay(): BelongsTo
     {
-        $validated = $request->validate([
-            'barangay_id'   => 'nullable|exists:barangays,barangay_id',
-            'birth_date'    => 'nullable|date',
-            'sex'           => 'nullable|in:male,female,other',
-            'address'       => 'nullable|string',
-            'philhealth_no' => 'nullable|string|max:50',
-        ]);
+        return $this->belongsTo(Barangay::class, 'barangay_id', 'barangay_id');
+    }
 
-        $profile = $request->user()->residentProfile()->updateOrCreate(
-            ['user_id' => $request->user()->user_id],
-            $validated
-        );
+    public function telemedicineRequests(): HasMany
+    {
+        return $this->hasMany(TelemedicineRequest::class, 'resident_profile_id');
+    }
 
-        return response()->json(['message' => 'Profile updated.', 'profile' => $profile]);
+    public function telemedicineReferrals(): HasMany
+    {
+        return $this->hasMany(TelemedicineReferral::class, 'resident_profile_id');
     }
 }

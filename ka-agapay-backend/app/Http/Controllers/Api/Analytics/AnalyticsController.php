@@ -363,66 +363,61 @@ class AnalyticsController extends Controller
     /**
      * GET /api/v1/analytics/queue-heatmap
      */
-    public function queueHeatmap(Request $request): JsonResponse
+    public function queueHeatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
     {
-        [$from, $to] = $this->dateRange($request);
-        $disease = trim((string) $request->query('disease', ''));
+        $validated = $request->validate([
+            'disease' => ['nullable', 'string', 'max:100'],
+            'range' => ['nullable', 'in:week,month'],
+        ]);
 
-        $rows = collect($this->barangayCases($from, $to, $disease))
-            ->map(function ($row) {
-                $cases = (int) ($row['total_cases'] ?? 0);
-                $queue = (int) ($row['queue_density'] ?? 0);
-                $score = min(100, ($cases * 7) + ($queue * 3));
+        $disease = trim((string) ($validated['disease'] ?? ''));
+        $range = $validated['range'] ?? 'week';
 
-                return array_merge($row, [
-                    'heatmap_intensity' => $score,
-                    'risk_level' => $this->riskLevel($score),
-                ]);
-            })
-            ->values()
-            ->all();
+        $points = $service->generateHeatmapData(
+            $disease !== '' ? $disease : null,
+            $range
+        );
 
         return response()->json([
             'status' => 'success',
             'generated_at' => now()->toIso8601String(),
             'filters' => [
-                'from' => $from->toDateString(),
-                'to' => $to->toDateString(),
-                'disease' => $disease ?: null,
+                'disease' => $disease !== '' ? $disease : null,
+                'range' => $range,
             ],
-            'data' => $rows,
+            'data' => $points,
         ]);
     }
 
     /**
      * GET /api/v1/analytics/barangay-risk
      */
-    public function barangayRisk(Request $request): JsonResponse
+    public function barangayRisk(Request $request, HeatmapAnalyticsService $service): JsonResponse
     {
-        [$from, $to] = $this->dateRange($request);
+        $validated = $request->validate([
+            'disease' => ['nullable', 'string', 'max:100'],
+            'range' => ['nullable', 'in:week,month'],
+        ]);
 
-        $items = collect($this->barangayCases($from, $to))
-            ->map(function ($row) {
-                $score = min(
-                    100,
-                    ((int) ($row['total_cases'] ?? 0) * 7) +
-                    ((int) ($row['queue_density'] ?? 0) * 3)
-                );
+        $disease = trim((string) ($validated['disease'] ?? ''));
+        $range = $validated['range'] ?? 'week';
 
-                return [
-                    'barangay' => $row['barangay'] ?? 'Unspecified',
-                    'total_cases' => (int) ($row['total_cases'] ?? 0),
-                    'queue_density' => (int) ($row['queue_density'] ?? 0),
-                    'top_complaint' => $row['top_complaint'] ?? 'Unspecified',
-                    'risk_score' => $score,
-                    'risk_level' => $this->riskLevel($score),
-                ];
-            })
+        $items = collect(
+            $service->generateHeatmapData(
+                $disease !== '' ? $disease : null,
+                $range
+            )
+        )
             ->sortByDesc('risk_score')
             ->values();
 
         return response()->json([
             'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => [
+                'disease' => $disease !== '' ? $disease : null,
+                'range' => $range,
+            ],
             'summary' => $items->countBy('risk_level'),
             'data' => $items,
         ]);

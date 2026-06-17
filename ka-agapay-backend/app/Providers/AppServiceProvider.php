@@ -1,9 +1,9 @@
 <?php
+// app/Providers/AppServiceProvider.php
 
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
-use Illuminate\Support\Facades\Log;
 
 use App\Services\Audit\AuditService;
 use App\Services\Prescription\PrescriptionService;
@@ -35,9 +35,42 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Global log context
-        Log::withContext([
-            'app' => 'ka-agapay',
-        ]);
+        /*
+        |--------------------------------------------------------------------------
+        | Model Observers for Ka-Agapay Notifications
+        |--------------------------------------------------------------------------
+        | These observers automatically create notification rows when:
+        | - appointment requests are created from mobile
+        | - appointment status changes
+        | - telemedicine requests/sessions change
+        | - queue tickets are issued/called
+        | - events/programs are published
+        | - announcements are published
+        |--------------------------------------------------------------------------
+        */
+
+        \App\Models\Appointment::observe(
+            \App\Observers\AppointmentObserver::class
+        );
+
+        \App\Models\TelemedicineRequest::observe(
+            \App\Observers\TelemedicineRequestObserver::class
+        );
+
+        \App\Models\TelemedicineSession::observe(
+            \App\Observers\TelemedicineSessionObserver::class
+        );
+
+        \App\Models\QueueTicket::observe(
+            \App\Observers\QueueTicketObserver::class
+        );
+
+        \App\Models\Event::observe(
+            \App\Observers\EventObserver::class
+        );
+
+        \App\Models\Announcement::observe(
+            \App\Observers\AnnouncementObserver::class
+        );
     }
 }

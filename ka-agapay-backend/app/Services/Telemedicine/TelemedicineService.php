@@ -3,29 +3,28 @@
 
 namespace App\Services\Telemedicine;
 
+use App\Models\Consultation;
+use App\Models\MedicalReport;
+use App\Models\TelemedicineLog;
+use App\Models\TelemedicineReferral;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
 use App\Models\TelemedicineSessionNote;
-use App\Models\TelemedicineReferral;
-use App\Models\TelemedicineLog;
-use App\Models\Consultation;
-use App\Models\MedicalReport;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Str;
-use Carbon\Carbon;
-use App\Services\Audit\AuditService;
 use App\Services\Audit\AuditActions;
+use App\Services\Audit\AuditService;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 class TelemedicineService
 {
     public function __construct(
         private readonly AuditService $audit
-    ) {}
+    ) {
+    }
 
-    /**
-     * Resident or BHW submits a telemedicine request.
-     */
     public function createRequest(array $data): TelemedicineRequest
     {
         return DB::transaction(function () use ($data) {
@@ -58,26 +57,49 @@ class TelemedicineService
                 'new_values'    => ['status' => 'pending'],
             ]);
 
-            return $request->fresh(['residentProfile', 'requestedBy', 'rhu']);
+            return $request->fresh([
+                'residentProfile.user',
+                'residentProfile.barangay',
+                'requestedBy',
+                'rhu',
+                'session',
+            ]);
         });
     }
 
-    /**
-     * Staff screens a pending request — approve (screen) or reject.
-     */
     public function screenRequest(TelemedicineRequest $request, array $data): TelemedicineRequest
     {
-        if (!$request->canTransitionTo($data['decision'] === 'approve' ? 'screened' : 'rejected')) {
-            throw new \DomainException("Request [{$request->id}] cannot be screened from status [{$request->status}].");
+        $decision = $data['decision'] ?? 'approve';
+
+        if ($request->isTerminal()) {
+            throw new \DomainException("Request [{$request->id}] is already closed.");
         }
 
-        return DB::transaction(function () use ($request, $data) {
+        if ($decision === 'approve' && $request->status === 'scheduled' && $request->session) {
+            return $request->fresh([
+                'residentProfile.user',
+                'residentProfile.barangay',
+                'screenedBy',
+                'rhu',
+                'queueTicket',
+                'session.assignedDoctor',
+                'session.bhwCompanion',
+            ]);
+        }
+
+        if (!$request->canTransitionTo($decision === 'approve' ? 'screened' : 'rejected')) {
+            throw new \DomainException(
+                "Request [{$request->id}] cannot be screened from status [{$request->status}]."
+            );
+        }
+
+        return DB::transaction(function () use ($request, $data, $decision) {
             $fromStatus = $request->status;
 
-            if ($data['decision'] === 'approve') {
+            if ($decision === 'approve') {
                 $request->update([
                     'status'          => 'screened',
-                    'screened_by'     => Auth::id(),
+                    'screened_by'     => $this->currentUserId(),
                     'screening_notes' => $data['screening_notes'] ?? null,
                     'screened_at'     => now(),
                 ]);
@@ -86,23 +108,24 @@ class TelemedicineService
                     'screening_notes' => $data['screening_notes'] ?? null,
                 ]);
 
-                // If staff wants to schedule immediately during screening
-                if (!empty($data['schedule_now']) && $data['schedule_now']) {
-                    $this->createSession($request, [
+                if (!empty($data['schedule_now'])) {
+                    $this->createSession($request->fresh(), [
                         'assigned_doctor_id'         => $data['assigned_doctor_id'],
                         'scheduled_date'             => $data['scheduled_date'],
                         'scheduled_time'             => $data['scheduled_time'],
                         'session_mode'               => $data['session_mode'] ?? 'in_app',
-                        'estimated_duration_minutes' => 15,
+                        'estimated_duration_minutes' => $data['estimated_duration_minutes'] ?? 15,
                     ]);
                 }
             } else {
                 $request->update([
                     'status'           => 'rejected',
-                    'screened_by'      => Auth::id(),
+                    'screened_by'      => $this->currentUserId(),
                     'screening_notes'  => $data['screening_notes'] ?? null,
                     'screened_at'      => now(),
-                    'rejection_reason' => $data['rejection_reason'] ?? 'Request did not meet triage criteria.',
+                    'rejection_reason' => $data['rejection_reason']
+                        ?? $data['screening_notes']
+                        ?? 'Request did not meet telemedicine criteria.',
                 ]);
 
                 $this->writeLog($request, $fromStatus, 'rejected', 'request_rejected', [
@@ -110,7 +133,7 @@ class TelemedicineService
                 ]);
             }
 
-            $action = $data['decision'] === 'approve'
+            $action = $decision === 'approve'
                 ? AuditActions::TELE_REQUEST_SCREENED
                 : AuditActions::TELE_REQUEST_REJECTED;
 
@@ -121,21 +144,38 @@ class TelemedicineService
                 'new_values'    => ['status' => $request->status],
             ]);
 
-            return $request->fresh(['residentProfile', 'screenedBy', 'session']);
+            return $request->fresh([
+                'residentProfile.user',
+                'residentProfile.barangay',
+                'requestedBy',
+                'screenedBy',
+                'rhu',
+                'queueTicket',
+                'session.assignedDoctor',
+                'session.bhwCompanion',
+            ]);
         });
     }
 
-    /**
-     * Create and schedule a session for a screened request.
-     */
     public function createSession(TelemedicineRequest $request, array $data): TelemedicineSession
     {
         if ($request->status !== 'screened') {
-            throw new \DomainException("A session can only be created for a screened request.");
+            throw new \DomainException('A session can only be created for a screened request.');
         }
 
-        if ($request->session) {
-            throw new \DomainException("A session already exists for request [{$request->id}].");
+        $existing = $request->session()->first();
+
+        if ($existing) {
+            return $existing->fresh([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
+                'assignedDoctor',
+                'bhwCompanion',
+                'notes',
+                'referrals',
+                'consultation',
+            ]);
         }
 
         return DB::transaction(function () use ($request, $data) {
@@ -148,6 +188,7 @@ class TelemedicineService
                 'estimated_duration_minutes' => $data['estimated_duration_minutes'] ?? 15,
                 'session_mode'               => $data['session_mode'] ?? 'in_app',
                 'session_token'              => Str::random(40),
+                'session_link'               => $data['session_link'] ?? null,
                 'status'                     => 'scheduled',
             ]);
 
@@ -156,7 +197,7 @@ class TelemedicineService
             $this->writeLog($request, 'screened', 'scheduled', 'session_created', [
                 'session_id'         => $session->id,
                 'assigned_doctor_id' => $session->assigned_doctor_id,
-                'scheduled_date'     => $session->scheduled_date->toDateString(),
+                'scheduled_date'     => optional($session->scheduled_date)->toDateString(),
                 'scheduled_time'     => $data['scheduled_time'],
             ]);
 
@@ -170,15 +211,41 @@ class TelemedicineService
                 'new_values'    => ['status' => 'scheduled'],
             ]);
 
-            return $session->fresh(['request.residentProfile', 'assignedDoctor']);
+            return $session->fresh([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
+                'assignedDoctor',
+                'bhwCompanion',
+                'notes',
+                'referrals',
+                'consultation',
+            ]);
         });
     }
 
-    /**
-     * Transition a session to a new status (start, pause, end, no-show, cancel).
-     */
-    public function transitionSessionStatus(TelemedicineSession $session, string $newStatus, array $data = []): TelemedicineSession
-    {
+    public function transitionSessionStatus(
+        TelemedicineSession $session,
+        string $newStatus,
+        array $data = []
+    ): TelemedicineSession {
+        if ($session->status === $newStatus) {
+            return $session->fresh([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
+                'assignedDoctor',
+                'bhwCompanion',
+                'notes',
+                'referrals',
+                'consultation',
+            ]);
+        }
+
+        if ($session->isTerminal()) {
+            throw new \DomainException("Session [{$session->id}] is already closed.");
+        }
+
         if (!$session->canTransitionTo($newStatus)) {
             throw new \DomainException(
                 "Cannot transition session [{$session->id}] from [{$session->status}] to [{$newStatus}]."
@@ -186,64 +253,93 @@ class TelemedicineService
         }
 
         return DB::transaction(function () use ($session, $newStatus, $data) {
+            $session->loadMissing([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
+            ]);
+
             $fromStatus = $session->status;
             $now = now();
-            $updates = ['status' => $newStatus];
+
+            $updates = [
+                'status' => $newStatus,
+            ];
 
             switch ($newStatus) {
+                case 'waiting':
+                    break;
+
                 case 'active':
                     if (!$session->started_at) {
                         $updates['started_at'] = $now;
                     }
 
-                    // Create the linked consultation immediately when the meeting starts,
-                    // so the admin floating SOAP/STT panel can save notes during the Jitsi call.
                     if (!$session->consultation_id) {
                         $consultation = $this->createConsultationFromSession($session);
                         $updates['consultation_id'] = $consultation->id;
                     }
 
+                    break;
+
+                case 'paused':
                     break;
 
                 case 'ended':
                     $updates['ended_at'] = $now;
 
                     if ($session->started_at) {
-                        $updates['actual_duration_minutes'] = (int) $now->diffInMinutes($session->started_at);
+                        $updates['actual_duration_minutes'] = max(
+                            1,
+                            (int) $now->diffInMinutes($session->started_at)
+                        );
                     }
 
-                    // Do not create duplicates. Reuse the consultation created when the session started.
                     if (!$session->consultation_id) {
                         $consultation = $this->createConsultationFromSession($session);
                         $updates['consultation_id'] = $consultation->id;
                     }
 
-                    $consultationId = $updates['consultation_id'] ?? $session->consultation_id;
-
-                    // Mark the parent request as completed
-                    $session->request->update(['status' => 'completed']);
+                    $session->request?->update([
+                        'status' => 'completed',
+                    ]);
 
                     $this->writeLog($session->request, 'scheduled', 'completed', 'request_completed', [
                         'session_id'      => $session->id,
-                        'consultation_id' => $consultationId,
+                        'consultation_id' => $updates['consultation_id'] ?? $session->consultation_id,
                     ]);
 
                     break;
 
                 case 'cancelled':
-                    $updates['cancelled_at']        = $now;
-                    $updates['cancellation_reason'] = $data['cancellation_reason'] ?? 'No reason provided.';
+                    $updates['cancelled_at'] = $now;
+                    $updates['cancellation_reason'] = $data['cancellation_reason']
+                        ?? 'Telemedicine session cancelled.';
+
+                    $session->request?->update([
+                        'status' => 'cancelled',
+                        'cancellation_reason' => $updates['cancellation_reason'],
+                        'cancelled_at' => $now,
+                    ]);
+
                     break;
 
                 case 'no_show':
                     $updates['cancelled_at'] = $now;
+
+                    $session->request?->update([
+                        'status' => 'cancelled',
+                        'cancellation_reason' => 'Patient did not join the telemedicine session.',
+                        'cancelled_at' => $now,
+                    ]);
+
                     break;
             }
 
             $session->update($updates);
 
             $this->writeLog($session, $fromStatus, $newStatus, "session_{$newStatus}", array_merge($data, [
-                'performed_by' => Auth::id(),
+                'performed_by' => $this->currentUserId(),
             ]));
 
             $actionMap = [
@@ -261,30 +357,36 @@ class TelemedicineService
             ]);
 
             return $session->fresh([
-                'request.residentProfile',
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
                 'assignedDoctor',
+                'bhwCompanion',
                 'notes',
                 'referrals',
+                'consultation',
             ]);
         });
     }
 
-    /**
-     * Doctor saves (or updates) SOAP notes for a session.
-     */
     public function saveNotes(TelemedicineSession $session, array $data): TelemedicineSessionNote
     {
-        if (!in_array($session->status, ['active', 'paused', 'ended'])) {
-            throw new \DomainException("Notes can only be saved for active, paused, or ended sessions.");
+        if (!in_array($session->status, ['active', 'paused', 'ended'], true)) {
+            throw new \DomainException('Notes can only be saved for active, paused, or ended sessions.');
         }
 
         return DB::transaction(function () use ($session, $data) {
-            $isFinalized = !empty($data['finalize']) && $data['finalize'];
+            $session->loadMissing([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+            ]);
+
+            $isFinalized = !empty($data['finalize']);
 
             $notes = TelemedicineSessionNote::updateOrCreate(
                 ['session_id' => $session->id],
                 [
-                    'recorded_by'             => Auth::id(),
+                    'recorded_by'             => $this->currentUserId(),
                     'subjective'              => $data['subjective'] ?? null,
                     'objective'               => $data['objective'] ?? null,
                     'assessment'              => $data['assessment'] ?? null,
@@ -297,24 +399,29 @@ class TelemedicineService
                 ]
             );
 
-            // If finalizing, sync data into the linked consultation record
             if ($isFinalized && $session->consultation_id) {
-                Consultation::find($session->consultation_id)?->update([
+                Consultation::find($session->consultation_id)?->update($this->filterConsultationPayload([
                     'chief_complaint' => $session->request->chief_complaint,
+                    'subjective'      => $data['subjective'] ?? $session->request->chief_complaint,
+                    'objective'       => $data['objective'] ?? null,
+                    'assessment'      => $data['assessment'] ?? null,
+                    'plan'            => $data['plan'] ?? null,
                     'diagnosis'       => $data['primary_diagnosis_label'] ?? $data['assessment'] ?? null,
                     'treatment'       => $data['plan'] ?? null,
                     'status'          => 'completed',
-                ]);
+                    'completed_at'    => now(),
+                ]));
 
-                // Auto-generate a medical report
-                MedicalReport::create([
-                    'user_id'         => $session->request->residentProfile->user_id,
-                    'consultation_id' => $session->consultation_id,
-                    'created_by'      => Auth::id(),
-                    'report_type'     => 'telemedicine_summary',
-                    'findings'        => $data['assessment'] ?? null,
-                    'recommendations' => $data['plan'] ?? null,
-                ]);
+                if (Schema::hasTable('medical_reports')) {
+                    MedicalReport::create([
+                        'user_id'         => $session->request->residentProfile->user_id,
+                        'consultation_id' => $session->consultation_id,
+                        'created_by'      => $this->currentUserId(),
+                        'report_type'     => 'telemedicine_summary',
+                        'findings'        => $data['assessment'] ?? null,
+                        'recommendations' => $data['plan'] ?? null,
+                    ]);
+                }
             }
 
             $this->writeLog(
@@ -324,7 +431,7 @@ class TelemedicineService
                 $isFinalized ? 'notes_finalized' : 'notes_saved',
                 [
                     'primary_diagnosis_code' => $data['primary_diagnosis_code'] ?? null,
-                    'finalized'              => $isFinalized,
+                    'finalized' => $isFinalized,
                 ]
             );
 
@@ -340,19 +447,18 @@ class TelemedicineService
         });
     }
 
-    /**
-     * Doctor issues a referral after or during a session.
-     */
     public function createReferral(TelemedicineSession $session, array $data): TelemedicineReferral
     {
         if ($session->isTerminal() && $session->status !== 'ended') {
-            throw new \DomainException("Referrals can only be created for ended or active sessions.");
+            throw new \DomainException('Referrals can only be created for ended or active sessions.');
         }
 
         return DB::transaction(function () use ($session, $data) {
+            $session->loadMissing(['request']);
+
             $referral = TelemedicineReferral::create([
                 'session_id'          => $session->id,
-                'issued_by'           => Auth::id(),
+                'issued_by'           => $this->currentUserId(),
                 'resident_profile_id' => $session->request->resident_profile_id,
                 'referral_type'       => $data['referral_type'],
                 'referred_to'         => $data['referred_to'] ?? null,
@@ -379,9 +485,6 @@ class TelemedicineService
         });
     }
 
-    /**
-     * Get daily telemedicine summary for admin dashboard.
-     */
     public function getDailySummary(int $rhuId, ?string $date = null): array
     {
         $date = $date ? Carbon::parse($date) : today();
@@ -390,7 +493,10 @@ class TelemedicineService
             ->whereDate('created_at', $date)
             ->get();
 
-        $sessions = TelemedicineSession::whereHas('request', fn ($q) => $q->where('rhu_id', $rhuId))
+        $sessions = TelemedicineSession::whereHas(
+            'request',
+            fn ($query) => $query->where('rhu_id', $rhuId)
+        )
             ->whereDate('scheduled_date', $date)
             ->get();
 
@@ -412,49 +518,79 @@ class TelemedicineService
                 $sessions->where('status', 'ended')->avg('actual_duration_minutes') ?? 0,
                 1
             ),
-            'by_urgency' => $requests->groupBy('urgency_level')
-                ->map(fn ($g) => $g->count())
+            'by_urgency' => $requests
+                ->groupBy('urgency_level')
+                ->map(fn ($group) => $group->count())
                 ->toArray(),
         ];
     }
 
-    // -------------------------------------------------------------------------
-    // PRIVATE HELPERS
-    // -------------------------------------------------------------------------
-
-    /**
-     * Create a Consultation record from a telemedicine session.
-     */
     private function createConsultationFromSession(TelemedicineSession $session): Consultation
     {
-        $request = $session->request;
-        $residentUserId = $request->residentProfile->user_id;
-
-        return Consultation::create([
-            'user_id'           => $residentUserId,
-            'attended_by'       => $session->assigned_doctor_id,
-            'consultation_date' => now()->toDateString(),
-            'chief_complaint'   => $request->chief_complaint,
-            'diagnosis'         => null,
-            'treatment'         => null,
-            'status'            => 'open',
+        $session->loadMissing([
+            'request.residentProfile.user',
+            'request.residentProfile.barangay',
         ]);
+
+        if ($session->consultation_id) {
+            $existing = Consultation::find($session->consultation_id);
+
+            if ($existing) {
+                return $existing;
+            }
+        }
+
+        $telemedicineRequest = $session->request;
+        $residentUserId = $telemedicineRequest->residentProfile->user_id;
+
+        $payload = [
+            'appointment_id'     => $telemedicineRequest->appointment_id,
+            'user_id'            => $residentUserId,
+            'attended_by'        => $session->assigned_doctor_id ?: $this->currentUserId(),
+            'consultation_date'  => now()->toDateString(),
+            'chief_complaint'    => $telemedicineRequest->chief_complaint,
+            'subjective'         => $telemedicineRequest->chief_complaint,
+            'objective'          => null,
+            'assessment'         => null,
+            'plan'               => null,
+            'diagnosis'          => null,
+            'treatment'          => null,
+            'notes'              => 'Created from telemedicine session #' . $session->id,
+            'status'             => 'open',
+            'started_at'         => now(),
+        ];
+
+        return Consultation::create($this->filterConsultationPayload($payload));
     }
 
-    /**
-     * Write a polymorphic audit log entry.
-     */
+    private function filterConsultationPayload(array $payload): array
+    {
+        $filtered = [];
+
+        foreach ($payload as $key => $value) {
+            if (Schema::hasColumn('consultations', $key)) {
+                $filtered[$key] = $value;
+            }
+        }
+
+        return $filtered;
+    }
+
     private function writeLog(
-        TelemedicineRequest|TelemedicineSession $model,
+        TelemedicineRequest|TelemedicineSession|null $model,
         ?string $from,
         string $to,
         string $action,
         array $metadata = []
     ): void {
+        if (!$model) {
+            return;
+        }
+
         TelemedicineLog::create([
             'loggable_type' => get_class($model),
             'loggable_id'   => $model->id,
-            'performed_by'  => Auth::id(),
+            'performed_by'  => $this->currentUserId(),
             'action'        => $action,
             'from_status'   => $from,
             'to_status'     => $to,
@@ -464,5 +600,12 @@ class TelemedicineService
             ]),
             'performed_at' => now(),
         ]);
+    }
+
+    private function currentUserId(): ?int
+    {
+        $user = Auth::user();
+
+        return $user?->user_id ?? Auth::id();
     }
 }

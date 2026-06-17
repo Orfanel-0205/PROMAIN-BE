@@ -11,7 +11,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\Rule;
 use RuntimeException;
 use Throwable;
 
@@ -26,7 +25,12 @@ class AdminSmsController extends Controller
         $this->authorizeSms($request);
 
         try {
-            return response()->json($this->semaphore->account());
+            $account = $this->semaphore->account();
+
+            return response()->json(array_merge([
+                'provider' => $this->semaphore->providerName(),
+                'status' => 'connected',
+            ], $account));
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Could not load SMS provider account.',
@@ -46,15 +50,29 @@ class AdminSmsController extends Controller
             'per_page' => ['nullable', 'integer', 'min:5', 'max:200'],
         ]);
 
+        $operator = $this->textOperator();
+
         $query = SmsLog::query();
 
         if ($request->filled('search')) {
             $search = trim((string) $request->search);
 
-            $query->where(function ($q) use ($search) {
-                $q->where('recipient_name', 'ilike', "%{$search}%")
-                    ->orWhere('mobile_number', 'ilike', "%{$search}%")
-                    ->orWhere('message', 'ilike', "%{$search}%");
+            $query->where(function ($q) use ($search, $operator) {
+                if (Schema::hasColumn('sms_logs', 'recipient_name')) {
+                    $q->orWhere('recipient_name', $operator, "%{$search}%");
+                }
+
+                if (Schema::hasColumn('sms_logs', 'mobile_number')) {
+                    $q->orWhere('mobile_number', $operator, "%{$search}%");
+                }
+
+                if (Schema::hasColumn('sms_logs', 'message')) {
+                    $q->orWhere('message', $operator, "%{$search}%");
+                }
+
+                if (Schema::hasColumn('sms_logs', 'notification_type')) {
+                    $q->orWhere('notification_type', $operator, "%{$search}%");
+                }
             });
         }
 
@@ -66,7 +84,9 @@ class AdminSmsController extends Controller
             $query->where('provider', $request->provider);
         }
 
-        $orderColumn = Schema::hasColumn('sms_logs', 'created_at') ? 'created_at' : 'id';
+        $orderColumn = Schema::hasColumn('sms_logs', 'created_at')
+            ? 'created_at'
+            : 'id';
 
         $logs = $query
             ->orderByDesc($orderColumn)
@@ -79,23 +99,40 @@ class AdminSmsController extends Controller
     {
         $this->authorizeSms($request);
 
-        $validated = $this->validateSmsPayload($request);
-        $recipients = $this->resolveRecipients($validated);
+        try {
+            $validated = $this->validateSmsPayload($request);
+            $recipients = $this->resolveRecipients($validated);
 
-        return response()->json([
-            'mode' => $validated['mode'],
-            'count' => count($recipients),
-            'estimated_credits' => $this->estimateCredits($validated['message'], count($recipients)),
-            'recipients' => array_slice($recipients, 0, 100),
-        ]);
+            return response()->json([
+                'mode' => $validated['mode'],
+                'count' => count($recipients),
+                'estimated_credits' => $this->estimateCredits(
+                    $validated['message'],
+                    count($recipients)
+                ),
+                'recipients' => array_slice($recipients, 0, 100),
+            ]);
+        } catch (Throwable $e) {
+            return response()->json([
+                'message' => 'Could not preview SMS recipients.',
+                'error' => $e->getMessage(),
+            ], 422);
+        }
     }
 
     public function send(Request $request): JsonResponse
     {
         $this->authorizeSms($request);
 
-        $validated = $this->validateSmsPayload($request);
-        $recipients = $this->resolveRecipients($validated);
+        try {
+            $validated = $this->validateSmsPayload($request);
+            $recipients = $this->resolveRecipients($validated);
+        } catch (Throwable $e) {
+            return response()->json([
+                'message' => 'Invalid SMS request.',
+                'error' => $e->getMessage(),
+            ], 422);
+        }
 
         if (count($recipients) === 0) {
             return response()->json([
@@ -104,7 +141,12 @@ class AdminSmsController extends Controller
         }
 
         $logs = collect();
-        $numbers = collect($recipients)->pluck('mobile_number')->values()->all();
+        $numbers = collect($recipients)
+            ->pluck('mobile_number')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
 
         try {
             DB::beginTransaction();
@@ -120,6 +162,7 @@ class AdminSmsController extends Controller
                     'target_filters' => $this->targetFilters($validated),
                     'notification_type' => $validated['notification_type'] ?? 'manual',
                     'provider' => $this->semaphore->providerName(),
+                    'provider_message_id' => null,
                     'status' => 'queued',
                     'error_message' => null,
                     'sent_at' => null,
@@ -137,10 +180,15 @@ class AdminSmsController extends Controller
         }
 
         try {
-            $providerResponses = $this->semaphore->sendBulk($numbers, $validated['message']);
+            $providerResponses = $this->semaphore->sendBulk(
+                $numbers,
+                $validated['message']
+            );
 
             foreach ($logs->values() as $index => $log) {
-                $providerResponse = $providerResponses[$index] ?? $providerResponses[0] ?? [];
+                $providerResponse = $providerResponses[$index]
+                    ?? $providerResponses[0]
+                    ?? [];
 
                 $log->update([
                     'provider' => $this->semaphore->providerName(),
@@ -151,7 +199,7 @@ class AdminSmsController extends Controller
                         data_get($providerResponse, 'status')
                             ?? data_get($providerResponse, 'success')
                             ?? data_get($providerResponse, 'raw_response.success')
-                            ?? 'sent'
+                            ?? 'queued'
                     ),
                     'error_message' => null,
                     'sent_at' => now(),
@@ -162,7 +210,10 @@ class AdminSmsController extends Controller
                 'message' => 'SMS request accepted by provider.',
                 'provider' => $this->semaphore->providerName(),
                 'count' => count($recipients),
-                'estimated_credits' => $this->estimateCredits($validated['message'], count($recipients)),
+                'estimated_credits' => $this->estimateCredits(
+                    $validated['message'],
+                    count($recipients)
+                ),
                 'provider_response' => $providerResponses,
             ]);
         } catch (Throwable $e) {
@@ -199,15 +250,47 @@ class AdminSmsController extends Controller
             'role' => ['nullable', 'string', 'max:50'],
             'barangay' => ['nullable', 'string', 'max:150'],
             'gender' => ['nullable', 'string', 'max:30'],
+            'sex' => ['nullable', 'string', 'max:30'],
             'age_group' => ['nullable', 'string', 'max:50'],
 
+            'age_min' => ['nullable', 'integer', 'min:0', 'max:120'],
+            'age_max' => ['nullable', 'integer', 'min:0', 'max:120'],
+
+            'account_status' => ['nullable', 'string', 'max:50'],
+            'id_verified' => ['nullable', 'boolean'],
+
             'limit' => ['nullable', 'integer', 'min:1', 'max:1000'],
+
             'target_filters' => ['nullable', 'array'],
             'filters' => ['nullable', 'array'],
         ]);
 
         $validated['mode'] = $this->normalizeMode($validated['mode'] ?? null);
-        $validated['message'] = trim($validated['message']);
+        $validated['message'] = trim((string) $validated['message']);
+
+        if ($validated['message'] === '') {
+            throw new RuntimeException('SMS message is empty.');
+        }
+
+        if (str_starts_with(strtoupper($validated['message']), 'TEST')) {
+            throw new RuntimeException('Do not start SMS messages with TEST. Semaphore may silently ignore them.');
+        }
+
+        if (
+            stripos($validated['message'], 'diagnosed with') !== false ||
+            stripos($validated['message'], 'positive for') !== false ||
+            stripos($validated['message'], 'hiv') !== false ||
+            stripos($validated['message'], 'std') !== false
+        ) {
+            throw new RuntimeException('Avoid sensitive diagnosis details in SMS. Use a neutral reminder instead.');
+        }
+
+        if (
+            isset($validated['age_min'], $validated['age_max']) &&
+            (int) $validated['age_min'] > (int) $validated['age_max']
+        ) {
+            throw new RuntimeException('Minimum age cannot be greater than maximum age.');
+        }
 
         return $validated;
     }
@@ -233,6 +316,11 @@ class AdminSmsController extends Controller
                 'user_id' => null,
                 'recipient_name' => $validated['recipient_name'] ?? 'Manual Recipient',
                 'mobile_number' => $normalized,
+                'barangay' => null,
+                'gender' => null,
+                'age' => null,
+                'account_status' => null,
+                'id_verified' => null,
             ]];
         }
 
@@ -247,16 +335,11 @@ class AdminSmsController extends Controller
             throw new RuntimeException('No mobile number column found in users table.');
         }
 
+        $primaryKey = Schema::hasColumn('users', 'user_id') ? 'user_id' : 'id';
+
         $query = User::query()
             ->whereNotNull($mobileColumn)
             ->where($mobileColumn, '!=', '');
-
-        if (Schema::hasColumn('users', 'account_status')) {
-            $query->where(function ($q) {
-                $q->whereNull('account_status')
-                    ->orWhereNotIn('account_status', ['deleted', 'inactive', 'suspended']);
-            });
-        }
 
         $filters = array_merge(
             $validated['target_filters'] ?? [],
@@ -264,43 +347,73 @@ class AdminSmsController extends Controller
             $validated
         );
 
+        if ($mode === 'barangay' && empty($filters['barangay'])) {
+            throw new RuntimeException('Barangay is required for barangay SMS mode.');
+        }
+
+        if (!empty($filters['account_status']) && $filters['account_status'] !== 'all') {
+            if (Schema::hasColumn('users', 'account_status')) {
+                $query->where('account_status', $filters['account_status']);
+            } elseif (Schema::hasColumn('users', 'status')) {
+                $query->where('status', $filters['account_status']);
+            }
+        } else {
+            if (Schema::hasColumn('users', 'account_status')) {
+                $query->where(function ($q) {
+                    $q->whereNull('account_status')
+                        ->orWhereNotIn('account_status', ['deleted', 'inactive', 'suspended']);
+                });
+            }
+        }
+
         $role = $filters['role'] ?? null;
 
         if (in_array($mode, ['patient', 'patients'], true)) {
             $role = 'patient';
         }
 
-        if ($role && Schema::hasColumn('users', 'role_id')) {
-            $roleId = $this->resolveRoleId((string) $role);
-
-            if ($roleId) {
-                $query->where('role_id', $roleId);
-            } else {
-                $query->whereRaw('1 = 0');
-            }
+        if ($role) {
+            $this->applyRoleFilter($query, (string) $role);
         }
 
-        if (!empty($filters['barangay']) && Schema::hasColumn('users', 'barangay')) {
-            $query->where('barangay', $filters['barangay']);
+        if (!empty($filters['barangay'])) {
+            $this->applyBarangayFilter($query, (string) $filters['barangay'], $primaryKey);
         }
 
-        if (!empty($filters['gender']) && Schema::hasColumn('users', 'gender')) {
-            $query->where('gender', $filters['gender']);
+        $gender = $filters['gender'] ?? $filters['sex'] ?? null;
+
+        if (!empty($gender) && $gender !== 'all') {
+            $this->applyGenderFilter($query, (string) $gender, $primaryKey);
         }
 
-        $limit = (int) ($validated['limit'] ?? 1000);
+        if (isset($filters['age_min']) || isset($filters['age_max'])) {
+            $this->applyAgeFilter(
+                $query,
+                isset($filters['age_min']) ? (int) $filters['age_min'] : null,
+                isset($filters['age_max']) ? (int) $filters['age_max'] : null,
+                $primaryKey
+            );
+        }
+
+        if (array_key_exists('id_verified', $filters) && $filters['id_verified'] !== null && $filters['id_verified'] !== '') {
+            $this->applyIdVerifiedFilter(
+                $query,
+                filter_var($filters['id_verified'], FILTER_VALIDATE_BOOLEAN),
+                $primaryKey
+            );
+        }
+
+        $limit = min(max((int) ($validated['limit'] ?? 1000), 1), 1000);
 
         return $query
-            ->limit(min(max($limit, 1), 1000))
+            ->limit($limit)
             ->get()
-            ->map(function ($user) use ($mobileColumn) {
+            ->map(function ($user) use ($mobileColumn, $primaryKey) {
                 $normalized = $this->semaphore->normalizePhoneNumber((string) $user->{$mobileColumn});
 
                 if (!$normalized) {
                     return null;
                 }
-
-                $primaryKey = Schema::hasColumn('users', 'user_id') ? 'user_id' : 'id';
 
                 $name = trim(implode(' ', array_filter([
                     $user->first_name ?? null,
@@ -308,17 +421,263 @@ class AdminSmsController extends Controller
                 ])));
 
                 if ($name === '') {
-                    $name = $user->name ?? 'Recipient';
+                    $name = $user->name ?? $user->full_name ?? 'Recipient';
                 }
 
                 return [
                     'user_id' => $user->{$primaryKey} ?? null,
                     'recipient_name' => $name,
+                    'name' => $name,
                     'mobile_number' => $normalized,
+                    'barangay' => $user->barangay ?? $user->barangay_name ?? null,
+                    'gender' => $user->gender ?? $user->sex ?? null,
+                    'age' => $user->age ?? null,
+                    'account_status' => $user->account_status ?? $user->status ?? null,
+                    'id_verified' => $user->id_verified ?? $user->is_verified ?? $user->verified ?? null,
                 ];
             })
             ->filter()
             ->unique('mobile_number')
+            ->values()
+            ->all();
+    }
+
+    private function applyRoleFilter($query, string $role): void
+    {
+        $role = strtolower(str_replace([' ', '-'], '_', trim($role)));
+
+        if (Schema::hasColumn('users', 'role_id')) {
+            $roleId = $this->resolveRoleId($role);
+
+            if ($roleId) {
+                $query->where('role_id', $roleId);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+
+            return;
+        }
+
+        foreach (['role', 'role_name', 'account_type', 'user_role'] as $column) {
+            if (Schema::hasColumn('users', $column)) {
+                $query->whereRaw("LOWER(REPLACE({$column}, ' ', '_')) = ?", [$role]);
+                return;
+            }
+        }
+    }
+
+    private function applyBarangayFilter($query, string $barangay, string $primaryKey): void
+    {
+        $operator = $this->textOperator();
+        $barangay = trim($barangay);
+
+        if ($barangay === '') {
+            return;
+        }
+
+        if (Schema::hasColumn('users', 'barangay')) {
+            $query->where('barangay', $operator, "%{$barangay}%");
+            return;
+        }
+
+        if (Schema::hasColumn('users', 'barangay_name')) {
+            $query->where('barangay_name', $operator, "%{$barangay}%");
+            return;
+        }
+
+        if (Schema::hasColumn('users', 'barangay_id')) {
+            $ids = $this->resolveBarangayIds($barangay);
+
+            if (count($ids) > 0) {
+                $query->whereIn('barangay_id', $ids);
+            } elseif (is_numeric($barangay)) {
+                $query->where('barangay_id', (int) $barangay);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+
+            return;
+        }
+
+        if (
+            Schema::hasTable('resident_profiles') &&
+            Schema::hasColumn('resident_profiles', 'user_id') &&
+            Schema::hasColumn('resident_profiles', 'barangay_id')
+        ) {
+            $ids = $this->resolveBarangayIds($barangay);
+
+            if (count($ids) === 0 && is_numeric($barangay)) {
+                $ids = [(int) $barangay];
+            }
+
+            if (count($ids) > 0) {
+                $query->whereIn($primaryKey, function ($sub) use ($ids) {
+                    $sub->select('user_id')
+                        ->from('resident_profiles')
+                        ->whereIn('barangay_id', $ids);
+                });
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+        }
+    }
+
+    private function applyGenderFilter($query, string $gender, string $primaryKey): void
+    {
+        $gender = strtolower(trim($gender));
+
+        foreach (['gender', 'sex'] as $column) {
+            if (Schema::hasColumn('users', $column)) {
+                $query->whereRaw("LOWER({$column}) = ?", [$gender]);
+                return;
+            }
+        }
+
+        if (
+            Schema::hasTable('resident_profiles') &&
+            Schema::hasColumn('resident_profiles', 'user_id')
+        ) {
+            foreach (['gender', 'sex'] as $column) {
+                if (Schema::hasColumn('resident_profiles', $column)) {
+                    $query->whereIn($primaryKey, function ($sub) use ($column, $gender) {
+                        $sub->select('user_id')
+                            ->from('resident_profiles')
+                            ->whereRaw("LOWER({$column}) = ?", [$gender]);
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    private function applyAgeFilter($query, ?int $min, ?int $max, string $primaryKey): void
+    {
+        if (Schema::hasColumn('users', 'age')) {
+            if ($min !== null) {
+                $query->where('age', '>=', $min);
+            }
+
+            if ($max !== null) {
+                $query->where('age', '<=', $max);
+            }
+
+            return;
+        }
+
+        $birthdateColumn = $this->firstExistingColumn('users', [
+            'birthdate',
+            'date_of_birth',
+            'birthday',
+        ]);
+
+        if ($birthdateColumn) {
+            if ($min !== null) {
+                $maxBirthdate = now()->subYears($min)->toDateString();
+                $query->whereDate($birthdateColumn, '<=', $maxBirthdate);
+            }
+
+            if ($max !== null) {
+                $minBirthdate = now()->subYears($max + 1)->addDay()->toDateString();
+                $query->whereDate($birthdateColumn, '>=', $minBirthdate);
+            }
+
+            return;
+        }
+
+        if (
+            Schema::hasTable('resident_profiles') &&
+            Schema::hasColumn('resident_profiles', 'user_id')
+        ) {
+            if (Schema::hasColumn('resident_profiles', 'age')) {
+                $query->whereIn($primaryKey, function ($sub) use ($min, $max) {
+                    $sub->select('user_id')->from('resident_profiles');
+
+                    if ($min !== null) {
+                        $sub->where('age', '>=', $min);
+                    }
+
+                    if ($max !== null) {
+                        $sub->where('age', '<=', $max);
+                    }
+                });
+
+                return;
+            }
+
+            $profileBirthdate = $this->firstExistingColumn('resident_profiles', [
+                'birthdate',
+                'date_of_birth',
+                'birthday',
+            ]);
+
+            if ($profileBirthdate) {
+                $query->whereIn($primaryKey, function ($sub) use ($profileBirthdate, $min, $max) {
+                    $sub->select('user_id')->from('resident_profiles');
+
+                    if ($min !== null) {
+                        $maxBirthdate = now()->subYears($min)->toDateString();
+                        $sub->whereDate($profileBirthdate, '<=', $maxBirthdate);
+                    }
+
+                    if ($max !== null) {
+                        $minBirthdate = now()->subYears($max + 1)->addDay()->toDateString();
+                        $sub->whereDate($profileBirthdate, '>=', $minBirthdate);
+                    }
+                });
+            }
+        }
+    }
+
+    private function applyIdVerifiedFilter($query, bool $verified, string $primaryKey): void
+    {
+        foreach (['id_verified', 'is_verified', 'verified'] as $column) {
+            if (Schema::hasColumn('users', $column)) {
+                $query->where($column, $verified);
+                return;
+            }
+        }
+
+        if (
+            Schema::hasTable('resident_profiles') &&
+            Schema::hasColumn('resident_profiles', 'user_id')
+        ) {
+            foreach (['id_verified', 'is_verified', 'verified'] as $column) {
+                if (Schema::hasColumn('resident_profiles', $column)) {
+                    $query->whereIn($primaryKey, function ($sub) use ($column, $verified) {
+                        $sub->select('user_id')
+                            ->from('resident_profiles')
+                            ->where($column, $verified);
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    private function resolveBarangayIds(string $barangay): array
+    {
+        if (!Schema::hasTable('barangays')) {
+            return [];
+        }
+
+        $operator = $this->textOperator();
+        $key = Schema::hasColumn('barangays', 'barangay_id') ? 'barangay_id' : 'id';
+
+        $query = DB::table('barangays')->select($key);
+
+        if (is_numeric($barangay)) {
+            $query->where($key, (int) $barangay);
+        } elseif (Schema::hasColumn('barangays', 'name')) {
+            $query->where('name', $operator, "%{$barangay}%");
+        } elseif (Schema::hasColumn('barangays', 'barangay_name')) {
+            $query->where('barangay_name', $operator, "%{$barangay}%");
+        } else {
+            return [];
+        }
+
+        return $query
+            ->pluck($key)
+            ->map(fn ($id) => (int) $id)
             ->values()
             ->all();
     }
@@ -345,8 +704,8 @@ class AdminSmsController extends Controller
         return match ($value) {
             'sent', 'success', 'successful', 'delivered', 'true' => 'sent',
             'queued', 'pending', 'processing' => 'queued',
-            'failed', 'error', 'undelivered', 'false' => 'failed',
-            default => $value ?: 'sent',
+            'failed', 'error', 'undelivered', 'refunded', 'false' => 'failed',
+            default => $value ?: 'queued',
         };
     }
 
@@ -357,17 +716,18 @@ class AdminSmsController extends Controller
         return match ($mode) {
             '', 'manual', 'single' => 'single',
             'all', 'bulk' => 'all',
+            'barangay', 'brgy' => 'barangay',
             'patient', 'patients' => 'patients',
-            'targeted', 'demographic', 'demographics', 'filter', 'filtered' => 'targeted',
+            'custom', 'targeted', 'demographic', 'demographics', 'filter', 'filtered' => 'custom',
             default => $mode,
         };
     }
 
     private function estimateCredits(string $message, int $recipientCount): int
     {
-        $segments = max(1, (int) ceil(strlen($message) / 160));
+        $segments = max(1, (int) ceil(max(strlen($message), 1) / 160));
 
-        return $segments * max(1, $recipientCount);
+        return $segments * max(0, $recipientCount);
     }
 
     private function targetFilters(array $validated): array
@@ -377,8 +737,12 @@ class AdminSmsController extends Controller
             'provider' => $this->semaphore->providerName(),
             'role' => $validated['role'] ?? null,
             'barangay' => $validated['barangay'] ?? null,
-            'gender' => $validated['gender'] ?? null,
+            'gender' => $validated['gender'] ?? $validated['sex'] ?? null,
+            'age_min' => $validated['age_min'] ?? null,
+            'age_max' => $validated['age_max'] ?? null,
             'age_group' => $validated['age_group'] ?? null,
+            'account_status' => $validated['account_status'] ?? null,
+            'id_verified' => $validated['id_verified'] ?? null,
             'limit' => $validated['limit'] ?? 1000,
             'target_filters' => $validated['target_filters'] ?? null,
             'filters' => $validated['filters'] ?? null,
@@ -415,6 +779,10 @@ class AdminSmsController extends Controller
 
     private function firstExistingColumn(string $table, array $columns): ?string
     {
+        if (!Schema::hasTable($table)) {
+            return null;
+        }
+
         foreach ($columns as $column) {
             if (Schema::hasColumn($table, $column)) {
                 return $column;
@@ -424,8 +792,45 @@ class AdminSmsController extends Controller
         return null;
     }
 
+    private function textOperator(): string
+    {
+        return DB::getDriverName() === 'pgsql' ? 'ilike' : 'like';
+    }
+
     private function authorizeSms(Request $request): void
     {
-        abort_unless($request->user(), 401, 'Unauthenticated.');
+        $user = $request->user();
+
+        abort_unless($user, 401, 'Unauthenticated.');
+
+        $allowedRoles = [
+            'mho',
+            'super_admin',
+            'superadmin',
+            'admin',
+            'rhu_admin',
+            'staff_admin',
+            'staff',
+            'nurse',
+            'midwife',
+        ];
+
+        if (method_exists($user, 'hasAnyRole') && $user->hasAnyRole($allowedRoles)) {
+            return;
+        }
+
+        $role = strtolower(trim((string) (
+            $user->role
+            ?? $user->role_name
+            ?? $user->user_role
+            ?? $user->account_type
+            ?? ''
+        )));
+
+        abort_unless(
+            in_array($role, $allowedRoles, true),
+            403,
+            'You are not allowed to use the SMS module.'
+        );
     }
 }

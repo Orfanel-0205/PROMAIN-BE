@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
+use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
 use Illuminate\Http\JsonResponse;
@@ -18,11 +19,6 @@ use Illuminate\Validation\Rules\Password;
 
 class AuthController extends Controller
 {
-    // =========================================================================
-    // ADMIN WEB LOGIN  POST /api/v1/admin/login
-    // Accepts: super_admin | rhu_admin | mho | doctor | nurse | midwife | bhw
-    // =========================================================================
-
     private const ADMIN_ROLES = [
         'super_admin',
         'rhu_admin',
@@ -42,6 +38,10 @@ class AuthController extends Controller
         'midwife'     => ['queue'],
         'bhw'         => ['queue'],
     ];
+
+    // =========================================================================
+    // ADMIN WEB LOGIN  POST /api/v1/admin/login
+    // =========================================================================
 
     public function adminLogin(Request $request): JsonResponse
     {
@@ -244,14 +244,34 @@ class AuthController extends Controller
             'mobile_number'         => ['required', 'string', 'regex:/^09\d{9}$/', 'unique:users,mobile_number'],
             'password'              => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()->symbols()],
             'password_confirmation' => ['required'],
-            'barangay'              => ['required', 'string', 'max:150', Rule::exists('barangays', 'name')],
+
+            // Mobile currently sends barangay name.
+            'barangay'              => ['required_without:barangay_id', 'nullable', 'string', 'max:150', Rule::exists('barangays', 'name')],
+
+            // Also accept barangay_id for future-proofing.
+            'barangay_id'           => ['nullable', 'integer', Rule::exists('barangays', 'barangay_id')],
+
             'birthday'              => ['nullable', 'date', 'before:' . now()->subYears(18)->toDateString(), 'after:1900-01-01'],
+            'birth_date'            => ['nullable', 'date', 'before:' . now()->subYears(18)->toDateString(), 'after:1900-01-01'],
             'sex'                   => ['nullable', Rule::in(['male', 'female', 'other'])],
         ]);
 
+        $barangay = $this->resolveBarangayFromRequest($validated);
+
+        if (!$barangay) {
+            return response()->json([
+                'message' => 'Invalid barangay.',
+                'errors' => [
+                    'barangay' => ['Please select a valid barangay.'],
+                ],
+            ], 422);
+        }
+
         $residentRole = UserRole::where('name', 'resident')->firstOrFail();
 
-        $user = DB::transaction(function () use ($validated, $residentRole): User {
+        $user = DB::transaction(function () use ($validated, $residentRole, $barangay): User {
+            $birthday = $validated['birthday'] ?? $validated['birth_date'] ?? null;
+
             $user = User::create([
                 'role_id'           => $residentRole->role_id,
                 'first_name'        => $validated['first_name'],
@@ -259,13 +279,29 @@ class AuthController extends Controller
                 'email'             => $validated['email'] ?? null,
                 'mobile_number'     => $validated['mobile_number'],
                 'password'          => Hash::make($validated['password']),
-                'barangay'          => $validated['barangay'],
-                'birthday'          => $validated['birthday'] ?? null,
+
+                // Keep legacy text field for display compatibility.
+                'barangay'          => $barangay->name,
+
+                'birthday'          => $birthday,
                 'sex'               => $validated['sex'] ?? null,
                 'account_status'    => 'pending',
                 'id_verified'       => false,
                 'biometric_enabled' => false,
             ]);
+
+            ResidentProfile::updateOrCreate(
+                ['user_id' => $user->user_id],
+                [
+                    'barangay_id'   => (int) $barangay->barangay_id,
+                    'first_name'    => $validated['first_name'],
+                    'last_name'     => $validated['last_name'],
+                    'mobile_number' => $validated['mobile_number'],
+                    'birth_date'    => $birthday,
+                    'birthdate'     => $birthday,
+                    'sex'           => $validated['sex'] ?? null,
+                ]
+            );
 
             $user->refresh();
 
@@ -275,7 +311,8 @@ class AuthController extends Controller
         $token = $user->createToken('mobile')->plainTextToken;
 
         $this->logActivity($user, 'REGISTER', [
-            'barangay' => $user->barangay,
+            'barangay' => $barangay->name,
+            'barangay_id' => (int) $barangay->barangay_id,
         ], $request);
 
         return response()->json([
@@ -322,8 +359,6 @@ class AuthController extends Controller
 
     // =========================================================================
     // BIOMETRIC LOGIN  POST /api/v1/biometric/login
-    // Public endpoint.
-    // Exchanges a valid 64-character biometric token for a fresh Sanctum token.
     // =========================================================================
 
     public function biometricLogin(Request $request): JsonResponse
@@ -403,17 +438,80 @@ class AuthController extends Controller
     // HELPERS
     // =========================================================================
 
+    private function resolveBarangayFromRequest(array $validated): ?object
+    {
+        if (!empty($validated['barangay_id'])) {
+            return DB::table('barangays')
+                ->where('barangay_id', (int) $validated['barangay_id'])
+                ->first();
+        }
+
+        $barangayName = trim((string) ($validated['barangay'] ?? ''));
+
+        if ($barangayName === '') {
+            return null;
+        }
+
+        return DB::table('barangays')
+            ->whereRaw('LOWER(name) = ?', [mb_strtolower($barangayName)])
+            ->first();
+    }
+
+    private function getResidentProfilePayload(User $user): array
+    {
+        $profile = DB::table('resident_profiles as rp')
+            ->leftJoin('barangays as b', 'b.barangay_id', '=', 'rp.barangay_id')
+            ->select(
+                'rp.id',
+                'rp.barangay_id',
+                'b.name as barangay',
+                'rp.birth_date',
+                'rp.birthdate',
+                'rp.date_of_birth',
+                'rp.sex'
+            )
+            ->where('rp.user_id', $user->user_id)
+            ->first();
+
+        if (!$profile) {
+            return [
+                'barangay_id' => null,
+                'barangay' => $user->barangay,
+                'birthday' => $this->parseBirthday($user->birthday),
+                'sex' => $user->sex,
+            ];
+        }
+
+        return [
+            'barangay_id' => $profile->barangay_id ? (int) $profile->barangay_id : null,
+            'barangay' => $profile->barangay ?: $user->barangay,
+            'birthday' => $this->parseBirthday(
+                $profile->birth_date
+                    ?? $profile->birthdate
+                    ?? $profile->date_of_birth
+                    ?? $user->birthday
+            ),
+            'sex' => $profile->sex ?: $user->sex,
+        ];
+    }
+
     private function formatUser(User $user): array
     {
+        $profile = $this->getResidentProfilePayload($user);
+
         return [
             'user_id'           => $user->user_id,
             'first_name'        => $user->first_name,
             'last_name'         => $user->last_name,
             'email'             => $user->email,
             'mobile_number'     => $user->mobile_number,
-            'barangay'          => $user->barangay,
-            'birthday'          => $this->parseBirthday($user->birthday),
-            'sex'               => $user->sex,
+
+            // Important for mobile + heatmap chatbot context.
+            'barangay_id'       => $profile['barangay_id'],
+            'barangay'          => $profile['barangay'],
+
+            'birthday'          => $profile['birthday'],
+            'sex'               => $profile['sex'],
             'account_status'    => $user->account_status,
             'role'              => $user->role?->name,
             'id_verified'       => (bool) $user->id_verified,

@@ -1,4 +1,5 @@
 <?php
+// database/migrations/YYYY_MM_DD_add_mobile_fields_to_appointments_table.php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;

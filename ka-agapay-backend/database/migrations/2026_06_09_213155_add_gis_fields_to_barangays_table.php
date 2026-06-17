@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_06_09_213155_add_gis_fields_to_barangays_table.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

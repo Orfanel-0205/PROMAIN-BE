@@ -11,6 +11,7 @@ class ChatSession extends Model
 {
     protected $fillable = [
         'user_id',
+        'barangay_id',
         'session_token',
         'audience',
         'title',
@@ -28,6 +29,11 @@ class ChatSession extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function barangay(): BelongsTo
+    {
+        return $this->belongsTo(Barangay::class, 'barangay_id', 'barangay_id');
     }
 
     public function messages(): HasMany

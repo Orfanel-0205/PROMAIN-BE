@@ -1,4 +1,5 @@
 <?php
+// database/migrations/YYYY_MM_DD_upgrade_appointment_consultation_module.php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;

@@ -1,6 +1,6 @@
 <?php
 
-
+//database/migrations/2026_04_01_123904_seed_queue_priority_rules.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 

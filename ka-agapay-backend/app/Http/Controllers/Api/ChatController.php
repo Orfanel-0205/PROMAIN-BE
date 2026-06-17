@@ -253,18 +253,39 @@ class ChatController extends Controller
     private function resolveSession(Request $request, string $audience, string $language): ChatSession
     {
         $sessionId = (string) $request->input('session_id', '');
+        $barangayId = $this->resolveBarangayIdForChat($request);
 
         if ($sessionId !== '') {
             $existing = $this->findOwnedSession($request, $sessionId, $audience);
 
             if ($existing) {
+                $updates = [];
+
+                if (
+                    Schema::hasColumn('chat_sessions', 'barangay_id') &&
+                    $barangayId &&
+                    (int) ($existing->barangay_id ?? 0) !== (int) $barangayId
+                ) {
+                    /*
+                     * Important:
+                     * Always correct the session barangay using the latest resident profile barangay.
+                     * Do not keep the old/wrong barangay such as Abonagan.
+                     */
+                    $updates['barangay_id'] = $barangayId;
+                }
+
+                if (!empty($updates)) {
+                    $existing->update($updates);
+                    $existing->refresh();
+                }
+
                 return $existing;
             }
         }
 
         $user = $request->user();
 
-        return ChatSession::create([
+        $payload = [
             'user_id' => $user?->user_id ?? $user?->id,
             'session_token' => (string) Str::uuid(),
             'audience' => $audience,
@@ -272,7 +293,115 @@ class ChatController extends Controller
             'language' => $language,
             'status' => 'active',
             'last_activity_at' => now(),
-        ]);
+        ];
+
+        if (Schema::hasColumn('chat_sessions', 'barangay_id')) {
+            $payload['barangay_id'] = $barangayId;
+        }
+
+        return ChatSession::create($payload);
+    }
+
+    private function resolveBarangayIdForChat(Request $request): ?int
+    {
+        $context = $request->input('context', []);
+
+        if (is_array($context)) {
+            $fromContext = $this->resolveBarangayIdFromContext($context);
+
+            if ($fromContext) {
+                return $fromContext;
+            }
+        }
+
+        $user = $request->user();
+        $userId = $user?->user_id ?? $user?->id;
+
+        if (!$userId) {
+            return null;
+        }
+
+        return $this->resolveBarangayIdFromUser((int) $userId);
+    }
+
+    private function resolveBarangayIdFromContext(array $context): ?int
+    {
+        if (!Schema::hasTable('barangays')) {
+            return null;
+        }
+
+        $rawId = $context['barangay_id'] ?? null;
+
+        if ($rawId !== null && $rawId !== '' && is_numeric($rawId)) {
+            $barangayId = (int) $rawId;
+
+            return DB::table('barangays')
+                ->where('barangay_id', $barangayId)
+                ->exists()
+                    ? $barangayId
+                    : null;
+        }
+
+        $name = trim((string) (
+            $context['barangay']
+            ?? $context['barangay_name']
+            ?? ''
+        ));
+
+        if ($name === '') {
+            return null;
+        }
+
+        $normalized = mb_strtolower(preg_replace('/\s+/', ' ', $name) ?: $name);
+
+        $barangay = DB::table('barangays')
+            ->select('barangay_id')
+            ->whereRaw('LOWER(name) = ?', [$normalized])
+            ->first();
+
+        return $barangay ? (int) $barangay->barangay_id : null;
+    }
+
+    private function resolveBarangayIdFromUser(int $userId): ?int
+    {
+        /*
+         * PRIORITY 1:
+         * resident_profiles is the real resident profile source.
+         * This must win over users.barangay_id.
+         */
+        if (
+            Schema::hasTable('resident_profiles') &&
+            Schema::hasColumn('resident_profiles', 'user_id') &&
+            Schema::hasColumn('resident_profiles', 'barangay_id')
+        ) {
+            $barangayId = DB::table('resident_profiles')
+                ->where('user_id', $userId)
+                ->value('barangay_id');
+
+            if ($barangayId) {
+                return (int) $barangayId;
+            }
+        }
+
+        /*
+         * PRIORITY 2:
+         * fallback only.
+         */
+        if (
+            Schema::hasTable('users') &&
+            Schema::hasColumn('users', 'user_id') &&
+            Schema::hasColumn('users', 'barangay_id')
+        ) {
+            $barangayId = DB::table('users')
+                ->where('user_id', $userId)
+                ->value('barangay_id');
+
+            if ($barangayId) {
+                return (int) $barangayId;
+            }
+        }
+
+        return null;
     }
 
     private function findOwnedSession(Request $request, string $sessionId, ?string $audience = null): ?ChatSession
@@ -337,6 +466,7 @@ class ChatController extends Controller
         }
 
         $context = $request->input('context', []);
+
         if (is_array($context) && (($context['app_section'] ?? null) === 'rhu_admin_dashboard')) {
             return 'staff';
         }
@@ -352,8 +482,10 @@ class ChatController extends Controller
                 'current_button',
                 'role',
                 'barangay',
+                'barangay_id',
                 'language',
                 'app_section',
+                'source',
             ])
             ->filter(fn ($value) => is_scalar($value) && trim((string) $value) !== '')
             ->map(fn ($value) => trim((string) $value))
@@ -474,27 +606,66 @@ class ChatController extends Controller
     {
         return match ($suggestedAction) {
             'open_reports' => [
-                ['title' => '1. Click Reports button', 'body' => 'Use Reports when the staff needs printable or exportable summaries, including dispensed medicines.'],
-                ['title' => '2. Select report type', 'body' => 'Choose the medicine dispensing, prescription, consultation, queue, or inventory report depending on the needed output.'],
-                ['title' => '3. Filter and export', 'body' => 'Set date range, RHU, barangay, or medicine filters, then preview before exporting or printing.'],
+                [
+                    'title' => '1. Click Reports button',
+                    'body' => 'Use Reports when the staff needs printable or exportable summaries, including dispensed medicines.',
+                ],
+                [
+                    'title' => '2. Select report type',
+                    'body' => 'Choose the medicine dispensing, prescription, consultation, queue, or inventory report depending on the needed output.',
+                ],
+                [
+                    'title' => '3. Filter and export',
+                    'body' => 'Set date range, RHU, barangay, or medicine filters, then preview before exporting or printing.',
+                ],
             ],
             'open_queue' => [
-                ['title' => '1. Click Queue button', 'body' => 'Review waiting tickets and priority flags before calling the next patient.'],
-                ['title' => '2. Serve in order', 'body' => 'Use Call Next, Serving, and Done to keep the flow fair and traceable.'],
-                ['title' => '3. Check priority reasons', 'body' => 'Senior, PWD, pregnant, pediatric, emergency, and BHW-assisted flags explain priority.'],
+                [
+                    'title' => '1. Click Queue button',
+                    'body' => 'Review waiting tickets and priority flags before calling the next patient.',
+                ],
+                [
+                    'title' => '2. Serve in order',
+                    'body' => 'Use Call Next, Serving, and Done to keep the flow fair and traceable.',
+                ],
+                [
+                    'title' => '3. Check priority reasons',
+                    'body' => 'Senior, PWD, pregnant, pediatric, emergency, and BHW-assisted flags explain priority.',
+                ],
             ],
             'open_sms' => [
-                ['title' => '1. Click SMS button', 'body' => 'Create a short announcement, reminder, or follow-up message.'],
-                ['title' => '2. Choose recipients', 'body' => 'Filter by barangay, account status, program, age group, sex, or RHU targeting.'],
-                ['title' => '3. Preview first', 'body' => 'Check recipient count and message privacy before sending.'],
+                [
+                    'title' => '1. Click SMS button',
+                    'body' => 'Create a short announcement, reminder, or follow-up message.',
+                ],
+                [
+                    'title' => '2. Choose recipients',
+                    'body' => 'Filter by barangay, account status, program, age group, sex, or RHU targeting.',
+                ],
+                [
+                    'title' => '3. Preview first',
+                    'body' => 'Check recipient count and message privacy before sending.',
+                ],
             ],
             'open_users' => [
-                ['title' => '1. Click Users button', 'body' => 'Open pending, active, or rejected accounts.'],
-                ['title' => '2. Review verification', 'body' => 'Compare profile details and uploaded ID/OCR result before approval.'],
-                ['title' => '3. Save decision', 'body' => 'Approve, reject, or request correction based on RHU account validation rules.'],
+                [
+                    'title' => '1. Click Users button',
+                    'body' => 'Open pending, active, or rejected accounts.',
+                ],
+                [
+                    'title' => '2. Review verification',
+                    'body' => 'Compare profile details and uploaded ID/OCR result before approval.',
+                ],
+                [
+                    'title' => '3. Save decision',
+                    'body' => 'Approve, reject, or request correction based on RHU account validation rules.',
+                ],
             ],
             default => $intent === 'staff_workflow_guidance' ? [
-                ['title' => 'Tip', 'body' => 'Ask for the exact button name or task, for example: “How do I export reports?”'],
+                [
+                    'title' => 'Tip',
+                    'body' => 'Ask for the exact button name or task, for example: “How do I export reports?”',
+                ],
             ] : [],
         };
     }
