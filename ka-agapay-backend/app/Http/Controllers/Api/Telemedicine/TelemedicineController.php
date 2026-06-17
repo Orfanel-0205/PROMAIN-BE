@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/Telemedicine/TelemedicineController.php
 
 namespace App\Http\Controllers\Api\Telemedicine;
 

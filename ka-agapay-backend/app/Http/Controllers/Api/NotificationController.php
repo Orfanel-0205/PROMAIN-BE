@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/NotificationController.php
 
 namespace App\Http\Controllers\Api;
 
@@ -6,70 +7,52 @@ use App\Http\Controllers\Controller;
 use App\Models\NotificationPreference;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use App\Services\Audit\AuditService;
-use App\Services\Audit\AuditActions;
+use Illuminate\Notifications\DatabaseNotification;
+use Illuminate\Support\Facades\DB;
 
 class NotificationController extends Controller
 {
-    public function __construct(
-        private readonly AuditService $audit
-    ) {}
-
     /**
      * GET /api/v1/notifications
+     *
      * Paginated in-app notification inbox for the authenticated user.
      */
     public function index(Request $request): JsonResponse
     {
-        $notifications = $request->user()
+        $validated = $request->validate([
+            'per_page'    => ['nullable', 'integer', 'min:1', 'max:50'],
+            'unread_only' => ['nullable', 'boolean'],
+        ]);
+
+        $perPage = (int) ($validated['per_page'] ?? 20);
+        $unreadOnly = (bool) ($validated['unread_only'] ?? false);
+
+        $query = $request->user()
             ->notifications()
-            ->latest()
-            ->paginate($request->integer('per_page', 20));
+            ->latest();
+
+        if ($unreadOnly) {
+            $query->whereNull('read_at');
+        }
+
+        $notifications = $query->paginate($perPage);
 
         return response()->json([
-            'data'         => $notifications->items(),
+            'data' => collect($notifications->items())
+                ->map(fn ($notification) => $this->formatNotification($notification))
+                ->values(),
             'unread_count' => $request->user()->unreadNotifications()->count(),
-            'pagination'   => [
-                'total'        => $notifications->total(),
+            'pagination' => [
+                'total' => $notifications->total(),
                 'current_page' => $notifications->currentPage(),
-                'last_page'    => $notifications->lastPage(),
+                'last_page' => $notifications->lastPage(),
             ],
         ]);
     }
 
     /**
-     * PATCH /api/v1/notifications/{id}/read
-     * Mark a single notification as read.
-     */
-    public function markRead(Request $request, string $id): JsonResponse
-    {
-        $notification = $request->user()->notifications()->findOrFail($id);
-        $notification->markAsRead();
-
-        $this->audit->info(AuditActions::NOTIFICATION_READ, 'notifications', [
-            'subject_label' => "Notification #{$id}",
-        ]);
-
-        return response()->json(['message' => 'Notification marked as read.']);
-    }
-
-    /**
-     * POST /api/v1/notifications/read-all
-     * Mark all unread notifications as read.
-     */
-    public function markAllRead(Request $request): JsonResponse
-    {
-        $request->user()->unreadNotifications->markAsRead();
-
-        $this->audit->info(AuditActions::NOTIFICATION_ALL_READ, 'notifications', [
-            'subject_label' => 'All unread notifications',
-        ]);
-
-        return response()->json(['message' => 'All notifications marked as read.']);
-    }
-
-    /**
      * GET /api/v1/notifications/unread-count
+     *
      * Lightweight endpoint for notification badge.
      */
     public function unreadCount(Request $request): JsonResponse
@@ -80,59 +63,135 @@ class NotificationController extends Controller
     }
 
     /**
+     * PATCH /api/v1/notifications/{id}/read
+     *
+     * Mark a single notification as read.
+     */
+    public function markRead(Request $request, string $id): JsonResponse
+    {
+        $notification = $request->user()
+            ->notifications()
+            ->where('id', $id)
+            ->firstOrFail();
+
+        if (is_null($notification->read_at)) {
+            $notification->markAsRead();
+        }
+
+        return response()->json([
+            'message' => 'Notification marked as read.',
+            'unread_count' => $request->user()->unreadNotifications()->count(),
+        ]);
+    }
+
+    /**
+     * POST /api/v1/notifications/read-all
+     *
+     * Mark all unread notifications as read.
+     */
+    public function markAllRead(Request $request): JsonResponse
+    {
+        $request->user()
+            ->unreadNotifications()
+            ->update(['read_at' => now()]);
+
+        return response()->json([
+            'message' => 'All notifications marked as read.',
+            'unread_count' => 0,
+        ]);
+    }
+
+    /**
+     * DELETE /api/v1/notifications/{id}
+     *
+     * Delete a single notification owned by the authenticated user.
+     */
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        $request->user()
+            ->notifications()
+            ->where('id', $id)
+            ->firstOrFail()
+            ->delete();
+
+        return response()->json([
+            'message' => 'Notification deleted.',
+            'unread_count' => $request->user()->unreadNotifications()->count(),
+        ]);
+    }
+
+    /**
      * GET /api/v1/notifications/preferences
+     *
      * Get user's notification preferences.
      */
     public function preferences(Request $request): JsonResponse
     {
-        $prefs = NotificationPreference::where('user_id', $request->user()->user_id)->get();
+        $userId = (int) ($request->user()->user_id ?? $request->user()->id);
 
-        return response()->json(['data' => $prefs]);
+        $prefs = NotificationPreference::where('user_id', $userId)
+            ->orderBy('notification_type')
+            ->get();
+
+        return response()->json([
+            'data' => $prefs,
+        ]);
     }
 
     /**
      * PUT /api/v1/notifications/preferences
+     *
      * Update user's notification preferences.
      */
     public function updatePreferences(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'preferences'                  => ['required', 'array'],
+            'preferences' => ['required', 'array'],
             'preferences.*.notification_type' => ['required', 'string', 'max:100'],
-            'preferences.*.in_app'         => ['sometimes', 'boolean'],
-            'preferences.*.sms'            => ['sometimes', 'boolean'],
-            'preferences.*.email'          => ['sometimes', 'boolean'],
+            'preferences.*.in_app' => ['sometimes', 'boolean'],
+            'preferences.*.sms' => ['sometimes', 'boolean'],
+            'preferences.*.email' => ['sometimes', 'boolean'],
         ]);
 
-        foreach ($validated['preferences'] as $pref) {
-            NotificationPreference::updateOrCreate(
-                [
-                    'user_id'           => $request->user()->user_id,
-                    'notification_type' => $pref['notification_type'],
-                ],
-                [
-                    'in_app' => $pref['in_app'] ?? true,
-                    'sms'    => $pref['sms'] ?? false,
-                    'email'  => $pref['email'] ?? false,
-                ]
-            );
-        }
+        $userId = (int) ($request->user()->user_id ?? $request->user()->id);
 
-        $this->audit->info(AuditActions::PREFERENCES_UPDATED, 'notifications', [
-            'subject_label' => 'Notification Preferences',
+        DB::transaction(function () use ($validated, $userId) {
+            foreach ($validated['preferences'] as $pref) {
+                NotificationPreference::updateOrCreate(
+                    [
+                        'user_id' => $userId,
+                        'notification_type' => $pref['notification_type'],
+                    ],
+                    [
+                        'in_app' => $pref['in_app'] ?? true,
+                        'sms' => $pref['sms'] ?? false,
+                        'email' => $pref['email'] ?? false,
+                    ]
+                );
+            }
+        });
+
+        return response()->json([
+            'message' => 'Notification preferences updated.',
         ]);
-
-        return response()->json(['message' => 'Notification preferences updated.']);
     }
 
-    /**
-     * DELETE /api/v1/notifications/{id}
-     * Delete a single notification.
-     */
-    public function destroy(Request $request, string $id): JsonResponse
+    private function formatNotification(DatabaseNotification $notification): array
     {
-        $request->user()->notifications()->findOrFail($id)->delete();
+        $data = is_array($notification->data) ? $notification->data : [];
 
-        return response()->json(['message' => 'Notification deleted.']);
+        return [
+            'id' => $notification->id,
+            'type' => $notification->type,
+            'title' => $data['title'] ?? 'Notification',
+            'message' => $data['message'] ?? $data['body'] ?? '',
+            'read_at' => optional($notification->read_at)->toIso8601String(),
+            'created_at' => optional($notification->created_at)->toIso8601String(),
+            'action_url' => $data['action_url'] ?? $data['url'] ?? null,
+            'action_type' => $data['action_type'] ?? null,
+            'related_type' => $data['related_type'] ?? null,
+            'related_id' => $data['related_id'] ?? null,
+            'data' => $data,
+        ];
     }
 }

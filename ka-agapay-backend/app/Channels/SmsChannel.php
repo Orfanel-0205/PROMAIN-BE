@@ -1,5 +1,5 @@
 <?php
-
+// app/Channels/SmsChannel.php
 namespace App\Channels;
 
 use App\Models\SmsLog;

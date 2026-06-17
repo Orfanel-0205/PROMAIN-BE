@@ -1,9 +1,14 @@
 <?php
+
 // app/Http/Controllers/Api/PrescriptionController.php
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\DispensePrescriptionRequest;
+use App\Http\Resources\PrescriptionResource;
+use App\Models\Prescription;
+use App\Services\Prescription\PrescriptionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +18,10 @@ use Illuminate\Support\Str;
 
 class PrescriptionController extends Controller
 {
+    public function __construct(
+        private readonly PrescriptionService $service
+    ) {}
+
     public function index(Request $request): JsonResponse
     {
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
@@ -49,6 +58,51 @@ class PrescriptionController extends Controller
 
         $rows = $query
             ->latest('p.prescription_date')
+            ->paginate($request->integer('per_page', 20));
+
+        $rows->getCollection()->transform(fn ($row) => $this->formatPrescription($row));
+
+        return response()->json($rows);
+    }
+
+    public function mine(Request $request): JsonResponse
+    {
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        abort_unless(Schema::hasTable('resident_profiles'), 404, 'Resident profiles table not found.');
+
+        $userId = $request->user()->user_id ?? $request->user()->id;
+
+        $profile = DB::table('resident_profiles')
+            ->where('user_id', $userId)
+            ->first();
+
+        if (!$profile) {
+            return response()->json([
+                'data' => [],
+                'meta' => [
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'per_page' => $request->integer('per_page', 20),
+                    'total' => 0,
+                ],
+            ]);
+        }
+
+        $query = DB::table('prescriptions as p')
+            ->leftJoin('resident_profiles as rp', 'rp.id', '=', 'p.resident_profile_id')
+            ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
+            ->leftJoin('users as d', 'd.user_id', '=', 'p.prescribed_by')
+            ->where('p.resident_profile_id', $profile->id)
+            ->selectRaw("p.*, CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as patient_name")
+            ->selectRaw("CONCAT(COALESCE(d.first_name, ''), ' ', COALESCE(d.last_name, '')) as prescriber_name");
+
+        if ($request->filled('status') && $request->query('status') !== 'all') {
+            $query->where('p.status', $request->query('status'));
+        }
+
+        $rows = $query
+            ->latest('p.prescription_date')
+            ->latest('p.id')
             ->paginate($request->integer('per_page', 20));
 
         $rows->getCollection()->transform(fn ($row) => $this->formatPrescription($row));
@@ -190,38 +244,59 @@ class PrescriptionController extends Controller
             'updated_at' => now(),
         ]);
 
+        if ($request->boolean('dispense_from_rhu')) {
+            $prescription = Prescription::findOrFail($id);
+
+            $prescription = $this->service->dispense($prescription->fresh(), [
+                'deduct_inventory' => true,
+                'strict_inventory' => $request->boolean('strict_inventory', true),
+                'fail_on_insufficient_stock' => true,
+                'notes' => $request->input(
+                    'dispensing_notes',
+                    'Auto-dispensed from RHU drug room during e-prescription release.'
+                ),
+            ]);
+        }
+
         return response()->json([
-            'message' => 'Prescription PDF released.',
+            'message' => $request->boolean('dispense_from_rhu')
+                ? 'Prescription PDF released and inventory deducted.'
+                : 'Prescription PDF released.',
             'data' => $this->formatPrescription(
                 DB::table('prescriptions')->where('id', $id)->first()
             ),
         ]);
     }
 
-    public function dispense(Request $request, int $id): JsonResponse
+    public function dispense(DispensePrescriptionRequest|Request $request, Prescription|int $prescription): JsonResponse
     {
-        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        $prescriptionModel = $prescription instanceof Prescription
+            ? $prescription
+            : Prescription::findOrFail($prescription);
 
-        $validated = $request->validate([
-            'dispensing_notes' => ['nullable', 'string', 'max:2000'],
-        ]);
+        $validated = method_exists($request, 'validated')
+            ? $request->validated()
+            : $request->validate([
+                'dispensed_items' => ['nullable', 'array'],
+                'is_partial_dispense' => ['nullable', 'boolean'],
+                'notes' => ['nullable', 'string', 'max:1000'],
+                'dispensing_notes' => ['nullable', 'string', 'max:1000'],
 
-        $row = DB::table('prescriptions')->where('id', $id)->first();
-        abort_unless($row, 404, 'Prescription not found.');
+                // Inventory integration flags
+                'deduct_inventory' => ['nullable', 'boolean'],
+                'strict_inventory' => ['nullable', 'boolean'],
+                'fail_on_insufficient_stock' => ['nullable', 'boolean'],
+            ]);
 
-        DB::table('prescriptions')->where('id', $id)->update([
-            'status' => 'dispensed',
-            'dispensed_at' => now(),
-            'dispensed_by' => $request->user()->user_id ?? $request->user()->id,
-            'dispensing_notes' => $validated['dispensing_notes'] ?? $row->dispensing_notes ?? null,
-            'updated_at' => now(),
-        ]);
+        $prescriptionModel = $this->service->dispense($prescriptionModel, array_merge($validated, [
+            'deduct_inventory' => $request->boolean('deduct_inventory', true),
+            'strict_inventory' => $request->boolean('strict_inventory', true),
+            'fail_on_insufficient_stock' => $request->boolean('fail_on_insufficient_stock', true),
+        ]));
 
         return response()->json([
-            'message' => 'Prescription marked as dispensed.',
-            'data' => $this->formatPrescription(
-                DB::table('prescriptions')->where('id', $id)->first()
-            ),
+            'message' => 'Prescription dispensed and inventory deducted.',
+            'data' => new PrescriptionResource($prescriptionModel),
         ]);
     }
 

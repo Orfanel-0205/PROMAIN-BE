@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/ResidentProfileController.php
 
 namespace App\Http\Controllers\Api;
 

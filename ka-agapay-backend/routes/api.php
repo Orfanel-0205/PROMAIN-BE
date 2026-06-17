@@ -21,7 +21,6 @@ use App\Http\Controllers\Api\Analytics\AnalyticsController;
 use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use App\Http\Controllers\Api\Telemedicine\SessionController;
-use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
@@ -77,7 +76,7 @@ Route::prefix('v1')->group(function () {
     // PUBLIC UTILITIES
     // =========================================================================
 
-    Route::get('/health', [HealthController::class, 'check']);
+    Route::get('/health', fn () => response()->json(['status' => 'ok']));
 
     Route::get('/barangays', [BarangayController::class, 'index'])
         ->middleware('throttle:30,1');
@@ -89,6 +88,47 @@ Route::prefix('v1')->group(function () {
     Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
         // =====================================================================
+        // AUTH
+        // =====================================================================
+
+        Route::get('/user',             [AuthController::class, 'me']);
+        Route::get('/me',               [AuthController::class, 'me']);
+        Route::post('/logout',          [AuthController::class, 'logout']);
+        Route::put('/me',               [AuthController::class, 'updateProfile']);
+        Route::put('/change-password',  [AuthController::class, 'changePassword']);
+
+        // =====================================================================
+        // ADMIN USERS
+        // Final URLs:
+        // GET    /api/v1/admin/users
+        // POST   /api/v1/admin/users
+        // PATCH  /api/v1/admin/users/{id}
+        // DELETE /api/v1/admin/users/{id}
+        // PATCH  /api/v1/admin/users/{id}/status
+        // PATCH  /api/v1/admin/users/{id}/assign-role
+        // PATCH  /api/v1/admin/users/{id}/approve
+        // PATCH  /api/v1/admin/users/{id}/reject
+        // =====================================================================
+
+        Route::prefix('admin/users')
+            ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
+            ->group(function () {
+                Route::get('/',                    [AdminUserController::class, 'index']);
+                Route::post('/',                   [AdminUserController::class, 'store']);
+                Route::patch('/{id}',              [AdminUserController::class, 'update']);
+                Route::put('/{id}',                [AdminUserController::class, 'update']);
+                Route::delete('/{id}',             [AdminUserController::class, 'destroy']);
+
+                Route::patch('/{id}/status',       [AdminUserController::class, 'status']);
+                Route::patch('/{id}/assign-role',  [AdminUserController::class, 'assignRole']);
+                Route::patch('/{id}/approve',      [AdminUserController::class, 'approve']);
+                Route::patch('/{id}/reject',       [AdminUserController::class, 'reject']);
+
+                Route::patch('/{id}/suspend',      [AdminUserController::class, 'suspend']);
+                Route::patch('/{id}/activate',     [AdminUserController::class, 'activate']);
+            });
+
+        // =====================================================================
         // ADMIN SMS
         // Final URLs:
         // GET  /api/v1/admin/sms/account
@@ -97,11 +137,11 @@ Route::prefix('v1')->group(function () {
         // POST /api/v1/admin/sms/send
         // =====================================================================
 
-        Route::prefix('admin/sms')->middleware('auth:sanctum')->group(function () {
+        Route::prefix('admin/sms')->group(function () {
             Route::get('/account', [AdminSmsController::class, 'account']);
-            Route::get('/logs', [AdminSmsController::class, 'logs']);
+            Route::get('/logs',    [AdminSmsController::class, 'logs']);
             Route::post('/preview', [AdminSmsController::class, 'preview']);
-            Route::post('/send', [AdminSmsController::class, 'send']);
+            Route::post('/send',    [AdminSmsController::class, 'send']);
         });
 
         // =====================================================================
@@ -112,15 +152,6 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])
             ->middleware('role:super_admin,admin,rhu_admin');
-
-        // =====================================================================
-        // AUTH
-        // =====================================================================
-
-        Route::post('/logout',         [AuthController::class, 'logout']);
-        Route::get('/me',              [AuthController::class, 'me']);
-        Route::put('/me',              [AuthController::class, 'updateProfile']);
-        Route::put('/change-password', [AuthController::class, 'changePassword']);
 
         // =====================================================================
         // BIOMETRICS
@@ -142,8 +173,9 @@ Route::prefix('v1')->group(function () {
         // PATIENT SELF SERVICE
         // =====================================================================
 
-        Route::get('/patient/me',   [PatientController::class, 'me']);
-        Route::patch('/patient/me', [PatientController::class, 'update']);
+        Route::get('/patients/search', [PatientController::class, 'searchForPrescription']);
+        Route::get('/patient/me',      [PatientController::class, 'me']);
+        Route::patch('/patient/me',    [PatientController::class, 'update']);
 
         // =====================================================================
         // DASHBOARD
@@ -166,20 +198,42 @@ Route::prefix('v1')->group(function () {
         Route::post('/logs', [AuditController::class, 'store']);
 
         // =====================================================================
+        // ADMIN AUDIT / DELETE HISTORY
+        // Final URLs:
+        // GET  /api/v1/admin/audit
+        // GET  /api/v1/admin/audit/delete-history
+        // GET  /api/v1/admin/audit/users/{userId}
+        // GET  /api/v1/admin/audit/subject-history
+        // POST /api/v1/admin/audit
+        // =====================================================================
+
+        Route::prefix('admin/audit')
+            ->middleware('role:admin,staff_admin,rhu_admin,super_admin,superadmin,mho,it_staff')
+            ->group(function () {
+                Route::get('/',                [AuditController::class, 'index']);
+                Route::get('/delete-history',  [AuditController::class, 'deleteHistory']);
+                Route::get('/users/{userId}',  [AuditController::class, 'userTimeline']);
+                Route::get('/subject-history', [AuditController::class, 'subjectHistory']);
+                Route::post('/',               [AuditController::class, 'store']);
+            });
+
+        // =====================================================================
         // CHATBOT
         // =====================================================================
 
         Route::prefix('chat')->group(function () {
-            Route::post('/message',  [ChatController::class, 'sendMessage']);
-            Route::get('/history',   [ChatController::class, 'history']);
-            Route::post('/end',      [ChatController::class, 'endSession']);
-            Route::post('/escalate', [ChatController::class, 'escalateToDoctor']);
+            Route::post('/message',               [ChatController::class, 'sendMessage']);
+            Route::get('/history',                [ChatController::class, 'history']);
+            Route::delete('/history/{sessionId}', [ChatController::class, 'destroySession']);
+            Route::post('/end',                   [ChatController::class, 'endSession']);
+            Route::post('/escalate',              [ChatController::class, 'escalateToDoctor']);
         });
 
         // =====================================================================
         // RESOURCES
         // =====================================================================
 
+        Route::get('/prescriptions/mine',           [PrescriptionController::class, 'mine']);
         Route::get('/prescriptions/{id}/pdf',       [PrescriptionController::class, 'downloadPdf']);
         Route::post('/prescriptions/{id}/release',  [PrescriptionController::class, 'release']);
         Route::post('/prescriptions/{id}/dispense', [PrescriptionController::class, 'dispense']);
@@ -251,8 +305,17 @@ Route::prefix('v1')->group(function () {
         // NOTIFICATIONS
         // =====================================================================
 
-        Route::get('/notifications',           [NotificationController::class, 'index']);
-        Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+        Route::prefix('notifications')->group(function () {
+            Route::get('/',             [NotificationController::class, 'index']);
+            Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+
+            Route::get('/preferences', [NotificationController::class, 'preferences']);
+            Route::put('/preferences', [NotificationController::class, 'updatePreferences']);
+
+            Route::post('/read-all',    [NotificationController::class, 'markAllRead']);
+            Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
+            Route::delete('/{id}',      [NotificationController::class, 'destroy']);
+        });
 
         // =====================================================================
         // QUEUE
@@ -294,12 +357,18 @@ Route::prefix('v1')->group(function () {
 
         // =====================================================================
         // OCR / ID VERIFICATION
+        // Final URLs:
+        // POST /api/v1/ocr/upload
+        // GET  /api/v1/ocr/results/{id}
+        // Also kept old URL:
+        // GET  /api/v1/ocr/result/{id}
         // =====================================================================
 
         Route::prefix('ocr')->group(function () {
-            Route::post('/upload',     [OcrController::class, 'upload']);
-            Route::get('/result/{id}', [OcrController::class, 'result']);
-            Route::post('/retry/{id}', [OcrController::class, 'retry']);
+            Route::post('/upload',      [OcrController::class, 'upload']);
+            Route::get('/results/{id}', [OcrController::class, 'result']);
+            Route::get('/result/{id}',  [OcrController::class, 'result']);
+            Route::post('/retry/{id}',  [OcrController::class, 'retry']);
 
             Route::post('/prescription/{consultationId}', [
                 OcrController::class,
@@ -366,6 +435,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/ai-accuracy',             [AnalyticsController::class, 'aiAccuracy']);
                 Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
                 Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
+                Route::get('/realtime',                [AnalyticsController::class, 'realtime']);
 
                 Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
                 Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
@@ -395,15 +465,6 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:admin,staff,rhu_admin,super_admin,mho')
             ->prefix('admin')
             ->group(function () {
-
-                Route::get('/users',                 [AdminUserController::class, 'index']);
-                Route::post('/users',                [AdminUserController::class, 'store']);
-                Route::put('/users/{id}',            [AdminUserController::class, 'update']);
-                Route::patch('/users/{id}',          [AdminUserController::class, 'update']);
-                Route::delete('/users/{id}',         [AdminUserController::class, 'destroy']);
-                Route::patch('/users/{id}/status',   [AdminUserController::class, 'status']);
-                Route::patch('/users/{id}/suspend',  [AdminUserController::class, 'suspend']);
-                Route::patch('/users/{id}/activate', [AdminUserController::class, 'activate']);
 
                 Route::get('/announcements',                [AnnouncementController::class, 'adminIndex']);
                 Route::post('/announcements',               [AnnouncementController::class, 'store']);
@@ -445,6 +506,8 @@ Route::prefix('v1')->group(function () {
                     'assignRole',
                 ]);
 
+                // Kept old route:
+                // GET /api/v1/superadmin/audit-logs
                 Route::get('/audit-logs', [
                     AuditController::class,
                     'index',

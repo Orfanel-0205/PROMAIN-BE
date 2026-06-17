@@ -6,9 +6,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Event;
 use App\Models\EventRegistration;
+use App\Services\Audit\AuditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
@@ -440,15 +442,55 @@ class EventController extends Controller
      * ADMIN
      * DELETE /api/v1/admin/events/{id}
      */
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, int $id, AuditService $audit): JsonResponse
     {
         $event = Event::findOrFail($id);
 
-        if ($event->banner_image) {
-            Storage::disk('public')->delete($event->banner_image);
+        $reason = trim((string) (
+            $request->input('reason')
+            ?? $request->input('delete_reason')
+            ?? 'Event deleted from RHU admin web.'
+        ));
+
+        $oldValues = $event->toArray();
+
+        if (Schema::hasColumn('events', 'deleted_by')) {
+            $event->deleted_by = $request->user()?->user_id;
         }
 
+        if (Schema::hasColumn('events', 'delete_reason')) {
+            $event->delete_reason = $reason;
+        }
+
+        $event->save();
+
+        /*
+         * Do not delete the banner image immediately.
+         * If the event uses SoftDeletes, keeping the image allows future restore.
+         * A cleanup command can remove unused files later.
+         */
         $event->delete();
+
+        $audit->log(
+            request: $request,
+            action: 'event.deleted',
+            module: 'events',
+            subject: $event,
+            oldValues: $oldValues,
+            newValues: [
+                'deleted_at' => now()->toISOString(),
+                'deleted_by' => $request->user()?->user_id,
+                'delete_reason' => $reason,
+            ],
+            metadata: [
+                'reason' => $reason,
+                'delete_reason' => $reason,
+                'event_type' => $oldValues['event_type'] ?? null,
+                'was_published' => $oldValues['is_published'] ?? null,
+            ],
+            severity: 'warning',
+            subjectLabel: $event->title
+        );
 
         return response()->json([
             'message' => 'Post deleted successfully.',

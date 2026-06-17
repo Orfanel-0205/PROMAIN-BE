@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/Queue/QueueController.php
 
 namespace App\Http\Controllers\Api\Queue;
 
@@ -12,6 +13,8 @@ use App\Services\Queue\QueueService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class QueueController extends Controller
 {
@@ -19,10 +22,50 @@ class QueueController extends Controller
     {
     }
 
-    /**
-     * GET /api/v1/queue
-     * List queue tickets with filters. For staff dashboard.
-     */
+    private function defaultRhuId(Request $request): int
+    {
+        $inputRhuId = $request->integer('rhu_id');
+
+        if ($inputRhuId > 0) {
+            return $inputRhuId;
+        }
+
+        $user = $request->user();
+
+        $userRhuId = (int) (
+            $user?->rhu_id
+            ?? $user?->barangay_id
+            ?? $user?->residentProfile?->barangay_id
+            ?? 0
+        );
+
+        if ($userRhuId > 0) {
+            return $userRhuId;
+        }
+
+        $firstBarangayId = DB::table('barangays')
+            ->orderBy('barangay_id')
+            ->value('barangay_id');
+
+        return (int) ($firstBarangayId ?: 1);
+    }
+
+    private function serviceTypes(): array
+    {
+        return [
+            'opd_consultation',
+            'prenatal_checkup',
+            'immunization',
+            'family_planning',
+            'tb_dots',
+            'laboratory',
+            'dental',
+            'emergency',
+            'medicine_release',
+            'bhw_assisted',
+        ];
+    }
+
     public function index(QueueListRequest $request): AnonymousResourceCollection
     {
         $query = QueueTicket::with([
@@ -53,10 +96,6 @@ class QueueController extends Controller
         return QueueTicketResource::collection($tickets);
     }
 
-    /**
-     * POST /api/v1/queue/issue
-     * Issue a new queue ticket for a resident.
-     */
     public function issue(IssueQueueTicketRequest $request): JsonResponse
     {
         $ticket = $this->queueService->issueTicket($request->validated());
@@ -67,10 +106,6 @@ class QueueController extends Controller
         ], 201);
     }
 
-    /**
-     * GET /api/v1/queue/{ticket}
-     * Show a single queue ticket with full detail.
-     */
     public function show(QueueTicket $ticket): JsonResponse
     {
         $this->authorize('view', $ticket);
@@ -88,17 +123,13 @@ class QueueController extends Controller
         ]);
     }
 
-    /**
-     * PATCH /api/v1/queue/{ticket}/status
-     * Update the status of a queue ticket.
-     */
     public function updateStatus(UpdateQueueStatusRequest $request, QueueTicket $ticket): JsonResponse
     {
         $this->authorize('updateStatus', $ticket);
 
         if ($ticket->isTerminal()) {
             return response()->json([
-                'message' => "Ticket [{$ticket->ticket_number}] is already in a terminal state [{$ticket->status}] and cannot be modified.",
+                'message' => "Ticket [{$ticket->ticket_number}] is already in terminal state [{$ticket->status}].",
             ], 422);
         }
 
@@ -114,27 +145,27 @@ class QueueController extends Controller
         ]);
     }
 
-    /**
-     * POST /api/v1/queue/call-next
-     * Call the next highest-priority waiting ticket.
-     */
     public function callNext(Request $request): JsonResponse
     {
         $this->authorize('callNext', QueueTicket::class);
 
         $validated = $request->validate([
-            'rhu_id' => ['required', 'integer', 'exists:barangays,barangay_id'],
+            'rhu_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('barangays', 'barangay_id'),
+            ],
             'service_type' => [
-                'required',
+                'nullable',
                 'string',
-                'in:opd_consultation,prenatal_checkup,immunization,family_planning,tb_dots,laboratory,dental,emergency,medicine_release,bhw_assisted',
+                Rule::in($this->serviceTypes()),
             ],
         ]);
 
-        $ticket = $this->queueService->callNext(
-            (int) $validated['rhu_id'],
-            (string) $validated['service_type']
-        );
+        $rhuId = (int) ($validated['rhu_id'] ?? $this->defaultRhuId($request));
+        $serviceType = $validated['service_type'] ?? 'opd_consultation';
+
+        $ticket = $this->queueService->callNext($rhuId, $serviceType);
 
         if (!$ticket) {
             return response()->json([
@@ -149,19 +180,25 @@ class QueueController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/queue/live
-     * Live queue display for TV monitors or kiosks.
-     */
     public function live(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'rhu_id' => ['required', 'integer', 'exists:barangays,barangay_id'],
-            'service_type' => ['nullable', 'string'],
+            'rhu_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('barangays', 'barangay_id'),
+            ],
+            'service_type' => [
+                'nullable',
+                'string',
+                Rule::in($this->serviceTypes()),
+            ],
         ]);
 
+        $rhuId = (int) ($validated['rhu_id'] ?? $this->defaultRhuId($request));
+
         $live = $this->queueService->getLiveQueue(
-            (int) $validated['rhu_id'],
+            $rhuId,
             $validated['service_type'] ?? null
         );
 
@@ -174,21 +211,27 @@ class QueueController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/queue/summary
-     * Daily statistics summary for admin/MHO dashboard.
-     */
     public function summary(Request $request): JsonResponse
     {
         $this->authorize('viewSummary', QueueTicket::class);
 
         $validated = $request->validate([
-            'rhu_id' => ['required', 'integer', 'exists:barangays,barangay_id'],
-            'date' => ['nullable', 'date', 'date_format:Y-m-d'],
+            'rhu_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('barangays', 'barangay_id'),
+            ],
+            'date' => [
+                'nullable',
+                'date',
+                'date_format:Y-m-d',
+            ],
         ]);
 
+        $rhuId = (int) ($validated['rhu_id'] ?? $this->defaultRhuId($request));
+
         $summary = $this->queueService->getDailySummary(
-            (int) $validated['rhu_id'],
+            $rhuId,
             $validated['date'] ?? null
         );
 
@@ -197,10 +240,6 @@ class QueueController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/queue/my-ticket
-     * Allow a resident to check their own active ticket.
-     */
     public function myTicket(Request $request): JsonResponse
     {
         $resident = $request->user()?->residentProfile;

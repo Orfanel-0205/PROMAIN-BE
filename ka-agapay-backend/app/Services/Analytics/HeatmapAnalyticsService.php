@@ -1,4 +1,5 @@
 <?php
+// app/Services/Analytics/HeatmapAnalyticsService.php
 
 namespace App\Services\Analytics;
 

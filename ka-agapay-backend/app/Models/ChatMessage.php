@@ -11,8 +11,15 @@ class ChatMessage extends Model
     public $timestamps = false;
 
     protected $fillable = [
-        'chat_session_id', 'role', 'message',
-        'language', 'tokens_used', 'response_time_ms',
+        'chat_session_id',
+        'role',
+        'message',
+        'language',
+        'intent',
+        'suggested_action',
+        'tokens_used',
+        'response_time_ms',
+        'created_at',
     ];
 
     protected $casts = [

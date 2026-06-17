@@ -1,5 +1,5 @@
 <?php
-
+// database/migrations/YYYY_MM_DD_add_online_booking_support_to_appointments_and_queue_tickets.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

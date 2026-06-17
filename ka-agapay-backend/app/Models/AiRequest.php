@@ -1,5 +1,5 @@
 <?php
-
+//app\Models\AiRequest.php
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;

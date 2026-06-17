@@ -13,6 +13,8 @@ class TelemedicineRequest extends Model
 {
     use SoftDeletes;
 
+    protected $table = 'telemedicine_requests';
+
     protected $fillable = [
         'resident_profile_id',
         'requested_by',
@@ -36,17 +38,15 @@ class TelemedicineRequest extends Model
     ];
 
     protected $casts = [
-        'symptoms'       => 'array',
+        'symptoms' => 'array',
         'is_bhw_assisted' => 'boolean',
-        'screened_at'    => 'datetime',
-        'cancelled_at'   => 'datetime',
+        'screened_at' => 'datetime',
+        'cancelled_at' => 'datetime',
     ];
-
-    // --- Relationships ---
 
     public function residentProfile(): BelongsTo
     {
-        return $this->belongsTo(ResidentProfile::class);
+        return $this->belongsTo(ResidentProfile::class, 'resident_profile_id', 'id');
     }
 
     public function requestedBy(): BelongsTo
@@ -71,25 +71,23 @@ class TelemedicineRequest extends Model
 
     public function queueTicket(): BelongsTo
     {
-        return $this->belongsTo(QueueTicket::class);
+        return $this->belongsTo(QueueTicket::class, 'queue_ticket_id', 'id');
     }
 
     public function appointment(): BelongsTo
     {
-        return $this->belongsTo(Appointment::class);
+        return $this->belongsTo(Appointment::class, 'appointment_id', 'id');
     }
 
     public function session(): HasOne
     {
-        return $this->hasOne(TelemedicineSession::class, 'request_id');
+        return $this->hasOne(TelemedicineSession::class, 'request_id', 'id');
     }
 
     public function logs(): MorphMany
     {
         return $this->morphMany(TelemedicineLog::class, 'loggable');
     }
-
-    // --- Scopes ---
 
     public function scopePending($query)
     {
@@ -106,24 +104,22 @@ class TelemedicineRequest extends Model
         return $query->whereIn('urgency_level', ['urgent', 'emergency']);
     }
 
-    // --- Helpers ---
-
     public function isTerminal(): bool
     {
-        return in_array($this->status, ['rejected', 'cancelled', 'completed']);
+        return in_array($this->status, ['rejected', 'cancelled', 'completed'], true);
     }
 
     public function canTransitionTo(string $newStatus): bool
     {
         $allowed = [
-            'pending'   => ['screened', 'rejected', 'cancelled'],
-            'screened'  => ['scheduled', 'rejected', 'cancelled'],
+            'pending' => ['screened', 'rejected', 'cancelled'],
+            'screened' => ['scheduled', 'rejected', 'cancelled'],
             'scheduled' => ['completed', 'cancelled'],
-            'rejected'  => [],
+            'rejected' => [],
             'cancelled' => [],
             'completed' => [],
         ];
 
-        return in_array($newStatus, $allowed[$this->status] ?? []);
+        return in_array($newStatus, $allowed[$this->status] ?? [], true);
     }
 }

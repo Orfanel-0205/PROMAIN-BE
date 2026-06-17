@@ -10,7 +10,6 @@ use App\Models\TelemedicineReferral;
 use App\Models\TelemedicineLog;
 use App\Models\Consultation;
 use App\Models\MedicalReport;
-use App\Models\ResidentProfile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
@@ -49,8 +48,8 @@ class TelemedicineService
             ]);
 
             $this->writeLog($request, null, 'pending', 'request_created', [
-                'urgency_level'  => $request->urgency_level,
-                'is_bhw_assisted'=> $request->is_bhw_assisted,
+                'urgency_level'   => $request->urgency_level,
+                'is_bhw_assisted' => $request->is_bhw_assisted,
             ]);
 
             $this->audit->info(AuditActions::TELE_REQUEST_SUBMITTED, 'telemedicine', [
@@ -90,11 +89,11 @@ class TelemedicineService
                 // If staff wants to schedule immediately during screening
                 if (!empty($data['schedule_now']) && $data['schedule_now']) {
                     $this->createSession($request, [
-                        'assigned_doctor_id'          => $data['assigned_doctor_id'],
-                        'scheduled_date'              => $data['scheduled_date'],
-                        'scheduled_time'              => $data['scheduled_time'],
-                        'session_mode'                => $data['session_mode'] ?? 'in_app',
-                        'estimated_duration_minutes'  => 15,
+                        'assigned_doctor_id'         => $data['assigned_doctor_id'],
+                        'scheduled_date'             => $data['scheduled_date'],
+                        'scheduled_time'             => $data['scheduled_time'],
+                        'session_mode'               => $data['session_mode'] ?? 'in_app',
+                        'estimated_duration_minutes' => 15,
                     ]);
                 }
             } else {
@@ -111,7 +110,10 @@ class TelemedicineService
                 ]);
             }
 
-            $action = $data['decision'] === 'approve' ? AuditActions::TELE_REQUEST_SCREENED : AuditActions::TELE_REQUEST_REJECTED;
+            $action = $data['decision'] === 'approve'
+                ? AuditActions::TELE_REQUEST_SCREENED
+                : AuditActions::TELE_REQUEST_REJECTED;
+
             $this->audit->info($action, 'telemedicine', [
                 'subject'       => $request,
                 'subject_label' => "Telemedicine Request #{$request->id}",
@@ -193,22 +195,39 @@ class TelemedicineService
                     if (!$session->started_at) {
                         $updates['started_at'] = $now;
                     }
+
+                    // Create the linked consultation immediately when the meeting starts,
+                    // so the admin floating SOAP/STT panel can save notes during the Jitsi call.
+                    if (!$session->consultation_id) {
+                        $consultation = $this->createConsultationFromSession($session);
+                        $updates['consultation_id'] = $consultation->id;
+                    }
+
                     break;
 
                 case 'ended':
                     $updates['ended_at'] = $now;
+
                     if ($session->started_at) {
                         $updates['actual_duration_minutes'] = (int) $now->diffInMinutes($session->started_at);
                     }
-                    // Automatically create the linked consultation record
-                    $consultation = $this->createConsultationFromSession($session);
-                    $updates['consultation_id'] = $consultation->id;
+
+                    // Do not create duplicates. Reuse the consultation created when the session started.
+                    if (!$session->consultation_id) {
+                        $consultation = $this->createConsultationFromSession($session);
+                        $updates['consultation_id'] = $consultation->id;
+                    }
+
+                    $consultationId = $updates['consultation_id'] ?? $session->consultation_id;
+
                     // Mark the parent request as completed
                     $session->request->update(['status' => 'completed']);
+
                     $this->writeLog($session->request, 'scheduled', 'completed', 'request_completed', [
                         'session_id'      => $session->id,
-                        'consultation_id' => $consultation->id,
+                        'consultation_id' => $consultationId,
                     ]);
+
                     break;
 
                 case 'cancelled':
@@ -231,6 +250,7 @@ class TelemedicineService
                 'active' => AuditActions::TELE_SESSION_STARTED,
                 'ended'  => AuditActions::TELE_SESSION_ENDED,
             ];
+
             $action = $actionMap[$newStatus] ?? 'telemedicine_session.updated';
 
             $this->audit->info($action, 'telemedicine', [
@@ -240,7 +260,12 @@ class TelemedicineService
                 'new_values'    => ['status' => $newStatus],
             ]);
 
-            return $session->fresh(['request.residentProfile', 'assignedDoctor', 'notes', 'referrals']);
+            return $session->fresh([
+                'request.residentProfile',
+                'assignedDoctor',
+                'notes',
+                'referrals',
+            ]);
         });
     }
 
@@ -259,16 +284,16 @@ class TelemedicineService
             $notes = TelemedicineSessionNote::updateOrCreate(
                 ['session_id' => $session->id],
                 [
-                    'recorded_by'              => Auth::id(),
-                    'subjective'               => $data['subjective'] ?? null,
-                    'objective'                => $data['objective'] ?? null,
-                    'assessment'               => $data['assessment'] ?? null,
-                    'plan'                     => $data['plan'] ?? null,
-                    'primary_diagnosis_code'   => $data['primary_diagnosis_code'] ?? null,
-                    'primary_diagnosis_label'  => $data['primary_diagnosis_label'] ?? null,
-                    'medications'              => $data['medications'] ?? null,
-                    'is_finalized'             => $isFinalized,
-                    'finalized_at'             => $isFinalized ? now() : null,
+                    'recorded_by'             => Auth::id(),
+                    'subjective'              => $data['subjective'] ?? null,
+                    'objective'               => $data['objective'] ?? null,
+                    'assessment'              => $data['assessment'] ?? null,
+                    'plan'                    => $data['plan'] ?? null,
+                    'primary_diagnosis_code'  => $data['primary_diagnosis_code'] ?? null,
+                    'primary_diagnosis_label' => $data['primary_diagnosis_label'] ?? null,
+                    'medications'             => $data['medications'] ?? null,
+                    'is_finalized'            => $isFinalized,
+                    'finalized_at'            => $isFinalized ? now() : null,
                 ]
             );
 
@@ -292,11 +317,16 @@ class TelemedicineService
                 ]);
             }
 
-            $this->writeLog($session, $session->status, $session->status,
-                $isFinalized ? 'notes_finalized' : 'notes_saved', [
+            $this->writeLog(
+                $session,
+                $session->status,
+                $session->status,
+                $isFinalized ? 'notes_finalized' : 'notes_saved',
+                [
                     'primary_diagnosis_code' => $data['primary_diagnosis_code'] ?? null,
                     'finalized'              => $isFinalized,
-                ]);
+                ]
+            );
 
             if ($isFinalized) {
                 $this->audit->info(AuditActions::TELE_NOTES_FINALIZED, 'telemedicine', [
@@ -360,29 +390,31 @@ class TelemedicineService
             ->whereDate('created_at', $date)
             ->get();
 
-        $sessions = TelemedicineSession::whereHas('request', fn($q) => $q->where('rhu_id', $rhuId))
+        $sessions = TelemedicineSession::whereHas('request', fn ($q) => $q->where('rhu_id', $rhuId))
             ->whereDate('scheduled_date', $date)
             ->get();
 
         return [
-            'date'                       => $date->toDateString(),
-            'requests_total'             => $requests->count(),
-            'requests_pending'           => $requests->where('status', 'pending')->count(),
-            'requests_screened'          => $requests->where('status', 'screened')->count(),
-            'requests_scheduled'         => $requests->where('status', 'scheduled')->count(),
-            'requests_completed'         => $requests->where('status', 'completed')->count(),
-            'requests_rejected'          => $requests->where('status', 'rejected')->count(),
-            'requests_cancelled'         => $requests->where('status', 'cancelled')->count(),
-            'urgent_requests'            => $requests->whereIn('urgency_level', ['urgent', 'emergency'])->count(),
-            'bhw_assisted_requests'      => $requests->where('is_bhw_assisted', true)->count(),
-            'sessions_scheduled'         => $sessions->where('status', 'scheduled')->count(),
-            'sessions_completed'         => $sessions->where('status', 'ended')->count(),
-            'sessions_no_show'           => $sessions->where('status', 'no_show')->count(),
-            'avg_session_duration_mins'  => round(
-                $sessions->where('status', 'ended')->avg('actual_duration_minutes') ?? 0, 1
+            'date'                      => $date->toDateString(),
+            'requests_total'            => $requests->count(),
+            'requests_pending'          => $requests->where('status', 'pending')->count(),
+            'requests_screened'         => $requests->where('status', 'screened')->count(),
+            'requests_scheduled'        => $requests->where('status', 'scheduled')->count(),
+            'requests_completed'        => $requests->where('status', 'completed')->count(),
+            'requests_rejected'         => $requests->where('status', 'rejected')->count(),
+            'requests_cancelled'        => $requests->where('status', 'cancelled')->count(),
+            'urgent_requests'           => $requests->whereIn('urgency_level', ['urgent', 'emergency'])->count(),
+            'bhw_assisted_requests'     => $requests->where('is_bhw_assisted', true)->count(),
+            'sessions_scheduled'        => $sessions->where('status', 'scheduled')->count(),
+            'sessions_completed'        => $sessions->where('status', 'ended')->count(),
+            'sessions_no_show'          => $sessions->where('status', 'no_show')->count(),
+            'avg_session_duration_mins' => round(
+                $sessions->where('status', 'ended')->avg('actual_duration_minutes') ?? 0,
+                1
             ),
             'by_urgency' => $requests->groupBy('urgency_level')
-                ->map(fn($g) => $g->count())->toArray(),
+                ->map(fn ($g) => $g->count())
+                ->toArray(),
         ];
     }
 
@@ -391,7 +423,7 @@ class TelemedicineService
     // -------------------------------------------------------------------------
 
     /**
-     * Create a Consultation record from a telemedicine session ending.
+     * Create a Consultation record from a telemedicine session.
      */
     private function createConsultationFromSession(TelemedicineSession $session): Consultation
     {
@@ -403,7 +435,7 @@ class TelemedicineService
             'attended_by'       => $session->assigned_doctor_id,
             'consultation_date' => now()->toDateString(),
             'chief_complaint'   => $request->chief_complaint,
-            'diagnosis'         => null, // to be filled when notes are finalized
+            'diagnosis'         => null,
             'treatment'         => null,
             'status'            => 'open',
         ]);
@@ -430,7 +462,7 @@ class TelemedicineService
                 'ip'         => request()->ip(),
                 'user_agent' => request()->userAgent(),
             ]),
-            'performed_at'  => now(),
+            'performed_at' => now(),
         ]);
     }
 }

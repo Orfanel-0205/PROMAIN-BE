@@ -1,5 +1,4 @@
 <?php
-// app/Services/Sms/SemaphoreSmsService.php
 
 namespace App\Services\Sms;
 
@@ -24,16 +23,16 @@ class SemaphoreSmsService
         );
     }
 
+    public function providerName(): string
+    {
+        return 'semaphore';
+    }
+
     public function isConfigured(): bool
     {
         return trim($this->apiKey) !== '';
     }
 
-    /**
-     * GET Semaphore account/credits.
-     *
-     * Rate limiting is handled in AdminSmsController.
-     */
     public function account(): array
     {
         $this->ensureConfigured();
@@ -41,14 +40,6 @@ class SemaphoreSmsService
         $response = Http::timeout(20)->get("{$this->baseUrl}/account", [
             'apikey' => $this->apiKey,
         ]);
-
-        if ($response->status() === 429) {
-            $retryAfter = (int) ($response->header('Retry-After') ?: 60);
-
-            throw new RuntimeException(
-                "Semaphore account check is rate limited. Try again after {$retryAfter} seconds."
-            );
-        }
 
         if (!$response->successful()) {
             throw new RuntimeException(
@@ -68,9 +59,6 @@ class SemaphoreSmsService
         return $data;
     }
 
-    /**
-     * Send one SMS message to up to 1000 numbers.
-     */
     public function sendBulk(array $numbers, string $message): array
     {
         $this->ensureConfigured();
@@ -82,7 +70,7 @@ class SemaphoreSmsService
         }
 
         if (str_starts_with(strtoupper($message), 'TEST')) {
-            throw new RuntimeException('Do not start SMS with TEST. Semaphore silently ignores TEST messages.');
+            throw new RuntimeException('Do not start SMS messages with TEST. Semaphore may silently ignore them.');
         }
 
         $numbers = collect($numbers)
@@ -92,11 +80,11 @@ class SemaphoreSmsService
             ->values();
 
         if ($numbers->isEmpty()) {
-            throw new RuntimeException('No valid recipient mobile numbers found.');
+            throw new RuntimeException('No valid Philippine mobile numbers found.');
         }
 
         if ($numbers->count() > 1000) {
-            throw new RuntimeException('Semaphore allows up to 1000 numbers per bulk API call.');
+            throw new RuntimeException('Maximum 1000 recipients allowed per Semaphore request.');
         }
 
         $payload = [
@@ -111,16 +99,15 @@ class SemaphoreSmsService
 
         Log::info('[SemaphoreSmsService] Sending SMS', [
             'numbers_count' => $numbers->count(),
-            'numbers' => $numbers->all(),
             'message_length' => strlen($message),
-            'sendername' => $this->senderName ?: null,
+            'sendername' => $this->senderName,
         ]);
 
         $response = Http::asForm()
             ->timeout(60)
             ->post("{$this->baseUrl}/messages", $payload);
 
-        Log::info('[SemaphoreSmsService] Semaphore send response', [
+        Log::info('[SemaphoreSmsService] Semaphore response', [
             'status' => $response->status(),
             'body' => $response->body(),
         ]);
@@ -140,7 +127,22 @@ class SemaphoreSmsService
             throw new RuntimeException('Invalid Semaphore send response: ' . $response->body());
         }
 
-        return $json;
+        return collect($json)
+            ->map(function ($item) use ($message) {
+                return [
+                    'message_id' => data_get($item, 'message_id'),
+                    'recipient' => data_get($item, 'recipient') ?? data_get($item, 'number'),
+                    'message' => data_get($item, 'message') ?? $message,
+                    'sender_name' => data_get($item, 'sender_name'),
+                    'network' => data_get($item, 'network'),
+                    'status' => $this->normalizeReturnedStatus(data_get($item, 'status') ?? 'queued'),
+                    'type' => data_get($item, 'type'),
+                    'source' => data_get($item, 'source') ?? 'api',
+                    'raw_response' => $item,
+                ];
+            })
+            ->values()
+            ->all();
     }
 
     public function normalizePhoneNumber(string $number): ?string
@@ -151,22 +153,39 @@ class SemaphoreSmsService
             return null;
         }
 
-        // 09XXXXXXXXX -> 639XXXXXXXXX
         if (preg_match('/^09\d{9}$/', $number)) {
             return '63' . substr($number, 1);
         }
 
-        // +639XXXXXXXXX -> 639XXXXXXXXX
         if (preg_match('/^\+639\d{9}$/', $number)) {
             return substr($number, 1);
         }
 
-        // 639XXXXXXXXX
         if (preg_match('/^639\d{9}$/', $number)) {
             return $number;
         }
 
         return null;
+    }
+
+    private function normalizeReturnedStatus(mixed $status): string
+    {
+        if ($status === true || $status === 1 || $status === '1') {
+            return 'sent';
+        }
+
+        if ($status === false || $status === 0 || $status === '0') {
+            return 'failed';
+        }
+
+        $value = strtolower(trim((string) $status));
+
+        return match ($value) {
+            'sent', 'success', 'successful', 'delivered', 'true' => 'sent',
+            'queued', 'pending', 'processing' => 'queued',
+            'failed', 'error', 'undelivered', 'refunded', 'false' => 'failed',
+            default => $value ?: 'queued',
+        };
     }
 
     private function ensureConfigured(): void

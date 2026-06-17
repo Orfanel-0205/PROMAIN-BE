@@ -1,4 +1,5 @@
 <?php
+// app/Providers/AuthServiceProvider.php
 
 namespace App\Providers;
 
@@ -11,20 +12,12 @@ use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvid
 
 class AuthServiceProvider extends ServiceProvider
 {
-    /**
-     * The model to policy mappings for the application.
-     *
-     * @var array<class-string, class-string>
-     */
     protected $policies = [
-        QueueTicket::class         => QueueTicketPolicy::class,
+        QueueTicket::class => QueueTicketPolicy::class,
         TelemedicineRequest::class => TelemedicinePolicy::class,
         TelemedicineSession::class => TelemedicinePolicy::class,
     ];
 
-    /**
-     * Register any authentication / authorization services.
-     */
     public function boot(): void
     {
         $this->registerPolicies();

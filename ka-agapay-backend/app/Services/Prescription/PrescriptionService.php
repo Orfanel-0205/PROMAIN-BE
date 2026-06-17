@@ -9,12 +9,14 @@ use App\Services\Audit\AuditService;
 use App\Services\Audit\AuditActions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Services\Prescription\PrescriptionInventoryService;
 
 class PrescriptionService
 {
-    public function __construct(
-        private readonly AuditService $audit
-    ) {}
+   public function __construct(
+    private readonly AuditService $audit,
+    private readonly PrescriptionInventoryService $inventorySync
+) {}
 
     // ── Issue ─────────────────────────────────────────────────────────────────
 
@@ -69,54 +71,81 @@ class PrescriptionService
 
     // ── Dispense ──────────────────────────────────────────────────────────────
 
-    public function dispense(Prescription $prescription, array $data): Prescription
-    {
-        if (!$prescription->isDispensable()) {
-            throw new \DomainException(
-                "Prescription [{$prescription->prescription_number}] cannot be dispensed. " .
-                "Status: [{$prescription->status}]. " .
-                ($prescription->isExpired() ? 'This prescription has expired.' : '')
-            );
+   public function dispense(Prescription $prescription, array $data): Prescription
+{
+    if (!$prescription->isDispensable()) {
+        throw new \DomainException(
+            "Prescription [{$prescription->prescription_number}] cannot be dispensed. " .
+            "Status: [{$prescription->status}]. " .
+            ($prescription->isExpired() ? 'This prescription has expired.' : '')
+        );
+    }
+
+    return DB::transaction(function () use ($prescription, $data) {
+        $isPartial = !empty($data['is_partial_dispense']);
+
+        $inventoryResult = [
+            'dispensed_items' => $data['dispensed_items'] ?? $prescription->medications,
+            'warnings' => [],
+            'transactions' => [],
+        ];
+
+        $shouldDeductInventory = (bool) ($data['deduct_inventory'] ?? true);
+
+        if ($shouldDeductInventory) {
+            $inventoryResult = $this->inventorySync->deductPrescriptionMedicines($prescription, [
+                'strict_inventory' => $data['strict_inventory'] ?? true,
+                'fail_on_insufficient_stock' => $data['fail_on_insufficient_stock'] ?? true,
+            ]);
+
+            $prescription = $prescription->fresh();
         }
 
-        return DB::transaction(function () use ($prescription, $data) {
-            $isPartial = !empty($data['is_partial_dispense']);
+        PrescriptionDispensingLog::create([
+            'prescription_id'      => $prescription->id,
+            'dispensed_by'         => Auth::id(),
+            'dispensed_items'      => $inventoryResult['dispensed_items'] ?? $prescription->medications,
+            'is_partial_dispense'  => $isPartial,
+            'notes'                => $data['notes'] ?? $data['dispensing_notes'] ?? null,
+            'dispensed_at'         => now(),
+        ]);
 
-            PrescriptionDispensingLog::create([
-                'prescription_id'    => $prescription->id,
-                'dispensed_by'       => Auth::id(),
-                'dispensed_items'    => $data['dispensed_items'] ?? $prescription->medications,
-                'is_partial_dispense'=> $isPartial,
-                'notes'              => $data['notes'] ?? null,
-                'dispensed_at'       => now(),
-            ]);
+        $newStatus = $isPartial
+            ? Prescription::STATUS_PARTIALLY_DISPENSED
+            : Prescription::STATUS_DISPENSED;
 
-            $newStatus = $isPartial
-                ? Prescription::STATUS_PARTIALLY_DISPENSED
-                : Prescription::STATUS_DISPENSED;
+        $oldStatus = $prescription->status;
 
-            $oldStatus = $prescription->status;
+        $prescription->update([
+            'status'           => $newStatus,
+            'dispensed_at'     => now(),
+            'dispensed_by'     => Auth::id(),
+            'dispensing_notes' => $data['notes'] ?? $data['dispensing_notes'] ?? $prescription->dispensing_notes,
+        ]);
 
-            $prescription->update([
-                'status'      => $newStatus,
-                'dispensed_at'=> now(),
-                'dispensed_by'=> Auth::id(),
-            ]);
+        $this->audit->info(AuditActions::PRESCRIPTION_DISPENSED, 'prescription', [
+            'subject'       => $prescription,
+            'subject_label' => $prescription->getAuditLabel(),
+            'old_values'    => ['status' => $oldStatus],
+            'new_values'    => [
+                'status' => $newStatus,
+                'is_partial' => $isPartial,
+                'dispensed_by' => Auth::id(),
+                'inventory_deducted' => $shouldDeductInventory,
+                'inventory_warnings' => $inventoryResult['warnings'] ?? [],
+            ],
+        ]);
 
-            $this->audit->info(AuditActions::PRESCRIPTION_DISPENSED, 'prescription', [
-                'subject'       => $prescription,
-                'subject_label' => $prescription->getAuditLabel(),
-                'old_values'    => ['status' => $oldStatus],
-                'new_values'    => [
-                    'status'      => $newStatus,
-                    'is_partial'  => $isPartial,
-                    'dispensed_by'=> Auth::id(),
-                ],
-            ]);
-
-            return $prescription->fresh(['dispensingLogs.dispensedBy', 'dispensedBy']);
-        });
-    }
+        return $prescription->fresh([
+            'dispensingLogs.dispensedBy',
+            'dispensedBy',
+            'residentProfile.user',
+            'prescribedBy',
+            'consultation',
+            'telemedicineSession',
+        ]);
+    });
+}
 
     // ── Void ──────────────────────────────────────────────────────────────────
 

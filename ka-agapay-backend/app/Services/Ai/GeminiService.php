@@ -122,7 +122,7 @@ class GeminiService
                     ],
                 ],
                 'generationConfig' => [
-                    'temperature' => 0.45,
+                    'temperature' => 0.35,
                     'maxOutputTokens' => 700,
                 ],
                 'safetySettings' => [
@@ -160,7 +160,6 @@ class GeminiService
         }
 
         $payload = $response->json();
-
         $reply = $payload['candidates'][0]['content']['parts'][0]['text'] ?? null;
 
         if (!is_string($reply) || trim($reply) === '') {
@@ -174,14 +173,14 @@ class GeminiService
     {
         if ($audience === 'staff') {
             return
-                "You are Ka-Agapay RHU Staff Assistant for RHU Malasiqui, Pangasinan. " .
-                "You help RHU staff/admins use the admin dashboard modules: Dashboard, Queue, Appointments, Consultations, Telemedicine, Prescriptions, Inventory, Analytics, Heatmap, CMS Announcements/Events, SMS, Reports, Users, and Settings. " .
-                "Give practical step-by-step tutorial guidance. " .
-                "Use short, clear instructions. " .
-                "You may explain workflows, where to click, what data to check, and what errors mean. " .
-                "Do not invent database records. " .
+                "You are Ka-Agapay RHU Staff Assistant for RHU1 and RHU2 of Malasiqui, Pangasinan. " .
+                "You support authorized RHU staff/admin users in the admin dashboard. " .
+                "Use professional, concise, step-by-step guidance aligned with Ka-Agapay thesis workflows: queue management, appointments, consultations, telemedicine, e-prescriptions, inventory, reports, CMS, SMS, analytics, and user verification. " .
+                "IMPORTANT STYLE RULE: refer to clickable navigation items as buttons, not modules. Say 'click the Reports button', 'click the Queue button', or 'click the SMS button'. Do not say 'Reports module' or 'Queue module'. " .
+                "Explain where to click, what to review, and what staff should verify before saving. " .
+                "Do not invent patient records, counts, inventory quantities, or delivery statuses. " .
                 "Do not expose API keys, passwords, or secrets. " .
-                "For clinical questions, do not diagnose; advise staff to follow RHU protocol and escalate to a licensed clinician. " .
+                "For clinical questions, do not diagnose; instruct staff to follow RHU protocol and escalate to a licensed clinician. " .
                 "Reply in the same language the user uses when possible.";
         }
 
@@ -203,13 +202,14 @@ class GeminiService
             $safeContext = collect($context)
                 ->only([
                     'current_page',
-                    'module',
+                    'current_button',
                     'role',
                     'barangay',
                     'language',
                     'app_section',
+                    'source',
                 ])
-                ->filter(fn ($value) => is_scalar($value) && $value !== '')
+                ->filter(fn ($value) => is_scalar($value) && trim((string) $value) !== '')
                 ->map(fn ($value, $key) => "{$key}: {$value}")
                 ->implode("\n");
 
@@ -219,7 +219,7 @@ class GeminiService
         }
 
         $audienceText = $audience === 'staff'
-            ? 'Audience: RHU staff/admin user.'
+            ? 'Audience: RHU staff/admin user. Use button names, not module labels.'
             : 'Audience: mobile resident user.';
 
         return "{$audienceText}{$contextText}\n\nUser message:\n{$message}";
@@ -252,59 +252,100 @@ class GeminiService
         }
 
         if ($audience === 'staff') {
+            if ($this->containsAny($lower, ['report', 'reports', 'ulat', 'pinamigay', 'dispensed', 'export', 'csv'])) {
+                return
+                    "Para gumawa ng report sa mga pinamigay na gamot:\n\n" .
+                    "1. I-click ang **Reports** button sa sidebar.\n" .
+                    "2. Piliin ang report type para sa medicine dispensing, prescriptions, o inventory usage.\n" .
+                    "3. I-set ang date range, RHU, barangay, medicine name, o patient/program filter kung available.\n" .
+                    "4. I-click ang Preview para i-check kung tama ang records.\n" .
+                    "5. I-click ang Export CSV/PDF o Print para sa RHU documentation.\n\n" .
+                    "Kung stock count ang kailangan mong tingnan, i-click ang **Inventory** button. Kung actual reseta naman, i-click ang **Prescriptions** button.";
+            }
+
             if ($this->containsAny($lower, ['tutorial', 'guide', 'how to use', 'paano gamitin', 'turo'])) {
                 return
-                    "Narito ang mabilis na guide:\n\n" .
-                    "1. Dashboard — tingnan ang daily summary at alerts.\n" .
-                    "2. Queue — tawagin, i-serve, o tapusin ang queue tickets.\n" .
-                    "3. Appointments — approve, reschedule, cancel, or start consultation.\n" .
-                    "4. Consultations — record diagnosis, notes, prescriptions, and follow-up.\n" .
-                    "5. CMS — gumawa ng announcements/events para makita sa mobile app.\n" .
-                    "6. SMS — piliin ang target demographics at mag-send ng campaign.\n\n" .
-                    "Sabihin mo kung anong module ang gusto mong ituro ko step-by-step.";
+                    "Narito ang mabilis na guide sa admin dashboard:\n\n" .
+                    "1. I-click ang **Dashboard** button para makita ang daily summary at alerts.\n" .
+                    "2. I-click ang **Queue** button para tumawag, mag-serve, at magtapos ng tickets.\n" .
+                    "3. I-click ang **Appointments** button para mag-approve, mag-reschedule, o magsimula ng consultation.\n" .
+                    "4. I-click ang **Consultations** button para mag-record ng diagnosis, notes, prescriptions, at follow-up.\n" .
+                    "5. I-click ang **CMS** button para gumawa ng announcements/events para sa mobile app.\n" .
+                    "6. I-click ang **SMS** button para pumili ng target demographics at mag-send ng campaign.\n" .
+                    "7. I-click ang **Reports** button para gumawa ng printable/exportable RHU reports.\n\n" .
+                    "Sabihin mo kung aling button ang gusto mong i-walkthrough step-by-step.";
             }
 
             if ($this->containsAny($lower, ['queue', 'pila'])) {
                 return
-                    "Para sa Queue module:\n\n" .
-                    "1. Buksan ang Queue page.\n" .
+                    "Para sa pila workflow:\n\n" .
+                    "1. I-click ang **Queue** button.\n" .
                     "2. Piliin ang station/counter.\n" .
-                    "3. I-click ang Call Next para tawagin ang susunod.\n" .
-                    "4. I-click ang Serving kapag nasa counter na ang pasyente.\n" .
-                    "5. I-click ang Done kapag tapos na.\n\n" .
-                    "Kung priority patient, tingnan ang priority flags gaya ng senior, pregnant, PWD, emergency, o BHW-assisted.";
+                    "3. I-click ang **Call Next** para tawagin ang susunod.\n" .
+                    "4. I-click ang **Serving** kapag nasa counter na ang pasyente.\n" .
+                    "5. I-click ang **Done** kapag tapos na.\n\n" .
+                    "Reviewhin ang priority flags tulad ng senior, pregnant, PWD, emergency, pediatric, o BHW-assisted bago magdesisyon.";
             }
 
             if ($this->containsAny($lower, ['appointment', 'appointments', 'booking'])) {
                 return
-                    "Para sa Appointments module:\n\n" .
-                    "1. Buksan ang Appointments page.\n" .
-                    "2. Tingnan ang pending requests.\n" .
-                    "3. I-review ang appointment type: online, onsite, or consultation.\n" .
-                    "4. Approve, reschedule, cancel, or start consultation.\n" .
-                    "5. Kapag kailangan ng clinical record, buksan ang Consultation details.";
+                    "Para mag-manage ng appointments:\n\n" .
+                    "1. I-click ang **Appointments** button.\n" .
+                    "2. Buksan ang pending requests.\n" .
+                    "3. I-review ang appointment type: online, onsite, o consultation.\n" .
+                    "4. Piliin ang approve, reschedule, cancel, o start consultation.\n" .
+                    "5. Kapag kailangan ng clinical record, buksan ang related consultation details.";
             }
 
-            if ($this->containsAny($lower, ['announcement', 'event', 'cms', 'post'])) {
+            if ($this->containsAny($lower, ['announcement', 'event', 'cms', 'post', 'program'])) {
                 return
-                    "Para mag-post ng announcement/event:\n\n" .
-                    "1. Buksan ang Announcements o Events page.\n" .
-                    "2. I-click ang New Announcement o New Event.\n" .
-                    "3. Ilagay ang title, content, category, date/location kung event.\n" .
-                    "4. Upload at crop banner image kung meron.\n" .
-                    "5. Piliin ang Published kung gusto mong makita agad sa mobile app.\n" .
-                    "6. I-click Save/Create.";
+                    "Para mag-post ng announcement o event:\n\n" .
+                    "1. I-click ang **CMS** button o **Events** button, depende sa screen ninyo.\n" .
+                    "2. I-click ang **New Announcement** o **New Event**.\n" .
+                    "3. Ilagay ang title, content, category, date, at location kung event.\n" .
+                    "4. Upload at i-crop ang banner image kung meron.\n" .
+                    "5. Piliin ang **Published** kung gusto mong makita agad sa mobile app.\n" .
+                    "6. I-click ang **Save** o **Create**.";
             }
 
-            if ($this->containsAny($lower, ['sms', 'semaphore', 'text blast'])) {
+            if ($this->containsAny($lower, ['sms', 'semaphore', 'text blast', 'notification'])) {
                 return
-                    "Para sa SMS module:\n\n" .
-                    "1. Buksan ang SMS page.\n" .
-                    "2. Piliin ang target demographics: barangay, age group, sex, program, or status.\n" .
-                    "3. Isulat ang maikling message.\n" .
-                    "4. I-preview muna ang recipients.\n" .
-                    "5. I-send kapag tama na.\n\n" .
-                    "Siguraduhin na may Semaphore credits at valid API key sa backend .env.";
+                    "Para mag-send ng SMS campaign:\n\n" .
+                    "1. I-click ang **SMS** button.\n" .
+                    "2. Piliin ang target demographics: barangay, age group, sex, program, o account status.\n" .
+                    "3. Gumamit ng maikling message na walang sensitibong medical details.\n" .
+                    "4. I-click ang **Preview Recipients** at i-check ang count.\n" .
+                    "5. I-click ang **Send** kapag tama na.\n\n" .
+                    "Siguraduhin na may valid Semaphore API key at credits sa backend bago mag-send.";
+            }
+
+            if ($this->containsAny($lower, ['user', 'approve', 'verify', 'account', 'ocr'])) {
+                return
+                    "Para mag-approve o mag-check ng users:\n\n" .
+                    "1. I-click ang **Users** button.\n" .
+                    "2. Piliin ang pending, active, o rejected accounts.\n" .
+                    "3. I-review ang profile details, ID upload, at OCR/verification result kung meron.\n" .
+                    "4. I-click ang **Approve**, **Reject**, o request correction ayon sa RHU validation rules.\n" .
+                    "5. Iwasang mag-approve kung kulang o hindi tugma ang identity details.";
+            }
+
+            if ($this->containsAny($lower, ['inventory', 'stock', 'medicine', 'gamot', 'vaccine'])) {
+                return
+                    "Para sa gamot o vaccine stock:\n\n" .
+                    "1. I-click ang **Inventory** button.\n" .
+                    "2. Hanapin ang medicine/vaccine item.\n" .
+                    "3. I-check ang current stock, low-stock alert, expiry date, at transaction history.\n" .
+                    "4. Gamitin ang stock-in, stock-out, o adjust only with proper RHU documentation.\n" .
+                    "5. Para sa printable summary, i-click ang **Reports** button.";
+            }
+
+            if ($this->containsAny($lower, ['analytics', 'dashboard', 'heatmap', 'trend'])) {
+                return
+                    "Para sa analytics:\n\n" .
+                    "1. I-click ang **Dashboard** button para sa daily operational summary.\n" .
+                    "2. I-click ang **Analytics** button para sa trends, totals, at service performance.\n" .
+                    "3. I-click ang **Heatmap** button para makita ang barangay distribution at high-risk patterns.\n" .
+                    "4. Gamitin ang filters bago gumawa ng decisions o reports.";
             }
         }
 
@@ -335,9 +376,9 @@ class GeminiService
     {
         if ($audience === 'staff') {
             return
-                "Nandito ako para tumulong sa RHU admin system. Pwede kitang gabayan sa Queue, Appointments, " .
-                "Consultations, Telemedicine, Prescriptions, Inventory, Analytics, CMS posts, SMS, Users, at Settings. " .
-                "Sabihin mo lang kung anong module ang gusto mong gawin.";
+                "Nandito ako para tumulong sa RHU admin dashboard. Pwede kitang gabayan sa **Dashboard**, **Queue**, **Appointments**, " .
+                "**Consultations**, **Telemedicine**, **Prescriptions**, **Inventory**, **Analytics**, **Reports**, **CMS**, **SMS**, **Users**, at **Settings** buttons. " .
+                "Sabihin mo ang task, halimbawa: “gumawa ng medicine report”, “send SMS”, o “approve user”.";
         }
 
         return

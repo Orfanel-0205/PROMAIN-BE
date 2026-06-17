@@ -1,5 +1,6 @@
 <?php
 
+// app/Services/Queue/QueueService.php
 namespace App\Services\Queue;
 
 use App\Models\QueueTicket;

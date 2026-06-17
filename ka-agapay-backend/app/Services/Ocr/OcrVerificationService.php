@@ -1,4 +1,5 @@
-// app/Services/Ocr/OcrVerificationService.php — processOcr() method
+// app/Services/Ocr/OcrVerificationService.php 
+— processOcr() method
 
 public function processOcr(VerificationDocument $doc): OcrResult
 {

@@ -7,9 +7,12 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Event extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
         'title',
         'description',
@@ -34,6 +37,7 @@ class Event extends Model
         'slots_available',
 
         'banner_image',
+        'image_url',
 
         'sms_summary',
 
@@ -44,6 +48,13 @@ class Event extends Model
         'published_at',
 
         'created_by',
+
+        // Delete / archive tracking
+        'deleted_by',
+        'delete_reason',
+        'archived_at',
+        'archived_by',
+        'archive_reason',
     ];
 
     protected $casts = [
@@ -51,6 +62,9 @@ class Event extends Model
         'starts_at' => 'datetime',
         'ends_at' => 'datetime',
         'published_at' => 'datetime',
+
+        'deleted_at' => 'datetime',
+        'archived_at' => 'datetime',
 
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
@@ -74,6 +88,16 @@ class Event extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by', 'user_id');
+    }
+
+    public function deletedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'deleted_by', 'user_id');
+    }
+
+    public function archivedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'archived_by', 'user_id');
     }
 
     public function registrations(): HasMany
@@ -107,6 +131,16 @@ class Event extends Model
             $q->where('starts_at', '>=', now())
                 ->orWhere('event_date', '>=', now());
         });
+    }
+
+    public function scopeArchived(Builder $query): Builder
+    {
+        return $query->whereNotNull('archived_at');
+    }
+
+    public function scopeNotArchived(Builder $query): Builder
+    {
+        return $query->whereNull('archived_at');
     }
 
     // =========================================================================

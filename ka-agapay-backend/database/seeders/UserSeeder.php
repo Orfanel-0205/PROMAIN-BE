@@ -1,7 +1,5 @@
 <?php
 // database/seeders/UserSeeder.php
-// Creates a default super_admin + a demo resident for local dev/testing.
-// CHANGE PASSWORDS before deploying to production.
 
 namespace Database\Seeders;
 
@@ -14,36 +12,39 @@ class UserSeeder extends Seeder
 {
     public function run(): void
     {
-        $superAdmin = UserRole::where('name', 'super_admin')->firstOrFail();
-        $resident   = UserRole::where('name', 'resident')->firstOrFail();
+        $mhoRole = UserRole::where('name', 'mho')->firstOrFail();
+        $residentRole = UserRole::where('name', 'resident')->firstOrFail();
 
-        User::firstOrCreate(
+        User::updateOrCreate(
             ['mobile_number' => '09000000000'],
             [
-                'role_id'        => $superAdmin->role_id,
-                'first_name'     => 'Super',
-                'last_name'      => 'Admin',
-                'email'          => 'admin@ka-agapay.local',
-                'password'       => Hash::make('Admin@1234!'),
+                'role_id' => $mhoRole->role_id,
+                'first_name' => 'Demo',
+                'last_name' => 'MHO',
+                'email' => 'mho@ka-agapay.local',
+                'password' => Hash::make('Admin@1234!'),
                 'account_status' => 'active',
-                'barangay'       => 'Poblacion',
+                'id_verified' => true,
+                'barangay' => 'Poblacion',
+                'staff_approved_at' => now(),
             ]
         );
 
-        User::firstOrCreate(
+        User::updateOrCreate(
             ['mobile_number' => '09111111111'],
             [
-                'role_id'        => $resident->role_id,
-                'first_name'     => 'Demo',
-                'last_name'      => 'Resident',
-                'email'          => 'resident@ka-agapay.local',
-                'password'       => Hash::make('Resident@1234!'),
-                'account_status' => 'active',
-                'barangay'       => 'Poblacion',
-                'sex'            => 'male',
+                'role_id' => $residentRole->role_id,
+                'first_name' => 'Demo',
+                'last_name' => 'Resident',
+                'email' => 'resident@ka-agapay.local',
+                'password' => Hash::make('Resident@1234!'),
+                'account_status' => 'pending',
+                'id_verified' => false,
+                'barangay' => 'Poblacion',
+                'sex' => 'male',
             ]
         );
 
-        $this->command->info('✅ Default users seeded');
+        $this->command->info('✅ Default MHO and resident users seeded.');
     }
 }

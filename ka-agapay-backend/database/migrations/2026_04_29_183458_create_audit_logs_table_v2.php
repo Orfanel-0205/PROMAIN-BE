@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_04_29_183458_create_audit_logs_table_v2.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

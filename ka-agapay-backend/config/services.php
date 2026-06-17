@@ -25,18 +25,26 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
-    // ── Google / Gemini ───────────────────────────────────────────────────────
     'google' => [
-        'gemini_api_key'     => env('GEMINI_API_KEY'),
-        'vision_api_key'     => env('GOOGLE_VISION_API_KEY'),
+        'gemini_api_key' => env('GEMINI_API_KEY'),
+        'vision_api_key' => env('GOOGLE_VISION_API_KEY'),
     ],
-    // OCR 
+
     'ocr_space' => [
-    'key' => env('OCR_SPACE_API_KEY'),
-],
+        'key' => env('OCR_SPACE_API_KEY'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | SMS Provider
+    |--------------------------------------------------------------------------
+    */
+
+    'sms_provider' => env('SMS_PROVIDER', 'semaphore'),
+
 'semaphore' => [
     'api_key' => env('SEMAPHORE_API_KEY'),
-    'sendername' => env('SEMAPHORE_SENDERNAME'),
+    'sendername' => env('SEMAPHORE_SENDERNAME', 'KAAGAPAY'),
     'base_url' => env('SEMAPHORE_BASE_URL', 'https://api.semaphore.co/api/v4'),
 ],
 

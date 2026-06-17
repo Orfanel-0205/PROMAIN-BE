@@ -1,5 +1,5 @@
 <?php
-
+//app\Http\Controllers\Api\Ai\AiController.php
 namespace App\Http\Controllers\Api\Ai;
 
 use App\Http\Controllers\Controller;

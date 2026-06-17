@@ -18,6 +18,7 @@ class User extends Authenticatable
 
     protected $fillable = [
         'role_id',
+        'barangay_id',
         'first_name',
         'last_name',
         'email',
@@ -36,6 +37,9 @@ class User extends Authenticatable
         'locked_until',
         'last_login_at',
         'last_login_ip',
+        'staff_approved_by',
+        'staff_approved_at',
+        'rejection_reason',
     ];
 
     protected $hidden = [
@@ -51,10 +55,13 @@ class User extends Authenticatable
         'biometric_enabled' => 'boolean',
         'locked_until' => 'datetime',
         'last_login_at' => 'datetime',
+        'staff_approved_at' => 'datetime',
     ];
 
     protected $appends = [
         'full_name',
+        'role_name',
+        'capabilities',
     ];
 
     public function getFullNameAttribute(): string
@@ -62,28 +69,79 @@ class User extends Authenticatable
         return trim(($this->first_name ?? '') . ' ' . ($this->last_name ?? ''));
     }
 
-    // =========================================================================
-    // ROLE HELPERS
-    // =========================================================================
+    public function getRoleNameAttribute(): string
+    {
+        return $this->getCurrentRoleName() ?? 'resident';
+    }
+
+    public function getCapabilitiesAttribute(): array
+    {
+        $role = $this->normalizeRoleName($this->role_name);
+
+        $rolePermissions = $this->role?->permissions;
+
+        if (is_array($rolePermissions) && !empty($rolePermissions)) {
+            return array_values($rolePermissions);
+        }
+
+        return match ($role) {
+            'super_admin', 'mho', 'municipal_mayor', 'it_staff' => [
+                'full_access',
+                'manage_users',
+                'approve_staff',
+                'manage_announcements',
+                'manage_events',
+                'manage_queue',
+                'manage_consultations',
+                'manage_prescriptions',
+                'manage_inventory',
+                'manage_sms',
+                'view_analytics',
+                'manage_settings',
+            ],
+            'rhu_admin', 'staff_admin' => [
+                'manage_announcements',
+                'manage_events',
+                'manage_queue',
+                'manage_consultations',
+                'manage_prescriptions',
+                'manage_inventory',
+                'manage_sms',
+                'view_analytics',
+            ],
+            'doctor' => [
+                'manage_consultations',
+                'manage_prescriptions',
+                'view_patients',
+            ],
+            'nurse', 'midwife' => [
+                'manage_queue',
+                'manage_consultations',
+                'manage_prescriptions',
+                'manage_inventory',
+                'view_patients',
+            ],
+            'bhw' => [
+                'manage_queue',
+                'view_patients',
+            ],
+            default => [],
+        };
+    }
 
     public function role(): BelongsTo
     {
         return $this->belongsTo(UserRole::class, 'role_id', 'role_id');
     }
 
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'staff_approved_by', 'user_id');
+    }
+
     public function hasRole(string|array $roles): bool
     {
-        if (is_array($roles)) {
-            return $this->hasAnyRole($roles);
-        }
-
-        $currentRole = $this->getCurrentRoleName();
-
-        if (!$currentRole) {
-            return false;
-        }
-
-        return $this->normalizeRoleName($currentRole) === $this->normalizeRoleName($roles);
+        return $this->hasAnyRole($roles);
     }
 
     public function hasAnyRole(array|string $roles): bool
@@ -92,13 +150,7 @@ class User extends Authenticatable
             $roles = [$roles];
         }
 
-        $currentRole = $this->getCurrentRoleName();
-
-        if (!$currentRole) {
-            return false;
-        }
-
-        $currentRole = $this->normalizeRoleName($currentRole);
+        $currentRole = $this->normalizeRoleName($this->getCurrentRoleName() ?? '');
 
         foreach ($roles as $role) {
             if ($currentRole === $this->normalizeRoleName((string) $role)) {
@@ -119,11 +171,7 @@ class User extends Authenticatable
             return null;
         }
 
-        /*
-         * Supports different possible role table columns:
-         * role_name, name, slug, role, title, code
-         */
-        foreach (['role_name', 'name', 'slug', 'role', 'title', 'code'] as $field) {
+        foreach (['name', 'role_name', 'slug', 'role', 'title', 'code'] as $field) {
             if (!empty($role->{$field})) {
                 return (string) $role->{$field};
             }
@@ -134,18 +182,8 @@ class User extends Authenticatable
 
     private function normalizeRoleName(string $role): string
     {
-        return strtolower(
-            str_replace(
-                [' ', '-'],
-                '_',
-                trim($role)
-            )
-        );
+        return strtolower(str_replace([' ', '-'], '_', trim($role)));
     }
-
-    // =========================================================================
-    // RELATIONSHIPS
-    // =========================================================================
 
     public function residentProfile(): HasOne
     {

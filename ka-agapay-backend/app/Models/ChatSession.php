@@ -10,12 +10,19 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class ChatSession extends Model
 {
     protected $fillable = [
-        'user_id', 'session_token', 'language',
-        'status', 'last_activity_at',
+        'user_id',
+        'session_token',
+        'audience',
+        'title',
+        'language',
+        'status',
+        'last_activity_at',
     ];
 
     protected $casts = [
         'last_activity_at' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     public function user(): BelongsTo
@@ -25,12 +32,12 @@ class ChatSession extends Model
 
     public function messages(): HasMany
     {
-        return $this->hasMany(ChatMessage::class)->orderBy('created_at');
+        return $this->hasMany(ChatMessage::class, 'chat_session_id')->orderBy('created_at');
     }
 
     public function recentMessages(int $limit = 10): HasMany
     {
-        return $this->hasMany(ChatMessage::class)
+        return $this->hasMany(ChatMessage::class, 'chat_session_id')
             ->latest('created_at')
             ->limit($limit);
     }

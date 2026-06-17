@@ -5,100 +5,135 @@ namespace App\Services\Inventory;
 
 use App\Models\InventoryItem;
 use App\Models\InventoryTransaction;
-use App\Services\Audit\AuditService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\ValidationException;
 
 class InventoryService
 {
-    public function __construct(
-        private readonly AuditService $audit
-    ) {}
-
-    // ── Stock In ──────────────────────────────────────────────────────────────
-
     public function stockIn(InventoryItem $item, int $quantity, array $data = []): InventoryTransaction
     {
-        return DB::transaction(function () use ($item, $quantity, $data) {
-            $before = $item->current_stock;
-            $after  = $before + $quantity;
-
-            $item->update([
-                'current_stock'    => $after,
-                'last_restocked_at'=> today(),
+        if ($quantity <= 0) {
+            throw ValidationException::withMessages([
+                'quantity' => 'Quantity to add must be greater than zero.',
             ]);
-
-            return $this->recordTransaction($item, 'stock_in', $before, $quantity, $after, $data);
-        });
-    }
-
-    // ── Stock Out (manual or from prescription) ───────────────────────────────
-
-    public function stockOut(InventoryItem $item, int $quantity, array $data = []): InventoryTransaction
-    {
-        if ($item->current_stock < $quantity) {
-            throw new \DomainException(
-                "Insufficient stock for [{$item->name}]. " .
-                "Available: {$item->current_stock}, Requested: {$quantity}."
-            );
         }
 
         return DB::transaction(function () use ($item, $quantity, $data) {
-            $before = $item->current_stock;
-            $after  = $before - $quantity;
+            $lockedItem = InventoryItem::whereKey($item->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-            $item->update(['current_stock' => $after]);
+            $quantityBefore = (int) $lockedItem->current_stock;
+            $quantityChanged = abs($quantity);
+            $quantityAfter = $quantityBefore + $quantityChanged;
 
-            $transaction = $this->recordTransaction(
-                $item, 'stock_out', $before, -$quantity, $after, $data
+            $lockedItem->update([
+                'current_stock' => $quantityAfter,
+                'last_restocked_at' => now(),
+            ]);
+
+            return $this->recordTransaction(
+                item: $lockedItem->fresh(),
+                transactionType: 'stock_in',
+                quantityBefore: $quantityBefore,
+                quantityChanged: $quantityChanged,
+                quantityAfter: $quantityAfter,
+                data: array_merge([
+                    'reason' => 'Manual stock addition.',
+                    'notes' => 'Stock added from RHU admin inventory.',
+                ], $data)
             );
+        });
+    }
 
-            // Auto-alert if stock dropped below minimum
-            if ($after <= $item->minimum_stock_level) {
-                $this->audit->warning('inventory.low_stock_alert', 'inventory', [
-                    'subject'       => $item,
-                    'subject_label' => $item->getAuditLabel(),
-                    'metadata'      => [
-                        'current_stock'       => $after,
-                        'minimum_stock_level' => $item->minimum_stock_level,
-                    ],
+    public function stockOut(InventoryItem $item, int $quantity, array $data = []): InventoryTransaction
+    {
+        if ($quantity <= 0) {
+            throw ValidationException::withMessages([
+                'quantity' => 'Quantity to deduct must be greater than zero.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($item, $quantity, $data) {
+            $lockedItem = InventoryItem::whereKey($item->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $quantityBefore = (int) $lockedItem->current_stock;
+            $quantityChanged = abs($quantity);
+            $quantityAfter = $quantityBefore - $quantityChanged;
+
+            if ($quantityAfter < 0) {
+                throw ValidationException::withMessages([
+                    'quantity' => "Insufficient stock for {$lockedItem->name}. Available: {$quantityBefore}, requested: {$quantityChanged}.",
                 ]);
             }
 
-            return $transaction;
+            $lockedItem->update([
+                'current_stock' => $quantityAfter,
+            ]);
+
+            return $this->recordTransaction(
+                item: $lockedItem->fresh(),
+                transactionType: 'stock_out',
+                quantityBefore: $quantityBefore,
+                quantityChanged: -$quantityChanged,
+                quantityAfter: $quantityAfter,
+                data: array_merge([
+                    'reason' => 'Manual stock deduction.',
+                    'notes' => 'Stock deducted from RHU admin inventory.',
+                ], $data)
+            );
         });
     }
-
-    // ── Adjustment ───────────────────────────────────────────────────────────
 
     public function adjust(InventoryItem $item, int $newQuantity, string $reason): InventoryTransaction
     {
-        return DB::transaction(function () use ($item, $newQuantity, $reason) {
-            $before   = $item->current_stock;
-            $changed  = $newQuantity - $before;
-
-            $item->update(['current_stock' => $newQuantity]);
-
-            return $this->recordTransaction($item, 'adjustment', $before, $changed, $newQuantity, [
-                'reason' => $reason,
+        if ($newQuantity < 0) {
+            throw ValidationException::withMessages([
+                'new_quantity' => 'New quantity cannot be negative.',
             ]);
+        }
+
+        return DB::transaction(function () use ($item, $newQuantity, $reason) {
+            $lockedItem = InventoryItem::whereKey($item->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $quantityBefore = (int) $lockedItem->current_stock;
+            $quantityAfter = $newQuantity;
+            $quantityChanged = $quantityAfter - $quantityBefore;
+
+            $lockedItem->update([
+                'current_stock' => $quantityAfter,
+            ]);
+
+            return $this->recordTransaction(
+                item: $lockedItem->fresh(),
+                transactionType: 'adjustment',
+                quantityBefore: $quantityBefore,
+                quantityChanged: $quantityChanged,
+                quantityAfter: $quantityAfter,
+                data: [
+                    'reason' => $reason,
+                    'notes' => $reason,
+                ]
+            );
         });
     }
 
-    // ── Get low stock alerts ──────────────────────────────────────────────────
-
-    public function getLowStockItems(int $rhuId): \Illuminate\Database\Eloquent\Collection
+    public function getLowStockItems(int $rhuId)
     {
         return InventoryItem::forRhu($rhuId)
             ->active()
             ->lowStock()
-            ->orderBy('current_stock')
+            ->orderBy('name')
             ->get();
     }
 
-    // ── Get expiring soon ─────────────────────────────────────────────────────
-
-    public function getExpiringSoon(int $rhuId, int $days = 30): \Illuminate\Database\Eloquent\Collection
+    public function getExpiringSoon(int $rhuId, int $days = 30)
     {
         return InventoryItem::forRhu($rhuId)
             ->active()
@@ -107,27 +142,62 @@ class InventoryService
             ->get();
     }
 
-    // ── Private ───────────────────────────────────────────────────────────────
-
     private function recordTransaction(
         InventoryItem $item,
-        string        $type,
-        int           $before,
-        int           $changed,
-        int           $after,
-        array         $data = []
+        string $transactionType,
+        int $quantityBefore,
+        int $quantityChanged,
+        int $quantityAfter,
+        array $data = []
     ): InventoryTransaction {
-        return InventoryTransaction::create([
+        $row = [
             'inventory_item_id' => $item->id,
-            'performed_by'      => Auth::id(),
-            'transaction_type'  => $type,
-            'quantity_before'   => $before,
-            'quantity_changed'  => $changed,
-            'quantity_after'    => $after,
-            'prescription_id'   => $data['prescription_id'] ?? null,
-            'reference_number'  => $data['reference_number'] ?? null,
-            'reason'            => $data['reason'] ?? null,
-            'notes'             => $data['notes'] ?? null,
-        ]);
+            'performed_by' => $this->performedById(),
+            'transaction_type' => $transactionType,
+
+            // These 3 fields are required for your current table.
+            'quantity_before' => $quantityBefore,
+            'quantity_changed' => $quantityChanged,
+            'quantity_after' => $quantityAfter,
+
+            'reference_number' => $data['reference_number'] ?? null,
+            'prescription_id' => $data['prescription_id'] ?? null,
+            'reason' => $data['reason'] ?? $this->defaultReason($transactionType),
+            'notes' => $data['notes'] ?? null,
+
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        $columns = Schema::hasTable('inventory_transactions')
+            ? Schema::getColumnListing('inventory_transactions')
+            : [];
+
+        if (!empty($columns)) {
+            $row = collect($row)
+                ->only($columns)
+                ->toArray();
+        }
+
+        return InventoryTransaction::create($row);
+    }
+
+    private function performedById(): ?int
+    {
+        $user = Auth::user();
+
+        return $user?->user_id ?? $user?->id ?? Auth::id();
+    }
+
+    private function defaultReason(string $transactionType): string
+    {
+        return match ($transactionType) {
+            'stock_in' => 'Stock added.',
+            'stock_out' => 'Stock deducted.',
+            'adjustment' => 'Stock adjusted.',
+            'expiry_removal' => 'Expired stock removed.',
+            'transfer' => 'Stock transferred.',
+            default => 'Inventory transaction recorded.',
+        };
     }
 }

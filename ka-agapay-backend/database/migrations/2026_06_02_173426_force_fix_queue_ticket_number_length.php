@@ -1,5 +1,5 @@
 <?php
-
+// database/migrations/YYYY_MM_DD_force_fix_queue_ticket_number_length.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;

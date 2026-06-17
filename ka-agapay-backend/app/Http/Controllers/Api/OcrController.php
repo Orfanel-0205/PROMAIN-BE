@@ -14,14 +14,20 @@ use Illuminate\Support\Str;
 
 class OcrController extends Controller
 {
-    /**
-     * POST /api/v1/ocr/upload
-     *
-     * Mobile ID verification OCR endpoint.
-     * Expected request:
-     * - id_type: string
-     * - id_image: jpg/jpeg/png/webp/pdf
-     */
+    private array $staffRoles = [
+        'doctor',
+        'nurse',
+        'midwife',
+        'bhw',
+        'staff',
+        'staff_admin',
+        'admin',
+        'rhu_admin',
+        'mho',
+        'municipal_mayor',
+        'it_staff',
+    ];
+
     public function upload(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -32,10 +38,10 @@ class OcrController extends Controller
         $user = $request->user();
 
         if (!$user) {
-            return response()->json([
-                'message' => 'Unauthenticated.',
-            ], 401);
+            return response()->json(['message' => 'Unauthenticated.'], 401);
         }
+
+        $user->loadMissing('role');
 
         $file = $request->file('id_image');
 
@@ -48,14 +54,26 @@ class OcrController extends Controller
 
         $ocr = $this->runOcr($fullPath, (string) $file->getMimeType());
 
-        $text = trim($ocr['text']);
-        $name = $this->extractName($text);
+        $text = trim($ocr['text'] ?? '');
+        $extractedName = $this->extractName($text);
         $birthdate = $this->extractBirthdate($text);
         $idNumber = $this->extractIdNumber($text);
         $philhealth = $this->extractPhilHealthNumber($text);
 
-        $verified = $this->validateOcr($text, $name, $idNumber, $birthdate);
-        $confidence = $ocr['confidence'] ?: ($verified ? 85 : 40);
+        $registeredName = trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''));
+        $nameScore = $this->nameMatchScore($registeredName, $extractedName, $text);
+        $dateScore = $this->dateMatchScore($user->birthday ?? null, $birthdate);
+        $overallMatch = $dateScore === null
+            ? $nameScore
+            : (($nameScore * 0.75) + ($dateScore * 0.25));
+
+        $hasReadableText = $text !== '';
+        $verified = $hasReadableText && $overallMatch >= 0.65;
+
+        $confidence = (float) ($ocr['confidence'] ?? 0);
+        if ($confidence <= 0) {
+            $confidence = $verified ? 85 : 35;
+        }
 
         $ocrId = null;
 
@@ -65,11 +83,22 @@ class OcrController extends Controller
                 'id_type' => $validated['id_type'],
                 'file_path' => $path,
                 'extracted_text' => $text,
-                'extracted_name' => $name,
+                'extracted_name' => $extractedName,
                 'extracted_birthdate' => $birthdate,
                 'extracted_id_number' => $idNumber,
-                'raw_ocr_response' => json_encode($ocr['raw']),
+                'raw_ocr_response' => json_encode([
+                    'provider' => $ocr['raw']['provider'] ?? 'ocr.space',
+                    'raw' => $ocr['raw'] ?? [],
+                    'registered_name' => $registeredName,
+                    'extracted_name' => $extractedName,
+                    'name_match_score' => $nameScore,
+                    'date_match_score' => $dateScore,
+                    'overall_match' => $overallMatch,
+                ]),
                 'confidence_score' => $confidence,
+                'name_match_score' => round($nameScore, 2),
+                'date_match_score' => $dateScore === null ? null : round($dateScore, 2),
+                'overall_match' => round($overallMatch, 2),
                 'status' => $verified ? 'approved' : 'failed',
                 'processed_at' => now(),
                 'created_at' => now(),
@@ -77,14 +106,23 @@ class OcrController extends Controller
             ]));
         }
 
-        if ($verified && Schema::hasTable('users')) {
+        if (Schema::hasTable('users')) {
             $updates = [];
 
             if (Schema::hasColumn('users', 'id_verified')) {
-                $updates['id_verified'] = true;
+                $updates['id_verified'] = $verified;
             }
 
-            // Do not overwrite the user's registered name from noisy OCR.
+            $roleName = $this->normalizeRoleName($user->role_name ?? $user->role?->name ?? 'resident');
+
+            if ($verified && !in_array($roleName, $this->staffRoles, true)) {
+                $updates['account_status'] = 'active';
+            }
+
+            if ($verified && in_array($roleName, $this->staffRoles, true) && ($user->account_status !== 'active')) {
+                $updates['account_status'] = 'pending';
+            }
+
             if (!empty($updates)) {
                 DB::table('users')
                     ->where('user_id', $user->user_id ?? $user->id)
@@ -94,18 +132,25 @@ class OcrController extends Controller
 
         return response()->json([
             'message' => $verified
-                ? 'ID scanned successfully. Your account is now marked as ID verified.'
-                : 'Could not read the ID clearly. Please upload a clearer photo with good lighting.',
+                ? 'ID scanned successfully. Name matched the registered user.'
+                : 'OCR verification failed. The ID name must match the registered first name and last name.',
             'ocr_id' => $ocrId,
             'status' => $verified ? 'approved' : 'failed',
             'verified' => $verified,
             'confidence_score' => $confidence,
+            'registered_name' => $registeredName,
             'extracted_text' => $text,
-            'extracted_name' => $name,
+            'extracted_name' => $extractedName,
             'birthdate' => $birthdate,
             'id_number' => $idNumber,
+            'name_match_score' => round($nameScore, 2),
+            'date_match_score' => $dateScore === null ? null : round($dateScore, 2),
+            'overall_match' => round($overallMatch, 2),
+            'next_step' => $verified && in_array($this->normalizeRoleName($user->role_name ?? 'resident'), $this->staffRoles, true)
+                ? 'Your ID is verified. Please wait for MHO, Municipal Mayor, or IT Staff approval.'
+                : null,
             'auto_fill' => [
-                'full_name' => $name,
+                'full_name' => $extractedName,
                 'birthdate' => $birthdate,
                 'id_number' => $idNumber,
                 'philhealth_number' => $philhealth,
@@ -113,9 +158,6 @@ class OcrController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/ocr/results/{id}
-     */
     public function result(int $id): JsonResponse
     {
         abort_unless(Schema::hasTable('ocr_results'), 404, 'OCR results table not found.');
@@ -124,61 +166,38 @@ class OcrController extends Controller
 
         abort_unless($row, 404, 'OCR result not found.');
 
-        return response()->json([
-            'data' => $row,
-        ]);
+        return response()->json(['data' => $row]);
     }
 
     private function runOcr(string $fullPath, string $mimeType): array
     {
         $apiKey = config('services.ocr_space.key') ?: env('OCR_SPACE_API_KEY');
 
-        if ($apiKey) {
-            try {
-                $response = Http::timeout(60)
-                    ->attach('file', fopen($fullPath, 'r'), basename($fullPath))
-                    ->post('https://api.ocr.space/parse/image', [
-                        'apikey' => $apiKey,
-                        'language' => 'eng',
-                        'isOverlayRequired' => 'false',
-                        'scale' => 'true',
-                        'detectOrientation' => 'true',
-                        'OCREngine' => '2',
-                    ]);
+        if (!$apiKey) {
+            return [
+                'text' => '',
+                'confidence' => 0,
+                'raw' => [
+                    'provider' => 'none',
+                    'error' => 'OCR_SPACE_API_KEY is not configured.',
+                    'mime_type' => $mimeType,
+                ],
+            ];
+        }
 
-                if ($response->successful()) {
-                    $payload = $response->json();
+        try {
+            $response = Http::timeout(60)
+                ->attach('file', fopen($fullPath, 'r'), basename($fullPath))
+                ->post('https://api.ocr.space/parse/image', [
+                    'apikey' => $apiKey,
+                    'language' => 'eng',
+                    'isOverlayRequired' => 'false',
+                    'scale' => 'true',
+                    'detectOrientation' => 'true',
+                    'OCREngine' => '2',
+                ]);
 
-                    $parsed = collect($payload['ParsedResults'] ?? [])
-                        ->pluck('ParsedText')
-                        ->filter()
-                        ->implode("\n");
-
-                    $errorMessage = $payload['ErrorMessage'] ?? null;
-
-                    if (is_array($errorMessage)) {
-                        $errorMessage = implode(' ', $errorMessage);
-                    }
-
-                    if (trim($parsed) !== '') {
-                        return [
-                            'text' => trim($parsed),
-                            'confidence' => 85,
-                            'raw' => $payload,
-                        ];
-                    }
-
-                    return [
-                        'text' => '',
-                        'confidence' => 0,
-                        'raw' => [
-                            'provider' => 'ocr.space',
-                            'error' => $errorMessage ?: 'No text detected.',
-                            'payload' => $payload,
-                        ],
-                    ];
-                }
-
+            if (!$response->successful()) {
                 return [
                     'text' => '',
                     'confidence' => 0,
@@ -188,27 +207,30 @@ class OcrController extends Controller
                         'body' => Str::limit($response->body(), 1000),
                     ],
                 ];
-            } catch (\Throwable $e) {
-                return [
-                    'text' => '',
-                    'confidence' => 0,
-                    'raw' => [
-                        'provider' => 'ocr.space',
-                        'error' => $e->getMessage(),
-                    ],
-                ];
             }
-        }
 
-        return [
-            'text' => '',
-            'confidence' => 0,
-            'raw' => [
-                'provider' => 'none',
-                'error' => 'OCR_SPACE_API_KEY is not configured.',
-                'mime_type' => $mimeType,
-            ],
-        ];
+            $payload = $response->json();
+
+            $parsed = collect($payload['ParsedResults'] ?? [])
+                ->pluck('ParsedText')
+                ->filter()
+                ->implode("\n");
+
+            return [
+                'text' => trim($parsed),
+                'confidence' => trim($parsed) !== '' ? 85 : 0,
+                'raw' => $payload,
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'text' => '',
+                'confidence' => 0,
+                'raw' => [
+                    'provider' => 'ocr.space',
+                    'error' => $e->getMessage(),
+                ],
+            ];
+        }
     }
 
     private function extractName(string $text): ?string
@@ -216,25 +238,25 @@ class OcrController extends Controller
         $normalized = $this->normalizeText($text);
 
         $patterns = [
-            '/(?:name|pangalan|full name)\s*[:\-]?\s*([A-ZÑ][A-ZÑ ,.\'-]{4,80})/iu',
-            '/(?:apelyido|surname|last name)\s*[:\-]?\s*([A-ZÑ][A-ZÑ ,.\'-]{2,50})/iu',
+            '/(?:name|pangalan|full name)\s*[:\-]?\s*([A-ZÑ][A-ZÑ ,.\'-]{4,100})/iu',
+            '/(?:apelyido|surname|last name)\s*[:\-]?\s*([A-ZÑ][A-ZÑ ,.\'-]{2,80})/iu',
         ];
 
         foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $normalized, $m)) {
-                return $this->cleanField($m[1]);
+            if (preg_match($pattern, $normalized, $match)) {
+                return $this->cleanField($match[1]);
             }
         }
 
         $lines = collect(preg_split('/\r?\n+/', $text))
             ->map(fn ($line) => trim($line))
-            ->filter(fn ($line) => strlen($line) >= 6 && strlen($line) <= 80)
+            ->filter(fn ($line) => strlen($line) >= 6 && strlen($line) <= 100)
             ->values();
 
         foreach ($lines as $line) {
             if (
                 preg_match('/^[A-ZÑ][A-ZÑ ,.\'-]+$/u', $line) &&
-                !preg_match('/REPUBLIC|PHILIPPINES|IDENTIFICATION|CARD|SIGNATURE|ADDRESS|BIRTH|DATE|SEX|VALID/i', $line)
+                !preg_match('/REPUBLIC|PHILIPPINES|IDENTIFICATION|CARD|SIGNATURE|ADDRESS|BIRTH|DATE|SEX|VALID|LICENSE|PHILHEALTH/i', $line)
             ) {
                 return $this->cleanField($line);
             }
@@ -253,8 +275,8 @@ class OcrController extends Controller
         ];
 
         foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $text, $m)) {
-                return $this->cleanField($m[1]);
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanField($match[1]);
             }
         }
 
@@ -270,8 +292,8 @@ class OcrController extends Controller
         ];
 
         foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $text, $m)) {
-                return $this->cleanField($m[1]);
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanField($match[1]);
             }
         }
 
@@ -280,45 +302,121 @@ class OcrController extends Controller
 
     private function extractPhilHealthNumber(string $text): ?string
     {
-        if (preg_match('/\b(\d{2}\-?\d{9}\-?\d{1})\b/u', $text, $m)) {
-            return $this->cleanField($m[1]);
+        if (preg_match('/\b(\d{2}\-?\d{9}\-?\d{1})\b/u', $text, $match)) {
+            return $this->cleanField($match[1]);
         }
 
         return null;
     }
 
-    private function validateOcr(string $text, ?string $name, ?string $idNumber, ?string $birthdate): bool
+    private function nameMatchScore(string $registeredName, ?string $extractedName, string $fullText): float
     {
-        $clean = trim($text);
+        $registered = $this->normalizeName($registeredName);
+        $candidate = $this->normalizeName($extractedName ?: $fullText);
 
-        if (strlen($clean) < 20) {
-            return false;
+        if ($registered === '' || $candidate === '') {
+            return 0.0;
         }
 
-        $hasIdentityField = $name || $idNumber || $birthdate;
+        if ($registered === $candidate) {
+            return 1.0;
+        }
 
-        $hasIdKeyword = preg_match(
-            '/\b(ID|IDENTIFICATION|CARD|LICENSE|PASSPORT|PHILHEALTH|PHILSYS|NATIONAL|STUDENT|SCHOOL|DRIVER)\b/i',
-            $clean
-        );
+        if (str_contains($candidate, $registered)) {
+            return 0.95;
+        }
 
-        return (bool) ($hasIdentityField || $hasIdKeyword);
+        $registeredTokens = array_values(array_filter(explode(' ', $registered)));
+        $candidateTokens = array_values(array_filter(explode(' ', $candidate)));
+
+        if (empty($registeredTokens) || empty($candidateTokens)) {
+            return 0.0;
+        }
+
+        $matched = 0;
+
+        foreach ($registeredTokens as $registeredToken) {
+            foreach ($candidateTokens as $candidateToken) {
+                if (
+                    $registeredToken === $candidateToken ||
+                    str_contains($candidateToken, $registeredToken) ||
+                    str_contains($registeredToken, $candidateToken)
+                ) {
+                    $matched++;
+                    break;
+                }
+            }
+        }
+
+        $tokenScore = $matched / count($registeredTokens);
+
+        $maxLength = max(strlen($registered), strlen($candidate));
+        $levenshteinScore = $maxLength > 0
+            ? max(0, 1 - (levenshtein($registered, substr($candidate, 0, min(strlen($candidate), 255))) / $maxLength))
+            : 0;
+
+        return max($tokenScore, $levenshteinScore);
+    }
+
+    private function dateMatchScore($registeredBirthday, ?string $extractedBirthdate): ?float
+    {
+        if (!$registeredBirthday || !$extractedBirthdate) {
+            return null;
+        }
+
+        try {
+            $registered = date('Y-m-d', strtotime((string) $registeredBirthday));
+            $extracted = date('Y-m-d', strtotime($extractedBirthdate));
+
+            return $registered === $extracted ? 1.0 : 0.0;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function normalizeName(?string $name): string
+    {
+        $name = strtoupper((string) $name);
+        $name = preg_replace('/[^A-ZÑ\s]/u', ' ', $name) ?? '';
+        $name = preg_replace('/\b(JR|SR|II|III|IV|MR|MS|MRS)\b/u', ' ', $name) ?? '';
+        $name = preg_replace('/\s+/', ' ', $name) ?? '';
+
+        return strtolower(trim($name));
     }
 
     private function normalizeText(string $text): string
     {
-        return trim(preg_replace('/[ \t]+/', ' ', $text));
+        $text = str_replace(["\r"], "\n", $text);
+        $text = preg_replace('/[ \t]+/', ' ', $text) ?? $text;
+
+        return trim($text);
     }
 
-    private function cleanField(string $value): string
+    private function cleanField(?string $value): ?string
     {
-        return trim(preg_replace('/\s+/', ' ', str_replace(["\r", "\n"], ' ', $value)));
+        if ($value === null) {
+            return null;
+        }
+
+        $value = preg_replace('/\s+/', ' ', trim($value)) ?? '';
+        $value = trim($value, " \t\n\r\0\x0B:-,.");
+
+        return $value !== '' ? $value : null;
+    }
+
+    private function normalizeRoleName(string $role): string
+    {
+        return strtolower(str_replace([' ', '-'], '_', trim($role)));
     }
 
     private function onlyOcrColumns(array $data): array
     {
-        return collect($data)
-            ->filter(fn ($value, $key) => Schema::hasColumn('ocr_results', (string) $key))
-            ->all();
+        if (!Schema::hasTable('ocr_results')) {
+            return $data;
+        }
+
+        $columns = Schema::getColumnListing('ocr_results');
+
+        return array_intersect_key($data, array_flip($columns));
     }
 }

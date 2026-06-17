@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_06_03_150325_add_progress_fields_for_ai_summary_and_prescription_pd.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

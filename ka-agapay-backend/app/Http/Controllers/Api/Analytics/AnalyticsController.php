@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/Analytics/AnalyticsController.php
 
 namespace App\Http\Controllers\Api\Analytics;
 
@@ -13,6 +14,101 @@ use Illuminate\Support\Str;
 
 class AnalyticsController extends Controller
 {
+    /**
+     * GET /api/v1/analytics/realtime
+     *
+     * One-request realtime analytics payload for the Analytics page.
+     * This replaces multiple frontend polling requests.
+     */
+    public function realtime(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'from'    => ['nullable', 'date'],
+            'to'      => ['nullable', 'date', 'after_or_equal:from'],
+            'disease' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        [$from, $to] = $this->dateRange($request);
+
+        $disease = trim((string) ($validated['disease'] ?? ''));
+
+        $barangayCases = $this->barangayCases($from, $to, $disease);
+
+        $heatmap = collect($barangayCases)
+            ->map(function ($row) {
+                $cases = (int) ($row['total_cases'] ?? 0);
+                $queue = (int) ($row['queue_density'] ?? 0);
+                $score = min(100, ($cases * 7) + ($queue * 3));
+
+                return array_merge($row, [
+                    'heatmap_intensity' => $score,
+                    'risk_score' => $score,
+                    'risk_level' => $this->riskLevel($score),
+                    'top_case_type' => $row['top_complaint'] ?? $row['top_case_type'] ?? 'Unspecified',
+                ]);
+            })
+            ->values()
+            ->all();
+
+        $risk = collect($heatmap)
+            ->sortByDesc('risk_score')
+            ->values()
+            ->all();
+
+        $clusters = collect($this->complaintDistribution($from, $to))
+            ->when($disease !== '', function ($items) use ($disease) {
+                $needle = Str::lower($disease);
+
+                return $items->filter(function ($item) use ($needle) {
+                    $label = Str::lower((string) (
+                        data_get($item, 'complaint')
+                        ?? data_get($item, 'disease')
+                        ?? data_get($item, 'diagnosis')
+                        ?? data_get($item, 'top_complaint')
+                        ?? ''
+                    ));
+
+                    return Str::contains($label, $needle);
+                });
+            })
+            ->values()
+            ->all();
+
+        $chatbotPayload = $this->chatbotUsage($request)->getData(true);
+
+        $chatbot = $chatbotPayload['data'] ?? [
+            'total_messages' => 0,
+            'by_day' => [],
+            'top_prompts' => [],
+        ];
+
+        return response()->json([
+            'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => [
+                'from' => $from->toDateString(),
+                'to' => $to->toDateString(),
+                'disease' => $disease ?: null,
+            ],
+            'data' => [
+                'overview' => [
+                    'total_patients' => $this->safeCount('users'),
+                    'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date'),
+                    'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to),
+                    'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at'),
+                    'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to),
+                    'barangay_cases' => $barangayCases,
+                    'complaint_distribution' => $clusters,
+                    'risk_summary' => $this->riskSummary($from, $to),
+                ],
+                'heatmap' => $heatmap,
+                'risk' => $risk,
+                'clusters' => $clusters,
+                'chatbot' => $chatbot,
+            ],
+        ]);
+    }
+
     /**
      * GET /api/v1/analytics/overview
      */
@@ -257,7 +353,7 @@ class AnalyticsController extends Controller
         return response()->json([
             'status' => 'success',
             'data' => [
-                'total_messages' => (clone $query)->count(),
+                'total_messages' => (int) (clone $query)->count(),
                 'by_day' => $byDay,
                 'top_prompts' => $topPrompts,
             ],
@@ -274,7 +370,7 @@ class AnalyticsController extends Controller
 
         $rows = collect($this->barangayCases($from, $to, $disease))
             ->map(function ($row) {
-                $cases = (int) $row['total_cases'];
+                $cases = (int) ($row['total_cases'] ?? 0);
                 $queue = (int) ($row['queue_density'] ?? 0);
                 $score = min(100, ($cases * 7) + ($queue * 3));
 
@@ -309,12 +405,13 @@ class AnalyticsController extends Controller
             ->map(function ($row) {
                 $score = min(
                     100,
-                    ((int) $row['total_cases'] * 7) + ((int) ($row['queue_density'] ?? 0) * 3)
+                    ((int) ($row['total_cases'] ?? 0) * 7) +
+                    ((int) ($row['queue_density'] ?? 0) * 3)
                 );
 
                 return [
-                    'barangay' => $row['barangay'],
-                    'total_cases' => (int) $row['total_cases'],
+                    'barangay' => $row['barangay'] ?? 'Unspecified',
+                    'total_cases' => (int) ($row['total_cases'] ?? 0),
                     'queue_density' => (int) ($row['queue_density'] ?? 0),
                     'top_complaint' => $row['top_complaint'] ?? 'Unspecified',
                     'risk_score' => $score,
@@ -379,15 +476,15 @@ class AnalyticsController extends Controller
         $threshold = (int) $request->query('threshold', 5);
 
         $alerts = collect($this->barangayCases($from, $to))
-            ->filter(fn ($row) => (int) $row['total_cases'] >= $threshold)
+            ->filter(fn ($row) => (int) ($row['total_cases'] ?? 0) >= $threshold)
             ->map(fn ($row) => [
-                'id' => Str::slug($row['barangay'] . '-' . ($row['top_complaint'] ?? 'case')),
-                'barangay' => $row['barangay'],
+                'id' => Str::slug(($row['barangay'] ?? 'unspecified') . '-' . ($row['top_complaint'] ?? 'case')),
+                'barangay' => $row['barangay'] ?? 'Unspecified',
                 'case_type' => $row['top_complaint'] ?? 'Unspecified',
-                'total_cases' => (int) $row['total_cases'],
+                'total_cases' => (int) ($row['total_cases'] ?? 0),
                 'queue_density' => (int) ($row['queue_density'] ?? 0),
                 'status' => 'active',
-                'message' => "High number of similar complaints recorded in {$row['barangay']}.",
+                'message' => 'High number of similar complaints recorded in ' . ($row['barangay'] ?? 'Unspecified') . '.',
             ])
             ->values();
 
@@ -656,7 +753,8 @@ class AnalyticsController extends Controller
             ->map(function ($row) {
                 $score = min(
                     100,
-                    ((int) $row['total_cases'] * 7) + ((int) ($row['queue_density'] ?? 0) * 3)
+                    ((int) ($row['total_cases'] ?? 0) * 7) +
+                    ((int) ($row['queue_density'] ?? 0) * 3)
                 );
 
                 return $this->riskLevel($score);

@@ -4,18 +4,13 @@ namespace App\Models;
 
 use RuntimeException;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ActivityLog extends Model
 {
-    use HasFactory;
-
     protected $table = 'audit_logs';
 
-    public $timestamps = false;
-
-    const CREATED_AT = 'created_at';
+    public $timestamps = true;
 
     protected $fillable = [
         'user_id',
@@ -31,6 +26,7 @@ class ActivityLog extends Model
         'metadata',
         'ip_address',
         'user_agent',
+        'device_type',
         'http_method',
         'route_name',
     ];
@@ -40,7 +36,17 @@ class ActivityLog extends Model
         'new_values' => 'array',
         'metadata' => 'array',
         'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(function (ActivityLog $log) {
+            $log->module = $log->module ?: 'system';
+            $log->severity = $log->severity ?: 'info';
+            $log->metadata = $log->metadata ?? [];
+        });
+    }
 
     public function user(): BelongsTo
     {
@@ -50,9 +56,7 @@ class ActivityLog extends Model
     public function save(array $options = []): bool
     {
         if ($this->exists) {
-            throw new RuntimeException(
-                'Activity logs are immutable and cannot be updated.'
-            );
+            throw new RuntimeException('Activity logs are immutable and cannot be updated.');
         }
 
         return parent::save($options);

@@ -1,5 +1,5 @@
 <?php
-
+// database/migrations/2026_04_29_183444_create_telemedicine_and_chat_tables.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

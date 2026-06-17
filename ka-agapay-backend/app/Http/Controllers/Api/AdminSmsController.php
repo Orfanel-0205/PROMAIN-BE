@@ -5,223 +5,173 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\SmsLog;
+use App\Models\User;
 use App\Services\Sms\SemaphoreSmsService;
-use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use RuntimeException;
+use Throwable;
 
 class AdminSmsController extends Controller
 {
     public function __construct(
-        private readonly SemaphoreSmsService $semaphore
+        private SemaphoreSmsService $semaphore
     ) {}
 
-    /**
-     * GET /api/v1/admin/sms/account
-     *
-     * Backend-only rate limit:
-     * 2 account checks per minute per authenticated user.
-     */
     public function account(Request $request): JsonResponse
     {
         $this->authorizeSms($request);
 
-        $userId = $request->user()?->user_id ?? $request->ip();
-        $rateKey = 'sms-account-check:' . $userId;
-
-        if (RateLimiter::tooManyAttempts($rateKey, 2)) {
-            $seconds = RateLimiter::availableIn($rateKey);
-
-            return response()->json([
-                'configured' => $this->semaphore->isConfigured(),
-                'message' => "Please wait {$seconds} second(s) before checking Semaphore credits again.",
-                'account' => null,
-                'credit_balance' => null,
-            ], 429);
-        }
-
-        RateLimiter::hit($rateKey, 60);
-
         try {
-            $account = $this->semaphore->account();
-
+            return response()->json($this->semaphore->account());
+        } catch (Throwable $e) {
             return response()->json([
-                'configured' => true,
-                'account' => $account,
-                'credit_balance' => $account['credit_balance'] ?? null,
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'configured' => $this->semaphore->isConfigured(),
-                'message' => $e->getMessage(),
-                'account' => null,
-                'credit_balance' => null,
+                'message' => 'Could not load SMS provider account.',
+                'error' => $e->getMessage(),
             ], 422);
         }
     }
 
-    /**
-     * GET /api/v1/admin/sms/logs
-     */
     public function logs(Request $request): JsonResponse
     {
         $this->authorizeSms($request);
 
         $request->validate([
-            'search' => ['nullable', 'string', 'max:100'],
-            'status' => ['nullable', 'string', 'max:30'],
-            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'search' => ['nullable', 'string', 'max:150'],
+            'status' => ['nullable', 'string', 'max:50'],
+            'provider' => ['nullable', 'string', 'max:50'],
+            'per_page' => ['nullable', 'integer', 'min:5', 'max:200'],
         ]);
 
-        $logs = SmsLog::query()
-            ->with(['user:user_id,first_name,last_name,mobile_number'])
-            ->when($request->filled('search'), function ($query) use ($request) {
-                $search = $request->query('search');
+        $query = SmsLog::query();
 
-                $query->where(function ($q) use ($search) {
-                    $q->where('mobile_number', 'like', "%{$search}%")
-                        ->orWhere('recipient_name', 'like', "%{$search}%")
-                        ->orWhere('message', 'like', "%{$search}%");
-                });
-            })
-            ->when($request->filled('status') && $request->query('status') !== 'all', function ($query) use ($request) {
-                $query->where('status', $request->query('status'));
-            })
-            ->latest()
-            ->paginate($request->integer('per_page', 50));
+        if ($request->filled('search')) {
+            $search = trim((string) $request->search);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('recipient_name', 'ilike', "%{$search}%")
+                    ->orWhere('mobile_number', 'ilike', "%{$search}%")
+                    ->orWhere('message', 'ilike', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('status') && $request->status !== 'all') {
+            $query->where('status', $this->normalizeProviderStatus($request->status));
+        }
+
+        if ($request->filled('provider') && $request->provider !== 'all') {
+            $query->where('provider', $request->provider);
+        }
+
+        $orderColumn = Schema::hasColumn('sms_logs', 'created_at') ? 'created_at' : 'id';
+
+        $logs = $query
+            ->orderByDesc($orderColumn)
+            ->paginate($request->integer('per_page', 100));
 
         return response()->json($logs);
     }
 
-    /**
-     * POST /api/v1/admin/sms/preview
-     */
     public function preview(Request $request): JsonResponse
     {
         $this->authorizeSms($request);
 
-        $validated = $this->validateSmsPayload($request, preview: true);
-
-        $recipients = $this->resolveRecipients($validated)
-            ->take(1000)
-            ->values();
+        $validated = $this->validateSmsPayload($request);
+        $recipients = $this->resolveRecipients($validated);
 
         return response()->json([
-            'count' => $recipients->count(),
-            'recipients' => $recipients,
-            'estimated_credits' => $this->estimateCredits(
-                $recipients->count(),
-                (string) ($validated['message'] ?? '')
-            ),
+            'mode' => $validated['mode'],
+            'count' => count($recipients),
+            'estimated_credits' => $this->estimateCredits($validated['message'], count($recipients)),
+            'recipients' => array_slice($recipients, 0, 100),
         ]);
     }
 
-    /**
-     * POST /api/v1/admin/sms/send
-     */
     public function send(Request $request): JsonResponse
     {
         $this->authorizeSms($request);
 
         $validated = $this->validateSmsPayload($request);
+        $recipients = $this->resolveRecipients($validated);
 
-        $message = trim((string) $validated['message']);
-
-        $recipients = $this->resolveRecipients($validated)
-            ->take(1000)
-            ->values();
-
-        if ($recipients->isEmpty()) {
+        if (count($recipients) === 0) {
             return response()->json([
-                'message' => 'No eligible SMS recipients found.',
+                'message' => 'No valid SMS recipients found.',
             ], 422);
         }
 
-        $numbers = $recipients
-            ->pluck('mobile_number')
-            ->filter()
-            ->unique()
-            ->values()
-            ->all();
-
-        DB::beginTransaction();
+        $logs = collect();
+        $numbers = collect($recipients)->pluck('mobile_number')->values()->all();
 
         try {
-            $logs = [];
+            DB::beginTransaction();
 
             foreach ($recipients as $recipient) {
-                $logs[] = SmsLog::create([
+                $logs->push(SmsLog::create([
                     'user_id' => $recipient['user_id'] ?? null,
-                    'sent_by' => $request->user()?->user_id,
-                    'recipient_name' => $recipient['name'] ?? null,
+                    'sent_by' => $request->user()?->user_id ?? $request->user()?->id,
+                    'recipient_name' => $recipient['recipient_name'] ?? 'Recipient',
                     'mobile_number' => $recipient['mobile_number'],
-                    'message' => $message,
+                    'message' => $validated['message'],
                     'mode' => $validated['mode'],
-                    'target_filters' => $this->filtersForLog($validated),
+                    'target_filters' => $this->targetFilters($validated),
                     'notification_type' => $validated['notification_type'] ?? 'manual',
-                    'provider' => 'semaphore',
+                    'provider' => $this->semaphore->providerName(),
                     'status' => 'queued',
-                ]);
-            }
-
-            $providerResponse = $this->semaphore->sendBulk($numbers, $message);
-
-            $providerItems = collect($providerResponse);
-
-            foreach ($logs as $log) {
-                $matching = $providerItems->first(function ($item) use ($log) {
-                    $recipient = $item['recipient'] ?? $item['number'] ?? null;
-
-                    if (!$recipient) {
-                        return false;
-                    }
-
-                    return str_contains(
-                        (string) $recipient,
-                        substr($log->mobile_number, -10)
-                    );
-                });
-
-                $status = strtolower((string) ($matching['status'] ?? 'sent'));
-
-                $log->update([
-                    'provider_message_id' => $matching['message_id'] ?? null,
-                    'status' => $this->normalizeProviderStatus($status),
-                    'sent_at' => now(),
-                    'error_message' => $status === 'failed'
-                        ? json_encode($matching)
-                        : null,
-                ]);
+                    'error_message' => null,
+                    'sent_at' => null,
+                ]));
             }
 
             DB::commit();
-
-            return response()->json([
-                'message' => 'SMS sent through Semaphore.',
-                'count' => $recipients->count(),
-                'estimated_credits' => $this->estimateCredits($recipients->count(), $message),
-                'provider_response' => $providerResponse,
-            ]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             DB::rollBack();
 
-            foreach ($recipients as $recipient) {
-                SmsLog::create([
-                    'user_id' => $recipient['user_id'] ?? null,
-                    'sent_by' => $request->user()?->user_id,
-                    'recipient_name' => $recipient['name'] ?? null,
-                    'mobile_number' => $recipient['mobile_number'] ?? '',
-                    'message' => $message,
-                    'mode' => $validated['mode'],
-                    'target_filters' => $this->filtersForLog($validated),
-                    'notification_type' => $validated['notification_type'] ?? 'manual',
-                    'provider' => 'semaphore',
+            return response()->json([
+                'message' => 'Could not create SMS logs.',
+                'error' => $e->getMessage(),
+            ], 422);
+        }
+
+        try {
+            $providerResponses = $this->semaphore->sendBulk($numbers, $validated['message']);
+
+            foreach ($logs->values() as $index => $log) {
+                $providerResponse = $providerResponses[$index] ?? $providerResponses[0] ?? [];
+
+                $log->update([
+                    'provider' => $this->semaphore->providerName(),
+                    'provider_message_id' => data_get($providerResponse, 'message_id')
+                        ?? data_get($providerResponse, 'id')
+                        ?? data_get($providerResponse, 'request_id'),
+                    'status' => $this->normalizeProviderStatus(
+                        data_get($providerResponse, 'status')
+                            ?? data_get($providerResponse, 'success')
+                            ?? data_get($providerResponse, 'raw_response.success')
+                            ?? 'sent'
+                    ),
+                    'error_message' => null,
+                    'sent_at' => now(),
+                ]);
+            }
+
+            return response()->json([
+                'message' => 'SMS request accepted by provider.',
+                'provider' => $this->semaphore->providerName(),
+                'count' => count($recipients),
+                'estimated_credits' => $this->estimateCredits($validated['message'], count($recipients)),
+                'provider_response' => $providerResponses,
+            ]);
+        } catch (Throwable $e) {
+            foreach ($logs as $log) {
+                $log->update([
+                    'provider' => $this->semaphore->providerName(),
                     'status' => 'failed',
                     'error_message' => $e->getMessage(),
+                    'sent_at' => null,
                 ]);
             }
 
@@ -232,288 +182,250 @@ class AdminSmsController extends Controller
         }
     }
 
-    private function validateSmsPayload(Request $request, bool $preview = false): array
+    private function validateSmsPayload(Request $request): array
     {
-        return $request->validate([
-            'mode' => ['required', Rule::in(['single', 'barangay', 'all', 'custom'])],
+        $validated = $request->validate([
+            'mode' => ['nullable', 'string', 'max:50'],
+            'recipient_name' => ['nullable', 'string', 'max:150'],
+
             'mobile_number' => ['nullable', 'string', 'max:30'],
-            'barangay' => ['nullable', 'string', 'max:150'],
-            'message' => [$preview ? 'nullable' : 'required', 'string', 'max:640'],
+            'number' => ['nullable', 'string', 'max:30'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'recipient' => ['nullable', 'string', 'max:30'],
+
+            'message' => ['required', 'string', 'min:1', 'max:1000'],
             'notification_type' => ['nullable', 'string', 'max:100'],
 
-            'sex' => ['nullable', 'string', 'max:30'],
-            'age_min' => ['nullable', 'integer', 'min:0', 'max:120'],
-            'age_max' => ['nullable', 'integer', 'min:0', 'max:120'],
-            'account_status' => ['nullable', 'string', 'max:50'],
-            'id_verified' => ['nullable', 'boolean'],
+            'role' => ['nullable', 'string', 'max:50'],
+            'barangay' => ['nullable', 'string', 'max:150'],
+            'gender' => ['nullable', 'string', 'max:30'],
+            'age_group' => ['nullable', 'string', 'max:50'],
+
             'limit' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'target_filters' => ['nullable', 'array'],
+            'filters' => ['nullable', 'array'],
         ]);
+
+        $validated['mode'] = $this->normalizeMode($validated['mode'] ?? null);
+        $validated['message'] = trim($validated['message']);
+
+        return $validated;
     }
 
-    private function resolveRecipients(array $filters)
+    private function resolveRecipients(array $validated): array
     {
-        $mode = $filters['mode'];
+        $mode = $validated['mode'];
 
         if ($mode === 'single') {
-            $normalized = $this->semaphore->normalizePhoneNumber(
-                (string) ($filters['mobile_number'] ?? '')
-            );
+            $number = $validated['mobile_number']
+                ?? $validated['number']
+                ?? $validated['phone']
+                ?? $validated['recipient']
+                ?? null;
+
+            $normalized = $this->semaphore->normalizePhoneNumber((string) $number);
 
             if (!$normalized) {
-                return collect();
+                throw new RuntimeException('Invalid mobile number. Use 09XXXXXXXXX, +639XXXXXXXXX, or 639XXXXXXXXX.');
             }
 
-            return collect([
-                [
-                    'user_id' => null,
-                    'name' => 'Manual Recipient',
-                    'mobile_number' => $normalized,
-                    'barangay' => null,
-                    'sex' => null,
-                    'age' => null,
-                    'account_status' => null,
-                    'id_verified' => null,
-                ],
-            ]);
+            return [[
+                'user_id' => null,
+                'recipient_name' => $validated['recipient_name'] ?? 'Manual Recipient',
+                'mobile_number' => $normalized,
+            ]];
         }
 
-        if (!Schema::hasTable('users')) {
-            return collect();
+        $mobileColumn = $this->firstExistingColumn('users', [
+            'mobile_number',
+            'phone',
+            'contact_number',
+            'phone_number',
+        ]);
+
+        if (!$mobileColumn) {
+            throw new RuntimeException('No mobile number column found in users table.');
         }
 
-        $query = DB::table('users')
-            ->select([
-                'users.user_id',
-                'users.first_name',
-                'users.last_name',
-                'users.mobile_number',
-                'users.account_status',
-            ])
-            ->whereNotNull('users.mobile_number')
-            ->where('users.mobile_number', '!=', '');
+        $query = User::query()
+            ->whereNotNull($mobileColumn)
+            ->where($mobileColumn, '!=', '');
 
-        if (Schema::hasColumn('users', 'id_verified')) {
-            $query->addSelect('users.id_verified');
-        }
-
-        if (Schema::hasTable('resident_profiles')) {
-            $query->leftJoin('resident_profiles', 'resident_profiles.user_id', '=', 'users.user_id');
-
-            if (Schema::hasColumn('resident_profiles', 'sex')) {
-                $query->addSelect('resident_profiles.sex as profile_sex');
-            }
-
-            if (Schema::hasColumn('resident_profiles', 'birth_date')) {
-                $query->addSelect('resident_profiles.birth_date');
-            }
-
-            if (Schema::hasColumn('resident_profiles', 'barangay_id')) {
-                $query->addSelect('resident_profiles.barangay_id as profile_barangay_id');
-            }
-        }
-
-        if (Schema::hasColumn('users', 'barangay')) {
-            $query->addSelect('users.barangay as user_barangay');
-        }
-
-        if (Schema::hasColumn('users', 'sex')) {
-            $query->addSelect('users.sex as user_sex');
-        }
-
-        if (Schema::hasColumn('users', 'birthday')) {
-            $query->addSelect('users.birthday');
-        }
-
-        if (Schema::hasColumn('users', 'barangay_id')) {
-            $query->addSelect('users.barangay_id as user_barangay_id');
-        }
-
-        if (Schema::hasTable('barangays')) {
-            $query->leftJoin('barangays', function ($join) {
-                if (Schema::hasColumn('users', 'barangay_id')) {
-                    $join->on('barangays.barangay_id', '=', 'users.barangay_id');
-                } elseif (
-                    Schema::hasTable('resident_profiles')
-                    && Schema::hasColumn('resident_profiles', 'barangay_id')
-                ) {
-                    $join->on('barangays.barangay_id', '=', 'resident_profiles.barangay_id');
-                }
-            });
-
-            if (Schema::hasColumn('barangays', 'name')) {
-                $query->addSelect('barangays.name as barangay_name');
-            }
-        }
-
-        if (!empty($filters['account_status']) && $filters['account_status'] !== 'all') {
-            $query->where('users.account_status', $filters['account_status']);
-        } else {
-            $query->whereIn('users.account_status', ['active', 'pending']);
-        }
-
-        if (
-            array_key_exists('id_verified', $filters)
-            && $filters['id_verified'] !== null
-            && Schema::hasColumn('users', 'id_verified')
-        ) {
-            $query->where('users.id_verified', (bool) $filters['id_verified']);
-        }
-
-        if ($mode === 'barangay' && !empty($filters['barangay'])) {
-            $barangay = $filters['barangay'];
-
-            $query->where(function (Builder $q) use ($barangay) {
-                if (Schema::hasColumn('users', 'barangay')) {
-                    $q->orWhere('users.barangay', 'like', "%{$barangay}%");
-                }
-
-                if (Schema::hasTable('barangays') && Schema::hasColumn('barangays', 'name')) {
-                    $q->orWhere('barangays.name', 'like', "%{$barangay}%");
-                }
+        if (Schema::hasColumn('users', 'account_status')) {
+            $query->where(function ($q) {
+                $q->whereNull('account_status')
+                    ->orWhereNotIn('account_status', ['deleted', 'inactive', 'suspended']);
             });
         }
 
-        if ($mode === 'custom') {
-            if (!empty($filters['barangay'])) {
-                $barangay = $filters['barangay'];
+        $filters = array_merge(
+            $validated['target_filters'] ?? [],
+            $validated['filters'] ?? [],
+            $validated
+        );
 
-                $query->where(function (Builder $q) use ($barangay) {
-                    if (Schema::hasColumn('users', 'barangay')) {
-                        $q->orWhere('users.barangay', 'like', "%{$barangay}%");
-                    }
+        $role = $filters['role'] ?? null;
 
-                    if (Schema::hasTable('barangays') && Schema::hasColumn('barangays', 'name')) {
-                        $q->orWhere('barangays.name', 'like', "%{$barangay}%");
-                    }
-                });
-            }
+        if (in_array($mode, ['patient', 'patients'], true)) {
+            $role = 'patient';
+        }
 
-            if (!empty($filters['sex']) && $filters['sex'] !== 'all') {
-                $sex = strtolower((string) $filters['sex']);
+        if ($role && Schema::hasColumn('users', 'role_id')) {
+            $roleId = $this->resolveRoleId((string) $role);
 
-                $query->where(function (Builder $q) use ($sex) {
-                    if (Schema::hasColumn('users', 'sex')) {
-                        $q->orWhereRaw('LOWER(users.sex) = ?', [$sex]);
-                    }
-
-                    if (Schema::hasTable('resident_profiles') && Schema::hasColumn('resident_profiles', 'sex')) {
-                        $q->orWhereRaw('LOWER(resident_profiles.sex) = ?', [$sex]);
-                    }
-                });
+            if ($roleId) {
+                $query->where('role_id', $roleId);
+            } else {
+                $query->whereRaw('1 = 0');
             }
         }
 
-        $limit = min((int) ($filters['limit'] ?? 1000), 1000);
+        if (!empty($filters['barangay']) && Schema::hasColumn('users', 'barangay')) {
+            $query->where('barangay', $filters['barangay']);
+        }
 
-        $rows = $query
-            ->limit($limit * 2)
-            ->get();
+        if (!empty($filters['gender']) && Schema::hasColumn('users', 'gender')) {
+            $query->where('gender', $filters['gender']);
+        }
 
-        $recipients = $rows
-            ->map(function ($row) {
-                $birthDate = $row->birth_date ?? $row->birthday ?? null;
-                $age = $birthDate ? now()->diffInYears($birthDate) : null;
+        $limit = (int) ($validated['limit'] ?? 1000);
+
+        return $query
+            ->limit(min(max($limit, 1), 1000))
+            ->get()
+            ->map(function ($user) use ($mobileColumn) {
+                $normalized = $this->semaphore->normalizePhoneNumber((string) $user->{$mobileColumn});
+
+                if (!$normalized) {
+                    return null;
+                }
+
+                $primaryKey = Schema::hasColumn('users', 'user_id') ? 'user_id' : 'id';
+
+                $name = trim(implode(' ', array_filter([
+                    $user->first_name ?? null,
+                    $user->last_name ?? null,
+                ])));
+
+                if ($name === '') {
+                    $name = $user->name ?? 'Recipient';
+                }
 
                 return [
-                    'user_id' => $row->user_id,
-                    'name' => trim(($row->first_name ?? '') . ' ' . ($row->last_name ?? '')),
-                    'mobile_number' => $this->semaphore->normalizePhoneNumber((string) $row->mobile_number),
-                    'barangay' => $row->barangay_name ?? $row->user_barangay ?? null,
-                    'sex' => $row->profile_sex ?? $row->user_sex ?? null,
-                    'age' => $age,
-                    'account_status' => $row->account_status ?? null,
-                    'id_verified' => isset($row->id_verified) ? (bool) $row->id_verified : null,
+                    'user_id' => $user->{$primaryKey} ?? null,
+                    'recipient_name' => $name,
+                    'mobile_number' => $normalized,
                 ];
             })
-            ->filter(fn ($row) => !empty($row['mobile_number']))
-            ->filter(function ($row) use ($filters) {
-                if (isset($filters['age_min']) && $filters['age_min'] !== null) {
-                    if ($row['age'] === null || $row['age'] < (int) $filters['age_min']) {
-                        return false;
-                    }
-                }
-
-                if (isset($filters['age_max']) && $filters['age_max'] !== null) {
-                    if ($row['age'] === null || $row['age'] > (int) $filters['age_max']) {
-                        return false;
-                    }
-                }
-
-                return true;
-            })
+            ->filter()
             ->unique('mobile_number')
-            ->take($limit)
-            ->values();
-
-        return $recipients;
+            ->values()
+            ->all();
     }
 
-    private function estimateCredits(int $recipients, string $message): int
+    private function normalizeProviderStatus(mixed $status): string
     {
-        $length = max(strlen($message), 1);
-        $segments = (int) ceil($length / 160);
+        if (is_array($status)) {
+            $status = data_get($status, 'status')
+                ?? data_get($status, 'success')
+                ?? data_get($status, 'raw_response.status')
+                ?? data_get($status, 'raw_response.success');
+        }
 
-        return $recipients * max($segments, 1);
-    }
+        if ($status === true || $status === 1 || $status === '1') {
+            return 'sent';
+        }
 
-    private function normalizeProviderStatus(string $status): string
-    {
-        return match (strtolower($status)) {
-            'queued' => 'queued',
-            'pending' => 'pending',
-            'sent', 'success', 'delivered' => 'sent',
-            'failed', 'refunded' => 'failed',
-            default => $status ?: 'sent',
+        if ($status === false || $status === 0 || $status === '0') {
+            return 'failed';
+        }
+
+        $value = strtolower(trim((string) $status));
+
+        return match ($value) {
+            'sent', 'success', 'successful', 'delivered', 'true' => 'sent',
+            'queued', 'pending', 'processing' => 'queued',
+            'failed', 'error', 'undelivered', 'false' => 'failed',
+            default => $value ?: 'sent',
         };
     }
 
-    private function filtersForLog(array $validated): array
+    private function normalizeMode(?string $mode): string
     {
-        return collect($validated)
-            ->only([
-                'mode',
-                'barangay',
-                'sex',
-                'age_min',
-                'age_max',
-                'account_status',
-                'id_verified',
-                'limit',
-            ])
-            ->filter(fn ($value) => $value !== null && $value !== '')
-            ->all();
+        $mode = strtolower(trim((string) $mode));
+
+        return match ($mode) {
+            '', 'manual', 'single' => 'single',
+            'all', 'bulk' => 'all',
+            'patient', 'patients' => 'patients',
+            'targeted', 'demographic', 'demographics', 'filter', 'filtered' => 'targeted',
+            default => $mode,
+        };
+    }
+
+    private function estimateCredits(string $message, int $recipientCount): int
+    {
+        $segments = max(1, (int) ceil(strlen($message) / 160));
+
+        return $segments * max(1, $recipientCount);
+    }
+
+    private function targetFilters(array $validated): array
+    {
+        return [
+            'mode' => $validated['mode'] ?? 'single',
+            'provider' => $this->semaphore->providerName(),
+            'role' => $validated['role'] ?? null,
+            'barangay' => $validated['barangay'] ?? null,
+            'gender' => $validated['gender'] ?? null,
+            'age_group' => $validated['age_group'] ?? null,
+            'limit' => $validated['limit'] ?? 1000,
+            'target_filters' => $validated['target_filters'] ?? null,
+            'filters' => $validated['filters'] ?? null,
+        ];
+    }
+
+    private function resolveRoleId(string $roleName): ?int
+    {
+        if (!Schema::hasTable('user_roles')) {
+            return null;
+        }
+
+        $roleName = strtolower(str_replace([' ', '-'], '_', trim($roleName)));
+        $roleKey = Schema::hasColumn('user_roles', 'role_id') ? 'role_id' : 'id';
+
+        $columns = ['name', 'slug', 'role', 'title', 'code', 'role_name'];
+
+        foreach ($columns as $column) {
+            if (!Schema::hasColumn('user_roles', $column)) {
+                continue;
+            }
+
+            $role = DB::table('user_roles')
+                ->whereRaw("LOWER(REPLACE({$column}, ' ', '_')) = ?", [$roleName])
+                ->first();
+
+            if ($role) {
+                return (int) $role->{$roleKey};
+            }
+        }
+
+        return null;
+    }
+
+    private function firstExistingColumn(string $table, array $columns): ?string
+    {
+        foreach ($columns as $column) {
+            if (Schema::hasColumn($table, $column)) {
+                return $column;
+            }
+        }
+
+        return null;
     }
 
     private function authorizeSms(Request $request): void
     {
-        $user = $request->user();
-
-        abort_unless($user, 401, 'Unauthenticated.');
-
-        $role = $user->role()->first();
-
-        $roleName = strtolower((string) (
-            $role?->name
-            ?? $role?->role_name
-            ?? $role?->slug
-            ?? $role?->code
-            ?? ''
-        ));
-
-        $allowed = [
-            'super_admin',
-            'superadmin',
-            'admin',
-            'rhu_admin',
-            'staff_admin',
-            'staff',
-            'mho',
-            'doctor',
-            'nurse',
-            'midwife',
-            'bhw',
-        ];
-
-        abort_unless(in_array($roleName, $allowed, true), 403, 'You are not allowed to use SMS.');
+        abort_unless($request->user(), 401, 'Unauthenticated.');
     }
 }

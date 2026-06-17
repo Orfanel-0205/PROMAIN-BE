@@ -10,59 +10,125 @@ class TelemedicineRequestResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
+        $residentProfile = $this->resource->relationLoaded('residentProfile')
+            ? $this->residentProfile
+            : null;
+
+        $residentUser = $residentProfile?->user;
+
+        $residentName = trim(
+            ($residentUser?->first_name ?? '') . ' ' .
+            ($residentUser?->last_name ?? '')
+        );
+
+        if ($residentName === '') {
+            $residentName = $residentUser?->name
+                ?? $residentUser?->full_name
+                ?? "Patient Request #{$this->id}";
+        }
+
+        $rhu = $this->resource->relationLoaded('rhu')
+            ? $this->rhu
+            : null;
+
+        $endorsedByBhw = $this->resource->relationLoaded('endorsedByBhw')
+            ? $this->endorsedByBhw
+            : null;
+
+        $screenedBy = $this->resource->relationLoaded('screenedBy')
+            ? $this->screenedBy
+            : null;
+
+        $requestedBy = $this->resource->relationLoaded('requestedBy')
+            ? $this->requestedBy
+            : null;
+
+        $queueTicket = $this->resource->relationLoaded('queueTicket')
+            ? $this->queueTicket
+            : null;
+
+        $session = $this->resource->relationLoaded('session')
+            ? $this->session
+            : null;
+
         return [
-            'id'             => $this->id,
-            'status'         => $this->status,
-            'urgency_level'  => $this->urgency_level,
-            'chief_complaint'=> $this->chief_complaint,
-            'symptoms'       => $this->symptoms,
-            'additional_notes' => $this->additional_notes,
+            'id'                 => $this->id,
+            'status'             => $this->status,
+            'urgency_level'      => $this->urgency_level,
+            'chief_complaint'    => $this->chief_complaint,
+            'symptoms'           => $this->symptoms,
+            'additional_notes'   => $this->additional_notes,
 
-            'resident' => $this->whenLoaded('residentProfile', fn() => [
-                'id'       => $this->residentProfile->id,
-                'name'     => trim(
-                    ($this->residentProfile->user->first_name ?? '') . ' ' .
-                    ($this->residentProfile->user->last_name ?? '')
-                ),
-                'barangay' => $this->residentProfile->barangay?->name,
-            ]),
+            'resident_profile_id' => $this->resident_profile_id,
+            'requested_by_id'     => $this->requested_by,
+            'rhu_id'              => $this->rhu_id,
+            'queue_ticket_id'     => $this->queue_ticket_id,
+            'appointment_id'      => $this->appointment_id,
 
-            'rhu' => $this->whenLoaded('rhu', fn() => [
-                'id'   => $this->rhu->barangay_id,
-                'name' => $this->rhu->name,
-            ]),
+            'resident' => $residentProfile ? [
+                'id'       => $residentProfile->id,
+                'user_id'  => $residentProfile->user_id,
+                'name'     => $residentName,
+                'barangay' => $residentProfile->barangay?->name,
+            ] : null,
+
+            'rhu' => $rhu ? [
+                'id'          => $rhu->barangay_id ?? $rhu->id ?? null,
+                'barangay_id' => $rhu->barangay_id ?? null,
+                'name'        => $rhu->name ?? null,
+            ] : null,
 
             'bhw_assistance' => [
-                'is_assisted'    => $this->is_bhw_assisted,
-                'endorsed_by'    => $this->whenLoaded('endorsedByBhw', fn() => [
-                    'id'   => $this->endorsedByBhw->user_id,
-                    'name' => $this->endorsedByBhw->first_name . ' ' . $this->endorsedByBhw->last_name,
-                ]),
-                'bhw_notes'      => $this->bhw_notes,
+                'is_assisted' => (bool) $this->is_bhw_assisted,
+                'endorsed_by' => $endorsedByBhw ? [
+                    'id'   => $endorsedByBhw->user_id,
+                    'name' => trim(
+                        ($endorsedByBhw->first_name ?? '') . ' ' .
+                        ($endorsedByBhw->last_name ?? '')
+                    ) ?: ($endorsedByBhw->name ?? null),
+                ] : null,
+                'bhw_notes' => $this->bhw_notes,
             ],
 
             'screening' => [
-                'screened_by'    => $this->whenLoaded('screenedBy', fn() => [
-                    'id'   => $this->screenedBy->user_id,
-                    'name' => $this->screenedBy->first_name . ' ' . $this->screenedBy->last_name,
-                ]),
-                'screening_notes'  => $this->screening_notes,
-                'screened_at'      => $this->screened_at?->toIso8601String(),
+                'screened_by' => $screenedBy ? [
+                    'id'   => $screenedBy->user_id,
+                    'name' => trim(
+                        ($screenedBy->first_name ?? '') . ' ' .
+                        ($screenedBy->last_name ?? '')
+                    ) ?: ($screenedBy->name ?? null),
+                ] : null,
+                'screening_notes' => $this->screening_notes,
+                'screened_at'     => optional($this->screened_at)->toIso8601String(),
             ],
 
-            'rejection_reason'   => $this->rejection_reason,
-            'cancellation_reason'=> $this->cancellation_reason,
-            'cancelled_at'       => $this->cancelled_at?->toIso8601String(),
+            'requested_by' => $requestedBy ? [
+                'id'   => $requestedBy->user_id,
+                'name' => trim(
+                    ($requestedBy->first_name ?? '') . ' ' .
+                    ($requestedBy->last_name ?? '')
+                ) ?: ($requestedBy->name ?? null),
+            ] : null,
 
-            'session' => new TelemedicineSessionResource($this->whenLoaded('session')),
+            'queue_ticket' => $queueTicket ? [
+                'id'            => $queueTicket->id ?? null,
+                'ticket_number' => $queueTicket->ticket_number ?? null,
+                'status'        => $queueTicket->status ?? null,
+            ] : null,
 
-            'requested_by' => $this->whenLoaded('requestedBy', fn() => [
-                'id'   => $this->requestedBy->user_id,
-                'name' => $this->requestedBy->first_name . ' ' . $this->requestedBy->last_name,
-            ]),
+            'rejection_reason'    => $this->rejection_reason,
+            'cancellation_reason' => $this->cancellation_reason,
+            'cancelled_at'        => optional($this->cancelled_at)->toIso8601String(),
 
-            'created_at' => $this->created_at?->toIso8601String(),
-            'updated_at' => $this->updated_at?->toIso8601String(),
+            // IMPORTANT:
+            // Return null safely when no session exists yet.
+            // Do not instantiate TelemedicineSessionResource with null/MissingValue.
+            'session' => $session
+                ? new TelemedicineSessionResource($session)
+                : null,
+
+            'created_at' => optional($this->created_at)->toIso8601String(),
+            'updated_at' => optional($this->updated_at)->toIso8601String(),
         ];
     }
 }

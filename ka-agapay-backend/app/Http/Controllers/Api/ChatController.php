@@ -5,360 +5,580 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ChatLog;
+use App\Models\ChatMessage;
+use App\Models\ChatSession;
 use App\Services\Ai\GeminiService;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class ChatController extends Controller
 {
-    public function __construct(
-        private readonly GeminiService $gemini
-    ) {}
+    public function __construct(private readonly GeminiService $geminiService) {}
 
     /**
      * POST /api/v1/chat/message
      *
-     * Shared by:
-     * - Mobile resident app
-     * - RHU admin web dashboard
+     * Supports both resident mobile chat and RHU admin/staff chat.
+     * Each conversation is stored in its own chat_sessions row, similar to ChatGPT history.
      */
     public function sendMessage(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'message' => ['required', 'string', 'max:1500'],
+            'message' => ['required', 'string', 'max:2000'],
+            'session_id' => ['nullable', 'string', 'max:120'],
             'history' => ['nullable', 'array'],
-            'history.*.role' => ['nullable', 'string'],
-            'history.*.content' => ['nullable', 'string'],
-            'audience' => ['nullable', 'in:resident,staff'],
-            'source' => ['nullable', 'in:mobile,admin,web'],
+            'history.*.role' => ['nullable', 'string', 'in:user,assistant'],
+            'history.*.content' => ['nullable', 'string', 'max:4000'],
+            'audience' => ['nullable', 'string', 'in:resident,staff'],
+            'source' => ['nullable', 'string', 'max:40'],
             'context' => ['nullable', 'array'],
         ]);
 
+        $start = microtime(true);
         $user = $request->user();
         $message = trim($validated['message']);
-        $history = $validated['history'] ?? [];
-        $source = $validated['source'] ?? 'mobile';
-        $context = $validated['context'] ?? [];
-
-        $audience = $validated['audience'] ?? $this->resolveAudience($user, $source);
+        $audience = $this->resolveAudience($request);
+        $language = $this->detectLanguage($message);
         $intent = $this->detectIntent($message, $audience);
-        $detectedComplaint = $this->detectComplaint($message, $audience);
+        $suggestedAction = $this->suggestAction($message, $audience, $intent);
 
-        ChatLog::create([
-            'user_id' => $user?->user_id,
+        $session = $this->resolveSession($request, $audience, $language);
+
+        $userMessage = ChatMessage::create([
+            'chat_session_id' => $session->id,
             'role' => 'user',
             'message' => $message,
+            'language' => $language,
             'intent' => $intent,
-            'language' => $this->detectLanguage($message),
+            'created_at' => now(),
         ]);
 
-        $start = microtime(true);
+        $history = $this->historyForAi($session->id, $userMessage->id);
 
-        try {
-            $reply = $this->gemini->chat($message, $history, $audience, [
-                ...$context,
-                'role' => $this->roleName($user),
-                'source' => $source,
-            ]);
-        } catch (ConnectionException $e) {
-            Log::error('[ChatController] Gemini connection failed', [
-                'error' => $e->getMessage(),
-            ]);
+        $context = $this->safeContext($validated['context'] ?? []);
+        $context['audience'] = $audience;
+        $context['source'] = $validated['source'] ?? ($audience === 'staff' ? 'admin' : 'mobile');
 
-            $reply = $this->safeFallback($audience);
-        } catch (\Throwable $e) {
-            Log::error('[ChatController] Unexpected chatbot error', [
-                'class' => get_class($e),
-                'error' => $e->getMessage(),
-            ]);
+        $reply = $this->geminiService->chat($message, $history, $audience, $context);
 
-            $reply = $this->safeFallback($audience);
+        if ($audience === 'staff') {
+            $reply = $this->normalizeStaffButtonLanguage($reply);
         }
 
-        $duration = (int) ((microtime(true) - $start) * 1000);
+        $responseMs = (int) ((microtime(true) - $start) * 1000);
 
-        $log = ChatLog::create([
-            'user_id' => $user?->user_id,
+        $assistantMessage = ChatMessage::create([
+            'chat_session_id' => $session->id,
             'role' => 'assistant',
             'message' => $reply,
+            'language' => $language,
             'intent' => $intent,
-            'language' => $this->detectLanguage($reply),
-            'response_ms' => $duration,
+            'suggested_action' => $suggestedAction,
+            'response_time_ms' => $responseMs,
+            'created_at' => now(),
         ]);
 
+        $session->update([
+            'title' => $session->title ?: $this->makeSessionTitle($message),
+            'status' => 'active',
+            'last_activity_at' => now(),
+        ]);
+
+        $this->mirrorToChatLogs($user?->user_id ?? $user?->id, $session, 'user', $message, $intent, $language, null);
+        $this->mirrorToChatLogs($user?->user_id ?? $user?->id, $session, 'assistant', $reply, $intent, $language, $responseMs);
+
         return response()->json([
-            'message' => [
-                'id' => (string) ($log->id ?? Str::uuid()),
-                'role' => 'assistant',
-                'content' => $reply,
-                'timestamp' => now()->toISOString(),
-            ],
+            'message' => $this->formatMessage($assistantMessage),
+            'session_id' => $session->session_token,
             'audience' => $audience,
             'intent' => $intent,
-            'detected_complaint' => $detectedComplaint,
-            'suggested_action' => $this->suggestAction($message, $reply, $audience),
-            'tutorial_cards' => $this->tutorialCards($intent, $audience),
+            'suggested_action' => $suggestedAction,
+            'tutorial_cards' => $audience === 'staff'
+                ? $this->tutorialCards($suggestedAction, $intent)
+                : [],
+            'detected_complaint' => $audience === 'resident' ? $this->detectComplaint($message) : null,
             'meta' => [
-                'response_ms' => $duration,
-                'source' => $source,
+                'response_ms' => $responseMs,
+                'source' => config('services.google.gemini_api_key') || env('GEMINI_API_KEY')
+                    ? 'gemini_or_rule_fallback'
+                    : 'rule_fallback',
             ],
         ]);
     }
 
     /**
      * GET /api/v1/chat/history
+     * - Without session_id: returns separate chat sessions.
+     * - With session_id: returns messages inside that one chat only.
      */
     public function history(Request $request): JsonResponse
     {
-        $user = $request->user();
+        $validated = $request->validate([
+            'session_id' => ['nullable', 'string', 'max:120'],
+            'audience' => ['nullable', 'string', 'in:resident,staff'],
+            'per_page' => ['nullable', 'integer', 'min:5', 'max:100'],
+        ]);
 
-        $logs = ChatLog::query()
-            ->when($user, fn ($query) => $query->where('user_id', $user->user_id))
-            ->latest()
-            ->limit(80)
-            ->get()
-            ->reverse()
-            ->values()
-            ->map(fn ($log) => [
-                'id' => (string) $log->id,
-                'role' => $log->role,
-                'content' => $log->message,
-                'intent' => $log->intent,
-                'timestamp' => $log->created_at?->toISOString() ?? now()->toISOString(),
+        $audience = $validated['audience'] ?? null;
+
+        if (!empty($validated['session_id'])) {
+            $session = $this->findOwnedSession($request, $validated['session_id'], $audience);
+
+            if (!$session) {
+                return response()->json([
+                    'message' => 'Chat session not found.',
+                    'data' => [],
+                ], 404);
+            }
+
+            $messages = ChatMessage::query()
+                ->where('chat_session_id', $session->id)
+                ->orderBy('created_at')
+                ->get()
+                ->map(fn (ChatMessage $message) => $this->formatMessage($message))
+                ->values();
+
+            return response()->json([
+                'data' => $messages,
+                'session' => $this->formatSession($session),
             ]);
+        }
+
+        $perPage = (int) ($validated['per_page'] ?? 30);
+        $user = $request->user();
+        $userId = $user?->user_id ?? $user?->id;
+
+        $sessions = ChatSession::query()
+            ->where('user_id', $userId)
+            ->when($audience, fn ($query) => $query->where('audience', $audience))
+            ->where('status', '!=', 'deleted')
+            ->withCount('messages')
+            ->orderByDesc('last_activity_at')
+            ->orderByDesc('created_at')
+            ->limit($perPage)
+            ->get()
+            ->map(fn (ChatSession $session) => $this->formatSession($session))
+            ->values();
 
         return response()->json([
-            'data' => $logs,
+            'data' => $sessions,
         ]);
     }
 
     /**
      * POST /api/v1/chat/end
+     * Ends the selected chat. The next sent message starts a new chat if session_id is null.
      */
     public function endSession(Request $request): JsonResponse
     {
+        $validated = $request->validate([
+            'session_id' => ['nullable', 'string', 'max:120'],
+            'audience' => ['nullable', 'string', 'in:resident,staff'],
+        ]);
+
+        $session = !empty($validated['session_id'])
+            ? $this->findOwnedSession($request, $validated['session_id'], $validated['audience'] ?? null)
+            : $this->latestActiveSession($request, $validated['audience'] ?? null);
+
+        if ($session) {
+            $session->update([
+                'status' => 'ended',
+                'last_activity_at' => now(),
+            ]);
+        }
+
         return response()->json([
             'message' => 'Chat session ended.',
         ]);
     }
 
     /**
+     * DELETE /api/v1/chat/history/{sessionId}
+     */
+    public function destroySession(Request $request, string $sessionId): JsonResponse
+    {
+        $audience = $request->query('audience');
+        $audience = in_array($audience, ['resident', 'staff'], true) ? $audience : null;
+
+        $session = $this->findOwnedSession($request, $sessionId, $audience);
+
+        if (!$session) {
+            return response()->json([
+                'message' => 'Chat session not found.',
+            ], 404);
+        }
+
+        DB::transaction(function () use ($session) {
+            ChatMessage::query()
+                ->where('chat_session_id', $session->id)
+                ->delete();
+
+            $session->delete();
+        });
+
+        return response()->json([
+            'message' => 'Chat history deleted.',
+        ]);
+    }
+
+    /**
      * POST /api/v1/chat/escalate
+     * Keeps old route compatible while giving a professional handoff response.
      */
     public function escalateToDoctor(Request $request): JsonResponse
     {
-        $request->validate([
-            'reason' => ['nullable', 'string', 'max:500'],
+        $validated = $request->validate([
+            'session_id' => ['nullable', 'string', 'max:120'],
+            'reason' => ['nullable', 'string', 'max:1000'],
         ]);
 
+        $session = !empty($validated['session_id'])
+            ? $this->findOwnedSession($request, $validated['session_id'])
+            : $this->latestActiveSession($request);
+
+        if ($session) {
+            $session->update([
+                'last_activity_at' => now(),
+            ]);
+        }
+
         return response()->json([
-            'message' => 'Escalation request recorded. Please coordinate with the assigned RHU staff or doctor.',
+            'message' => 'Escalation noted. Please route the concern to the assigned RHU clinician according to RHU protocol.',
         ]);
     }
 
-    private function resolveAudience($user, string $source): string
+    private function resolveSession(Request $request, string $audience, string $language): ChatSession
     {
-        if ($source === 'admin' || $source === 'web') {
+        $sessionId = (string) $request->input('session_id', '');
+
+        if ($sessionId !== '') {
+            $existing = $this->findOwnedSession($request, $sessionId, $audience);
+
+            if ($existing) {
+                return $existing;
+            }
+        }
+
+        $user = $request->user();
+
+        return ChatSession::create([
+            'user_id' => $user?->user_id ?? $user?->id,
+            'session_token' => (string) Str::uuid(),
+            'audience' => $audience,
+            'title' => null,
+            'language' => $language,
+            'status' => 'active',
+            'last_activity_at' => now(),
+        ]);
+    }
+
+    private function findOwnedSession(Request $request, string $sessionId, ?string $audience = null): ?ChatSession
+    {
+        $user = $request->user();
+        $userId = $user?->user_id ?? $user?->id;
+
+        return ChatSession::query()
+            ->where('user_id', $userId)
+            ->where('status', '!=', 'deleted')
+            ->when($audience, fn ($query) => $query->where('audience', $audience))
+            ->where(function ($query) use ($sessionId) {
+                $query->where('session_token', $sessionId);
+
+                if (ctype_digit($sessionId)) {
+                    $query->orWhere('id', (int) $sessionId);
+                }
+            })
+            ->first();
+    }
+
+    private function latestActiveSession(Request $request, ?string $audience = null): ?ChatSession
+    {
+        $user = $request->user();
+        $userId = $user?->user_id ?? $user?->id;
+
+        return ChatSession::query()
+            ->where('user_id', $userId)
+            ->where('status', 'active')
+            ->when($audience, fn ($query) => $query->where('audience', $audience))
+            ->latest('last_activity_at')
+            ->first();
+    }
+
+    private function historyForAi(int $sessionId, int $currentUserMessageId): array
+    {
+        return ChatMessage::query()
+            ->where('chat_session_id', $sessionId)
+            ->where('id', '<>', $currentUserMessageId)
+            ->latest('created_at')
+            ->limit(10)
+            ->get()
+            ->sortBy('created_at')
+            ->map(fn (ChatMessage $message) => [
+                'role' => $message->role === 'assistant' ? 'assistant' : 'user',
+                'content' => $message->message,
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function resolveAudience(Request $request): string
+    {
+        $audience = (string) $request->input('audience', '');
+
+        if (in_array($audience, ['resident', 'staff'], true)) {
+            return $audience;
+        }
+
+        if ($request->input('source') === 'admin') {
             return 'staff';
         }
 
-        $role = $this->roleName($user);
+        $context = $request->input('context', []);
+        if (is_array($context) && (($context['app_section'] ?? null) === 'rhu_admin_dashboard')) {
+            return 'staff';
+        }
 
-        $staffRoles = [
-            'admin',
-            'rhu_admin',
-            'super_admin',
-            'superadmin',
-            'staff',
-            'staff_admin',
-            'mho',
-            'doctor',
-            'nurse',
-            'midwife',
-            'bhw',
+        return 'resident';
+    }
+
+    private function safeContext(array $context): array
+    {
+        return collect($context)
+            ->only([
+                'current_page',
+                'current_button',
+                'role',
+                'barangay',
+                'language',
+                'app_section',
+            ])
+            ->filter(fn ($value) => is_scalar($value) && trim((string) $value) !== '')
+            ->map(fn ($value) => trim((string) $value))
+            ->all();
+    }
+
+    private function formatMessage(ChatMessage $message): array
+    {
+        return [
+            'id' => (string) $message->id,
+            'role' => $message->role,
+            'content' => $message->message,
+            'timestamp' => optional($message->created_at)->toIso8601String() ?? now()->toIso8601String(),
         ];
-
-        return in_array($role, $staffRoles, true) ? 'staff' : 'resident';
     }
 
-    private function roleName($user): string
+    private function formatSession(ChatSession $session): array
     {
-        if (!$user) {
-            return '';
-        }
+        $lastMessage = ChatMessage::query()
+            ->where('chat_session_id', $session->id)
+            ->latest('created_at')
+            ->first();
 
-        $role = $user->relationLoaded('role') ? $user->role : $user->role()->first();
+        $preview = $lastMessage?->message ?? $session->title ?? 'New chat';
 
-        $value = $role?->name
-            ?? $role?->role_name
-            ?? $role?->slug
-            ?? $role?->code
-            ?? '';
-
-        return strtolower(str_replace([' ', '-'], '_', trim((string) $value)));
-    }
-
-    private function detectIntent(string $message, string $audience): string
-    {
-        $text = mb_strtolower($message);
-
-        $map = [
-            'emergency' => ['emergency', 'urgent', 'chest pain', 'hirap huminga', 'stroke', 'seizure', 'dumudugo'],
-            'appointment' => ['appointment', 'book', 'schedule', 'konsultasyon', 'checkup', 'check up'],
-            'records' => ['record', 'records', 'history', 'rekord', 'consultation history'],
-            'queue' => ['queue', 'pila', 'ticket', 'call next', 'serving'],
-            'telemedicine' => ['telemedicine', 'online consultation', 'video call'],
-            'prescription' => ['prescription', 'reseta', 'gamot', 'medicine'],
-            'inventory' => ['inventory', 'stock', 'supplies', 'medicine stock'],
-            'analytics' => ['analytics', 'report', 'heatmap', 'dashboard', 'chart'],
-            'cms' => ['announcement', 'event', 'cms', 'post', 'program'],
-            'sms' => ['sms', 'semaphore', 'text blast', 'message residents'],
-            'users' => ['users', 'approve', 'approval', 'verify account', 'resident account'],
-            'id_verification' => ['ocr', 'id verification', 'upload id', 'valid id'],
-            'tutorial' => ['tutorial', 'guide', 'how to', 'paano', 'turo', 'help'],
+        return [
+            'id' => $session->session_token ?: (string) $session->id,
+            'title' => $session->title ?: Str::limit($preview, 44, '...'),
+            'audience' => $session->audience ?: 'resident',
+            'status' => $session->status ?: 'active',
+            'started_at' => optional($session->created_at)->toIso8601String() ?? now()->toIso8601String(),
+            'updated_at' => optional($session->updated_at)->toIso8601String(),
+            'last_activity_at' => optional($session->last_activity_at)->toIso8601String(),
+            'preview' => Str::limit($preview, 120, '...'),
+            'message_count' => (int) ($session->messages_count ?? ChatMessage::where('chat_session_id', $session->id)->count()),
         ];
-
-        foreach ($map as $intent => $keywords) {
-            foreach ($keywords as $keyword) {
-                if (str_contains($text, $keyword)) {
-                    return $intent;
-                }
-            }
-        }
-
-        return $audience === 'staff' ? 'staff_help' : 'resident_help';
     }
 
-    private function detectComplaint(string $message, string $audience): ?string
+    private function makeSessionTitle(string $message): string
     {
-        if ($audience === 'staff') {
-            return null;
-        }
+        $message = preg_replace('/\s+/', ' ', trim($message)) ?: 'New chat';
 
-        $text = mb_strtolower($message);
-
-        $keywords = [
-            'sakit',
-            'masakit',
-            'lagnat',
-            'ubo',
-            'sipon',
-            'nahihilo',
-            'sugat',
-            'dugo',
-            'pain',
-            'fever',
-            'cough',
-            'cold',
-            'dizzy',
-            'wound',
-            'bleeding',
-            'headache',
-            'vomit',
-            'diarrhea',
-        ];
-
-        foreach ($keywords as $keyword) {
-            if (str_contains($text, $keyword)) {
-                return $message;
-            }
-        }
-
-        return null;
-    }
-
-    private function suggestAction(string $message, string $reply, string $audience): ?string
-    {
-        $combined = mb_strtolower($message . ' ' . $reply);
-
-        if ($audience === 'staff') {
-            return match (true) {
-                str_contains($combined, 'queue') || str_contains($combined, 'pila') => 'open_queue',
-                str_contains($combined, 'appointment') => 'open_appointments',
-                str_contains($combined, 'consultation') => 'open_consultations',
-                str_contains($combined, 'telemedicine') => 'open_telemedicine',
-                str_contains($combined, 'prescription') || str_contains($combined, 'reseta') => 'open_prescriptions',
-                str_contains($combined, 'inventory') || str_contains($combined, 'stock') => 'open_inventory',
-                str_contains($combined, 'analytics') || str_contains($combined, 'heatmap') => 'open_analytics',
-                str_contains($combined, 'announcement') || str_contains($combined, 'event') || str_contains($combined, 'cms') => 'open_cms',
-                str_contains($combined, 'sms') || str_contains($combined, 'semaphore') => 'open_sms',
-                str_contains($combined, 'user') || str_contains($combined, 'approval') => 'open_users',
-                default => null,
-            };
-        }
-
-        return match (true) {
-            str_contains($combined, 'appointment') || str_contains($combined, 'book') => 'book_appointment',
-            str_contains($combined, 'record') || str_contains($combined, 'history') || str_contains($combined, 'rekord') => 'view_records',
-            str_contains($combined, 'event') || str_contains($combined, 'program') => 'open_events',
-            str_contains($combined, 'id') || str_contains($combined, 'ocr') || str_contains($combined, 'verify') => 'upload_id',
-            str_contains($combined, 'emergency') || str_contains($combined, 'er') => 'call_emergency',
-            default => null,
-        };
-    }
-
-    private function tutorialCards(string $intent, string $audience): array
-    {
-        if ($audience === 'resident') {
-            return match ($intent) {
-                'appointment' => [
-                    ['title' => 'Book Appointment', 'body' => 'Open Appointments, tap Create, fill in concern/date, then submit.'],
-                ],
-                'id_verification' => [
-                    ['title' => 'Verify ID', 'body' => 'Open Profile, tap ID Verification, upload a clear ID photo.'],
-                ],
-                'records' => [
-                    ['title' => 'View Records', 'body' => 'Open Consultations or Records to view previous visits and notes.'],
-                ],
-                default => [],
-            };
-        }
-
-        return match ($intent) {
-            'queue' => [
-                ['title' => 'Queue Step 1', 'body' => 'Open Queue page and choose the active station.'],
-                ['title' => 'Queue Step 2', 'body' => 'Click Call Next, then Serving, then Done.'],
-            ],
-            'cms' => [
-                ['title' => 'CMS Step 1', 'body' => 'Open Announcements or Events.'],
-                ['title' => 'CMS Step 2', 'body' => 'Create post, add image, then publish to mobile.'],
-            ],
-            'users' => [
-                ['title' => 'User Checking', 'body' => 'Open Users page, filter pending accounts, review info, then approve/reject.'],
-            ],
-            'sms' => [
-                ['title' => 'SMS Campaign', 'body' => 'Select target demographics, preview recipients, then send.'],
-            ],
-            default => [
-                ['title' => 'RHU Staff Tutorial', 'body' => 'Ask about Queue, Appointments, CMS, SMS, Users, Inventory, or Analytics.'],
-            ],
-        };
+        return Str::limit($message, 60, '...');
     }
 
     private function detectLanguage(string $message): string
     {
-        $text = mb_strtolower($message);
+        $lower = mb_strtolower($message);
 
-        if (preg_match('/\b(ed|may|so|saray|baley|maung|anggapo)\b/u', $text)) {
-            return 'pag';
-        }
-
-        if (preg_match('/\b(ako|ikaw|paano|sakit|lagnat|gamot|pila)\b/u', $text)) {
+        if ($this->containsAny($lower, ['paano', 'saan', 'gamot', 'lagnat', 'kumusta', 'maglagay', 'pinamigay'])) {
             return 'tl';
         }
 
         return 'en';
     }
 
-    private function safeFallback(string $audience): string
+    private function detectIntent(string $message, string $audience): string
     {
-        if ($audience === 'staff') {
-            return 'May temporary issue ang AI assistant. Pwede pa rin kitang tulungan sa RHU modules: Queue, Appointments, Consultations, CMS, SMS, Users, Inventory, Analytics, at Settings.';
+        $lower = mb_strtolower($message);
+
+        if ($this->containsAny($lower, ['emergency', 'chest pain', 'hirap huminga', 'severe bleeding'])) {
+            return 'emergency_guidance';
         }
 
-        return 'May temporary issue ang AI assistant. Pwede pa rin kitang gabayan sa appointments, records, events, telemedicine, at ID verification. Kung emergency, pumunta agad sa ER.';
+        if ($audience === 'staff') {
+            return match (true) {
+                $this->containsAny($lower, ['report', 'reports', 'ulat', 'pinamigay', 'dispensed', 'export', 'csv']) => 'reports_guidance',
+                $this->containsAny($lower, ['queue', 'pila', 'call next', 'serving']) => 'queue_guidance',
+                $this->containsAny($lower, ['appointment', 'booking', 'schedule']) => 'appointment_guidance',
+                $this->containsAny($lower, ['consultation', 'soap', 'diagnosis', 'notes']) => 'consultation_guidance',
+                $this->containsAny($lower, ['telemedicine', 'video', 'online consult']) => 'telemedicine_guidance',
+                $this->containsAny($lower, ['prescription', 'reseta', 'e-prescription']) => 'prescription_guidance',
+                $this->containsAny($lower, ['inventory', 'stock', 'vaccine', 'medicine', 'gamot']) => 'inventory_guidance',
+                $this->containsAny($lower, ['analytics', 'dashboard', 'heatmap', 'trend']) => 'analytics_guidance',
+                $this->containsAny($lower, ['announcement', 'event', 'cms', 'post', 'program']) => 'cms_guidance',
+                $this->containsAny($lower, ['sms', 'text', 'semaphore', 'notification']) => 'sms_guidance',
+                $this->containsAny($lower, ['user', 'approve', 'verify', 'account']) => 'user_management_guidance',
+                default => 'staff_workflow_guidance',
+            };
+        }
+
+        return match (true) {
+            $this->containsAny($lower, ['book', 'appointment', 'schedule', 'konsultasyon']) => 'appointment',
+            $this->containsAny($lower, ['record', 'records', 'rekord', 'history']) => 'records',
+            $this->containsAny($lower, ['event', 'program', 'announcement']) => 'events_programs',
+            $this->containsAny($lower, ['telemedicine', 'video', 'online']) => 'telemedicine',
+            default => 'general_health_or_app_guidance',
+        };
+    }
+
+    private function suggestAction(string $message, string $audience, string $intent): ?string
+    {
+        if ($audience === 'resident') {
+            return match ($intent) {
+                'appointment' => 'book_appointment',
+                'records' => 'view_records',
+                default => null,
+            };
+        }
+
+        return match ($intent) {
+            'reports_guidance' => 'open_reports',
+            'queue_guidance' => 'open_queue',
+            'appointment_guidance' => 'open_appointments',
+            'consultation_guidance' => 'open_consultations',
+            'telemedicine_guidance' => 'open_telemedicine',
+            'prescription_guidance' => 'open_prescriptions',
+            'inventory_guidance' => 'open_inventory',
+            'analytics_guidance' => str_contains(mb_strtolower($message), 'heatmap') ? 'open_heatmap' : 'open_analytics',
+            'cms_guidance' => 'open_cms',
+            'sms_guidance' => 'open_sms',
+            'user_management_guidance' => 'open_users',
+            default => null,
+        };
+    }
+
+    private function tutorialCards(?string $suggestedAction, string $intent): array
+    {
+        return match ($suggestedAction) {
+            'open_reports' => [
+                ['title' => '1. Click Reports button', 'body' => 'Use Reports when the staff needs printable or exportable summaries, including dispensed medicines.'],
+                ['title' => '2. Select report type', 'body' => 'Choose the medicine dispensing, prescription, consultation, queue, or inventory report depending on the needed output.'],
+                ['title' => '3. Filter and export', 'body' => 'Set date range, RHU, barangay, or medicine filters, then preview before exporting or printing.'],
+            ],
+            'open_queue' => [
+                ['title' => '1. Click Queue button', 'body' => 'Review waiting tickets and priority flags before calling the next patient.'],
+                ['title' => '2. Serve in order', 'body' => 'Use Call Next, Serving, and Done to keep the flow fair and traceable.'],
+                ['title' => '3. Check priority reasons', 'body' => 'Senior, PWD, pregnant, pediatric, emergency, and BHW-assisted flags explain priority.'],
+            ],
+            'open_sms' => [
+                ['title' => '1. Click SMS button', 'body' => 'Create a short announcement, reminder, or follow-up message.'],
+                ['title' => '2. Choose recipients', 'body' => 'Filter by barangay, account status, program, age group, sex, or RHU targeting.'],
+                ['title' => '3. Preview first', 'body' => 'Check recipient count and message privacy before sending.'],
+            ],
+            'open_users' => [
+                ['title' => '1. Click Users button', 'body' => 'Open pending, active, or rejected accounts.'],
+                ['title' => '2. Review verification', 'body' => 'Compare profile details and uploaded ID/OCR result before approval.'],
+                ['title' => '3. Save decision', 'body' => 'Approve, reject, or request correction based on RHU account validation rules.'],
+            ],
+            default => $intent === 'staff_workflow_guidance' ? [
+                ['title' => 'Tip', 'body' => 'Ask for the exact button name or task, for example: “How do I export reports?”'],
+            ] : [],
+        };
+    }
+
+    private function normalizeStaffButtonLanguage(string $reply): string
+    {
+        $replacements = [
+            'Queue module' => 'Queue button',
+            'Appointments module' => 'Appointments button',
+            'Appointment module' => 'Appointments button',
+            'Consultations module' => 'Consultations button',
+            'Telemedicine module' => 'Telemedicine button',
+            'Prescriptions module' => 'Prescriptions button',
+            'Inventory module' => 'Inventory button',
+            'Analytics module' => 'Analytics button',
+            'Heatmap module' => 'Heatmap button',
+            'CMS module' => 'CMS button',
+            'SMS module' => 'SMS button',
+            'Reports module' => 'Reports button',
+            'Users module' => 'Users button',
+            'Settings module' => 'Settings button',
+            'Dashboard module' => 'Dashboard button',
+            'module' => 'button',
+            'Module' => 'Button',
+            'page' => 'button',
+            'Page' => 'Button',
+        ];
+
+        return strtr($reply, $replacements);
+    }
+
+    private function detectComplaint(string $message): ?string
+    {
+        $lower = mb_strtolower($message);
+
+        $map = [
+            'fever' => ['fever', 'lagnat'],
+            'cough' => ['cough', 'ubo'],
+            'headache' => ['headache', 'sakit ng ulo'],
+            'abdominal pain' => ['stomach pain', 'sakit ng tiyan', 'abdominal pain'],
+            'diarrhea' => ['diarrhea', 'pagtatae'],
+            'wound' => ['wound', 'sugat'],
+            'breathing difficulty' => ['hirap huminga', 'difficulty breathing'],
+        ];
+
+        foreach ($map as $label => $keywords) {
+            if ($this->containsAny($lower, $keywords)) {
+                return $label;
+            }
+        }
+
+        return null;
+    }
+
+    private function mirrorToChatLogs(?int $userId, ChatSession $session, string $role, string $message, string $intent, string $language, ?int $responseMs): void
+    {
+        if (!Schema::hasTable('chat_logs')) {
+            return;
+        }
+
+        try {
+            ChatLog::create([
+                'user_id' => $userId,
+                'session_token' => $session->session_token,
+                'role' => $role,
+                'message' => $message,
+                'intent' => $intent,
+                'language' => $language,
+                'response_ms' => $responseMs,
+                'was_escalated' => false,
+            ]);
+        } catch (\Throwable) {
+            // Chat logs are secondary. Do not break the user-facing chat if legacy log columns differ.
+        }
+    }
+
+    private function containsAny(string $text, array $keywords): bool
+    {
+        foreach ($keywords as $keyword) {
+            if (str_contains($text, mb_strtolower($keyword))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
