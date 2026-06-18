@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_06_16_185058_sync_inventory_transactions_columns.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;

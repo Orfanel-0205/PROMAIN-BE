@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_04_26_172824_create_reporting_views.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
