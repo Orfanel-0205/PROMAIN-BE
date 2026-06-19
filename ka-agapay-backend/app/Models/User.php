@@ -81,6 +81,11 @@ class User extends Authenticatable
         return $this->belongsTo(UserRole::class, 'role_id', 'role_id');
     }
 
+    public function residentProfile()
+    {
+        return $this->hasOne(ResidentProfile::class, 'user_id', 'user_id');
+    }
+
     public function getFullNameAttribute(): string
     {
         return trim(collect([
