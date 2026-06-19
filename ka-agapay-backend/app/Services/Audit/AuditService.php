@@ -1,8 +1,9 @@
 <?php
+// app/Services/Audit/AuditService.php
 
 namespace App\Services\Audit;
 
-use App\Models\ActivityLog;
+use App\Models\AuditLog;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -22,7 +23,7 @@ class AuditService
         array $metadata = [],
         string $severity = 'info',
         ?string $subjectLabel = null
-    ): ?ActivityLog {
+    ): ?AuditLog {
         if (!Schema::hasTable('audit_logs')) {
             return null;
         }
@@ -30,12 +31,12 @@ class AuditService
         try {
             $user = $request->user();
 
-            return ActivityLog::create([
+            return AuditLog::create([
                 'user_id' => $user?->user_id ?? $user?->id,
                 'user_role' => $this->resolveRoleName($user),
                 'action' => $action,
                 'module' => $module,
-                'severity' => $severity,
+                'severity' => strtolower($severity),
                 'subject_type' => $this->resolveSubjectType($subject),
                 'subject_id' => $this->resolveSubjectId($subject),
                 'subject_label' => $subjectLabel ?? $this->resolveSubjectLabel($subject),
@@ -48,33 +49,30 @@ class AuditService
                 'http_method' => $request->method(),
                 'route_name' => optional($request->route())->getName() ?? $request->path(),
             ]);
-        } catch (Throwable) {
+        } catch (Throwable $e) {
+            Log::warning('Audit logging failed: ' . $e->getMessage(), [
+                'module' => $module,
+                'action' => $action,
+                'severity' => $severity,
+            ]);
+
             return null;
         }
     }
 
-    /**
-     * Compatibility method for controllers calling $audit->info().
-     */
     public function info(string $module, string $action, array $context = [], ?Request $request = null): void
     {
-        $this->writeAuditCompat('INFO', $module, $action, $context, $request);
+        $this->writeAuditCompat('info', $module, $action, $context, $request);
     }
 
-    /**
-     * Compatibility method for warning-level audit logs.
-     */
     public function warning(string $module, string $action, array $context = [], ?Request $request = null): void
     {
-        $this->writeAuditCompat('WARNING', $module, $action, $context, $request);
+        $this->writeAuditCompat('warning', $module, $action, $context, $request);
     }
 
-    /**
-     * Compatibility method for critical-level audit logs.
-     */
     public function critical(string $module, string $action, array $context = [], ?Request $request = null): void
     {
-        $this->writeAuditCompat('CRITICAL', $module, $action, $context, $request);
+        $this->writeAuditCompat('critical', $module, $action, $context, $request);
     }
 
     private function writeAuditCompat(
@@ -90,28 +88,67 @@ class AuditService
 
             $actorId = $user?->user_id ?? $user?->id ?? null;
 
-            $actorName =
-                $user?->full_name
-                ?? $user?->name
-                ?? $user?->username
-                ?? $user?->mobile_number
-                ?? 'System';
+            $subjectType = $context['subject_type']
+                ?? $context['record_type']
+                ?? $context['type']
+                ?? null;
+
+            $subjectId = $context['subject_id']
+                ?? $context['record_id']
+                ?? $context['id']
+                ?? null;
+
+            $subjectLabel = $context['subject_label']
+                ?? $context['record_label']
+                ?? $context['record_name']
+                ?? $context['label']
+                ?? null;
+
+            $metadata = $context['metadata'] ?? $context;
+
+            if (!is_array($metadata)) {
+                $metadata = [];
+            }
+
+            $metadata['module'] = $metadata['module'] ?? $module;
+
+            if ($subjectId) {
+                $metadata['subject_id'] = $metadata['subject_id'] ?? $subjectId;
+                $metadata['record_id'] = $metadata['record_id'] ?? $subjectId;
+                $metadata['restore_id'] = $metadata['restore_id'] ?? $subjectId;
+            }
+
+            if ($subjectType) {
+                $metadata['subject_type'] = $metadata['subject_type'] ?? $subjectType;
+                $metadata['record_type'] = $metadata['record_type'] ?? $subjectType;
+            }
+
+            if ($subjectLabel) {
+                $metadata['subject_label'] = $metadata['subject_label'] ?? $subjectLabel;
+                $metadata['record_name'] = $metadata['record_name'] ?? $subjectLabel;
+            }
 
             $payload = [
-                'actor_id' => $actorId,
                 'user_id' => $actorId,
-                'actor_name' => $actorName,
+                'user_role' => $this->resolveRoleName($user),
                 'module' => $module,
                 'action' => $action,
-                'record_type' => $context['record_type'] ?? $context['type'] ?? null,
-                'record_id' => $context['record_id'] ?? $context['id'] ?? null,
-                'record_label' => $context['record_label'] ?? $context['label'] ?? null,
-                'reason' => $context['reason'] ?? $context['message'] ?? $action,
-                'severity' => strtoupper($severity),
+                'severity' => strtolower($severity),
+
+                'subject_type' => $subjectType,
+                'subject_id' => $subjectId,
+                'subject_label' => $subjectLabel,
+
                 'old_values' => $context['old_values'] ?? null,
-                'new_values' => $context['new_values'] ?? $context,
+                'new_values' => $context['new_values'] ?? null,
+                'metadata' => $metadata,
+
                 'ip_address' => $request->ip(),
-                'user_agent' => substr((string) $request->userAgent(), 0, 500),
+                'user_agent' => $request->userAgent(),
+                'device_type' => $this->detectDeviceType($request->userAgent()),
+                'http_method' => $request->method(),
+                'route_name' => optional($request->route())->getName() ?? $request->path(),
+
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
@@ -204,6 +241,10 @@ class AuditService
             return (int) $subject->id;
         }
 
+        if (is_array($subject) && isset($subject['id'])) {
+            return (int) $subject['id'];
+        }
+
         return null;
     }
 
@@ -213,8 +254,21 @@ class AuditService
             return null;
         }
 
-        foreach (['title', 'name', 'full_name', 'prescription_number', 'item_code', 'email'] as $field) {
+        foreach ([
+            'title',
+            'name',
+            'full_name',
+            'first_name',
+            'prescription_number',
+            'item_code',
+            'item_name',
+            'email',
+        ] as $field) {
             if (is_object($subject) && !empty($subject->{$field})) {
+                if ($field === 'first_name') {
+                    return trim((string) $subject->first_name . ' ' . (string) ($subject->last_name ?? ''));
+                }
+
                 return (string) $subject->{$field};
             }
 

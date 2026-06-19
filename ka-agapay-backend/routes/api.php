@@ -10,6 +10,9 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PrescriptionController;
+use App\Http\Controllers\Api\AdminProfileController;
+use App\Http\Controllers\Api\AdminRegistrationController;
+use App\Http\Controllers\Api\StaffAnnouncementNotificationController;
 use App\Http\Controllers\Api\ReferralController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\NotificationController;
@@ -30,6 +33,7 @@ use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AnnouncementController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\AuditController;
+use App\Http\Controllers\Api\AdminDeletedRecordController;
 use App\Http\Controllers\Api\ConsultationController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\BiometricController;
@@ -57,8 +61,9 @@ Route::prefix('v1')->group(function () {
         Route::post('/register',        [AuthController::class, 'register']);
         Route::post('/login',           [AuthController::class, 'login']);
 
-        // WEB ADMIN LOGIN
+        // WEB ADMIN LOGIN / REGISTRATION
         Route::post('/admin/login',     [AuthController::class, 'adminLogin']);
+        Route::post('/admin/register',  [AdminRegistrationController::class, 'store']);
 
         Route::post('/verify-otp',      [AuthController::class, 'verifyOtp']);
         Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
@@ -98,6 +103,21 @@ Route::prefix('v1')->group(function () {
         Route::put('/change-password',  [AuthController::class, 'changePassword']);
 
         // =====================================================================
+        // ADMIN PROFILE
+        // Final URLs:
+        // GET   /api/v1/admin/me
+        // PATCH /api/v1/admin/profile
+        // PATCH /api/v1/admin/profile/password
+        // =====================================================================
+
+        Route::middleware('role:admin,staff,staff_admin,rhu_admin,super_admin,superadmin,mho,mho_admin,it_staff,doctor,nurse,midwife')
+            ->group(function () {
+                Route::get('/admin/me', [AdminProfileController::class, 'show']);
+                Route::patch('/admin/profile', [AdminProfileController::class, 'update']);
+                Route::patch('/admin/profile/password', [AdminProfileController::class, 'changePassword']);
+            });
+
+        // =====================================================================
         // ADMIN USERS
         // Final URLs:
         // GET    /api/v1/admin/users
@@ -110,23 +130,20 @@ Route::prefix('v1')->group(function () {
         // PATCH  /api/v1/admin/users/{id}/reject
         // =====================================================================
 
-        Route::prefix('admin/users')
-            ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
-            ->group(function () {
-                Route::get('/',                    [AdminUserController::class, 'index']);
-                Route::post('/',                   [AdminUserController::class, 'store']);
-                Route::patch('/{id}',              [AdminUserController::class, 'update']);
-                Route::put('/{id}',                [AdminUserController::class, 'update']);
-                Route::delete('/{id}',             [AdminUserController::class, 'destroy']);
+       Route::prefix('admin/users')
+    ->middleware('role:admin,staff_admin,rhu_admin,mho,municipal_mayor,it_staff,super_admin,superadmin')
+    ->group(function () {
+        Route::get('/',                    [AdminUserController::class, 'index']);
+        Route::post('/',                   [AdminUserController::class, 'store']);
+        Route::patch('/{id}',              [AdminUserController::class, 'update']);
+        Route::put('/{id}',                [AdminUserController::class, 'update']);
+        Route::delete('/{id}',             [AdminUserController::class, 'destroy']);
 
-                Route::patch('/{id}/status',       [AdminUserController::class, 'status']);
-                Route::patch('/{id}/assign-role',  [AdminUserController::class, 'assignRole']);
-                Route::patch('/{id}/approve',      [AdminUserController::class, 'approve']);
-                Route::patch('/{id}/reject',       [AdminUserController::class, 'reject']);
-
-                Route::patch('/{id}/suspend',      [AdminUserController::class, 'suspend']);
-                Route::patch('/{id}/activate',     [AdminUserController::class, 'activate']);
-            });
+        Route::patch('/{id}/status',       [AdminUserController::class, 'status']);
+        Route::patch('/{id}/assign-role',  [AdminUserController::class, 'assignRole']);
+        Route::patch('/{id}/approve',      [AdminUserController::class, 'approve']);
+        Route::patch('/{id}/reject',       [AdminUserController::class, 'reject']);
+    });
 
         // =====================================================================
         // ADMIN SMS
@@ -212,6 +229,27 @@ Route::prefix('v1')->group(function () {
             ->group(function () {
                 Route::get('/',                [AuditController::class, 'index']);
                 Route::get('/delete-history',  [AuditController::class, 'deleteHistory']);
+
+                /*
+                 * DELETE HISTORY RESTORE + EXPIRATION
+                 *
+                 * Final URLs:
+                 * POST /api/v1/admin/audit/delete-history/expire
+                 * POST /api/v1/admin/audit/delete-history/{auditLogId}/restore
+                 *
+                 * Keep "expire" above "{auditLogId}/restore" so Laravel does not treat
+                 * the word "expire" as an audit log ID.
+                 */
+                Route::post(
+                    '/delete-history/expire',
+                    [AdminDeletedRecordController::class, 'expire']
+                );
+
+                Route::post(
+                    '/delete-history/{auditLogId}/restore',
+                    [AdminDeletedRecordController::class, 'restore']
+                );
+
                 Route::get('/users/{userId}',  [AuditController::class, 'userTimeline']);
                 Route::get('/subject-history', [AuditController::class, 'subjectHistory']);
                 Route::post('/',               [AuditController::class, 'store']);
@@ -304,16 +342,16 @@ Route::prefix('v1')->group(function () {
         // NOTIFICATIONS
         // =====================================================================
 
-       Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/notifications', [NotificationController::class, 'index']);
-    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
-    Route::patch('/notifications/{id}/read', [NotificationController::class, 'markRead']);
-    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
-    Route::delete('/notifications/{id}', [NotificationController::class, 'destroy']);
+        Route::middleware('auth:sanctum')->group(function () {
+            Route::get('/notifications', [NotificationController::class, 'index']);
+            Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+            Route::patch('/notifications/{id}/read', [NotificationController::class, 'markRead']);
+            Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+            Route::delete('/notifications/{id}', [NotificationController::class, 'destroy']);
 
-    Route::get('/notifications/preferences', [NotificationController::class, 'preferences']);
-    Route::put('/notifications/preferences', [NotificationController::class, 'updatePreferences']);
-});
+            Route::get('/notifications/preferences', [NotificationController::class, 'preferences']);
+            Route::put('/notifications/preferences', [NotificationController::class, 'updatePreferences']);
+        });
 
         // =====================================================================
         // QUEUE
@@ -498,6 +536,12 @@ Route::prefix('v1')->group(function () {
 
                 Route::get('/announcements',                [AnnouncementController::class, 'adminIndex']);
                 Route::post('/announcements',               [AnnouncementController::class, 'store']);
+
+                Route::post('/announcements/{announcement}/notify-staff', [
+                    StaffAnnouncementNotificationController::class,
+                    'notify',
+                ]);
+
                 Route::put('/announcements/{id}',           [AnnouncementController::class, 'update']);
                 Route::post('/announcements/{id}',          [AnnouncementController::class, 'update']);
                 Route::patch('/announcements/{id}/publish', [AnnouncementController::class, 'publish']);

@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\UserRole;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
@@ -32,7 +33,25 @@ class AdminUserController extends Controller
         'superadmin',
     ];
 
+    /*
+     * These roles can manage normal users.
+     * Protected management accounts are still guarded by $protectedRoles.
+     */
     private array $approverRoles = [
+        'admin',
+        'staff_admin',
+        'rhu_admin',
+        'mho',
+        'municipal_mayor',
+        'it_staff',
+        'super_admin',
+        'superadmin',
+    ];
+
+    /*
+     * Only Super Admin can modify these protected accounts.
+     */
+    private array $protectedRoles = [
         'mho',
         'municipal_mayor',
         'it_staff',
@@ -52,13 +71,23 @@ class AdminUserController extends Controller
         'mho',
         'municipal_mayor',
         'it_staff',
+        'super_admin',
+        'superadmin',
+    ];
+
+    private array $statusValues = [
+        'pending',
+        'active',
+        'inactive',
+        'suspended',
+        'rejected',
     ];
 
     public function index(Request $request): JsonResponse
     {
         $this->authorizeUserManagement($request);
 
-        $request->validate([
+        $validated = $request->validate([
             'search' => ['nullable', 'string', 'max:100'],
             'role' => ['nullable', 'string', 'max:50'],
             'status' => ['nullable', 'string', 'max:50'],
@@ -66,39 +95,47 @@ class AdminUserController extends Controller
         ]);
 
         $roleColumns = $this->roleNameColumns();
+        $like = $this->likeOperator();
 
         $users = User::with('role')
-            ->when($request->filled('search'), function ($query) use ($request, $roleColumns) {
-                $search = trim((string) $request->search);
+            ->when(!empty($validated['search']), function ($query) use ($validated, $roleColumns, $like) {
+                $search = trim((string) $validated['search']);
 
-                $query->where(function ($inner) use ($search, $roleColumns) {
-                    $inner->where('first_name', 'ilike', "%{$search}%")
-                        ->orWhere('last_name', 'ilike', "%{$search}%")
-                        ->orWhere('email', 'ilike', "%{$search}%")
-                        ->orWhere('mobile_number', 'ilike', "%{$search}%")
-                        ->orWhere('barangay', 'ilike', "%{$search}%");
+                $query->where(function ($inner) use ($search, $roleColumns, $like) {
+                    $inner->where('first_name', $like, "%{$search}%")
+                        ->orWhere('last_name', $like, "%{$search}%")
+                        ->orWhere('email', $like, "%{$search}%")
+                        ->orWhere('mobile_number', $like, "%{$search}%")
+                        ->orWhere('barangay', $like, "%{$search}%");
 
                     if (!empty($roleColumns)) {
-                        $inner->orWhereHas('role', function ($roleQuery) use ($search, $roleColumns) {
-                            $roleQuery->where(function ($q) use ($search, $roleColumns) {
+                        $inner->orWhereHas('role', function ($roleQuery) use ($search, $roleColumns, $like) {
+                            $roleQuery->where(function ($q) use ($search, $roleColumns, $like) {
                                 foreach ($roleColumns as $column) {
-                                    $q->orWhere($column, 'ilike', "%{$search}%");
+                                    $q->orWhere($column, $like, "%{$search}%");
                                 }
                             });
                         });
                     }
                 });
             })
-            ->when($request->filled('status'), function ($query) use ($request) {
-                $query->where('account_status', $request->status);
+            ->when(!empty($validated['status']), function ($query) use ($validated) {
+                $status = $this->normalizeStatus((string) $validated['status']);
+
+                if (in_array($status, $this->statusValues, true)) {
+                    $query->where('account_status', $status);
+                }
             })
-            ->when($request->filled('role'), function ($query) use ($request, $roleColumns) {
-                $role = $this->normalizeRoleName((string) $request->role);
+            ->when(!empty($validated['role']), function ($query) use ($validated, $roleColumns) {
+                $role = $this->normalizeRoleName((string) $validated['role']);
 
                 $query->whereHas('role', function ($roleQuery) use ($role, $roleColumns) {
                     $roleQuery->where(function ($q) use ($role, $roleColumns) {
                         foreach ($roleColumns as $column) {
-                            $q->orWhereRaw("LOWER(REPLACE(REPLACE({$column}, ' ', '_'), '-', '_')) = ?", [$role]);
+                            $q->orWhereRaw(
+                                "LOWER(REPLACE(REPLACE({$column}, ' ', '_'), '-', '_')) = ?",
+                                [$role]
+                            );
                         }
 
                         if (empty($roleColumns)) {
@@ -108,9 +145,11 @@ class AdminUserController extends Controller
                 });
             })
             ->latest('created_at')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate((int) ($validated['per_page'] ?? 20));
 
-        $users->getCollection()->transform(fn (User $user) => $this->userPayload($user));
+        $users->getCollection()->transform(
+            fn (User $user) => $this->userPayload($user)
+        );
 
         return response()->json($users);
     }
@@ -123,17 +162,23 @@ class AdminUserController extends Controller
             'name' => ['nullable', 'string', 'max:150'],
             'first_name' => ['nullable', 'string', 'max:100'],
             'last_name' => ['nullable', 'string', 'max:100'],
-            'email' => ['nullable', 'email', 'max:150', 'unique:users,email'],
-            'mobile_number' => ['nullable', 'string', 'max:20', 'unique:users,mobile_number'],
-            'phone' => ['nullable', 'string', 'max:20'],
+
+            'email' => ['nullable', 'email', 'max:150'],
+
+            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'phone' => ['nullable', 'string', 'max:30'],
+
             'barangay' => ['nullable', 'string', 'max:150'],
+
             'role' => ['required', 'string', 'max:50'],
-            'password' => ['nullable', 'string', 'min:8'],
-            'account_status' => ['nullable', 'string', 'max:30'],
-            'status' => ['nullable', 'string', 'max:30'],
+
+            'password' => ['nullable', 'string', 'min:8', 'max:100'],
+
+            'account_status' => ['nullable', 'string', Rule::in($this->statusValues)],
+            'status' => ['nullable', 'string', Rule::in($this->statusValues)],
         ]);
 
-        $roleName = $this->normalizeRoleName($validated['role']);
+        $roleName = $this->normalizeRoleName((string) $validated['role']);
         abort_unless(in_array($roleName, $this->allowedRoles, true), 422, 'Invalid role.');
 
         $this->authorizeRoleAssignment($request, $roleName);
@@ -148,23 +193,78 @@ class AdminUserController extends Controller
         );
 
         abort_if(trim($firstName) === '', 422, 'First name is required.');
-        abort_if(empty($validated['mobile_number'] ?? $validated['phone'] ?? null), 422, 'Mobile number is required.');
 
-        $status = $validated['account_status'] ?? $validated['status'] ?? 'active';
+        $mobile = $this->normalizeMobileNumber(
+            $validated['mobile_number'] ?? $validated['phone'] ?? null
+        );
 
-        $user = User::create([
-            'role_id' => $roleId,
-            'first_name' => $firstName,
-            'last_name' => $lastName,
-            'email' => $validated['email'] ?? null,
-            'mobile_number' => $validated['mobile_number'] ?? $validated['phone'] ?? null,
-            'barangay' => $validated['barangay'] ?? null,
-            'password' => Hash::make($validated['password'] ?? 'KaAgapay@1234'),
-            'account_status' => $status,
-            'id_verified' => true,
-            'staff_approved_by' => $request->user()?->user_id,
-            'staff_approved_at' => in_array($roleName, $this->staffRoles, true) ? now() : null,
-        ]);
+        abort_if($mobile === '', 422, 'Mobile number is required.');
+        abort_unless($this->isValidPhilippineMobile($mobile), 422, 'Mobile number must use this format: 09XXXXXXXXX.');
+
+        $email = $this->normalizeEmail($validated['email'] ?? null);
+
+        if ($email !== null) {
+            abort_if(
+                User::whereRaw('LOWER(email) = ?', [$email])->exists(),
+                422,
+                'Email is already used by another account.'
+            );
+        }
+
+        abort_if(
+            User::where('mobile_number', $mobile)->exists(),
+            422,
+            'Mobile number is already used by another account.'
+        );
+
+        $status = $this->normalizeStatus(
+            (string) ($validated['account_status'] ?? $validated['status'] ?? '')
+        );
+
+        if ($status === '') {
+            $status = $this->isResidentRole($roleName) ? 'active' : 'pending';
+        }
+
+        if ($status === 'active' && $this->isStaffRole($roleName)) {
+            $this->authorizeStaffApprover($request);
+        }
+
+        $user = DB::transaction(function () use (
+            $request,
+            $validated,
+            $roleId,
+            $roleName,
+            $firstName,
+            $lastName,
+            $email,
+            $mobile,
+            $status
+        ) {
+            return User::create([
+                'role_id' => $roleId,
+                'first_name' => $firstName,
+                'last_name' => $lastName,
+                'email' => $email,
+                'mobile_number' => $mobile,
+                'barangay' => $validated['barangay'] ?? null,
+                'password' => Hash::make($validated['password'] ?? 'KaAgapay@1234'),
+                'account_status' => $status,
+
+                /*
+                 * Admin-created accounts are treated as verified records.
+                 * Staff still become pending unless status was explicitly active.
+                 */
+                'id_verified' => true,
+
+                'staff_approved_by' => $status === 'active' && $this->isStaffRole($roleName)
+                    ? $request->user()?->user_id
+                    : null,
+                'staff_approved_at' => $status === 'active' && $this->isStaffRole($roleName)
+                    ? now()
+                    : null,
+                'rejection_reason' => null,
+            ]);
+        });
 
         return response()->json([
             'message' => 'User created successfully.',
@@ -177,32 +277,32 @@ class AdminUserController extends Controller
         $this->authorizeUserManagement($request);
 
         $user = User::with('role')->findOrFail($id);
+        $currentRole = $this->normalizeRoleName($user->role_name);
 
         $validated = $request->validate([
             'name' => ['nullable', 'string', 'max:150'],
             'first_name' => ['nullable', 'string', 'max:100'],
             'last_name' => ['nullable', 'string', 'max:100'],
-            'email' => [
-                'nullable',
-                'email',
-                'max:150',
-                Rule::unique('users', 'email')->ignore($user->user_id, 'user_id'),
-            ],
-            'mobile_number' => [
-                'nullable',
-                'string',
-                'max:20',
-                Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id'),
-            ],
-            'phone' => ['nullable', 'string', 'max:20'],
+
+            'email' => ['nullable', 'email', 'max:150'],
+
+            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'phone' => ['nullable', 'string', 'max:30'],
+
             'barangay' => ['nullable', 'string', 'max:150'],
+
             'role' => ['nullable', 'string', 'max:50'],
-            'password' => ['nullable', 'string', 'min:8'],
-            'account_status' => ['nullable', 'string', 'max:30'],
-            'status' => ['nullable', 'string', 'max:30'],
+
+            'password' => ['nullable', 'string', 'min:8', 'max:100'],
+
+            'account_status' => ['nullable', 'string', Rule::in($this->statusValues)],
+            'status' => ['nullable', 'string', Rule::in($this->statusValues)],
+
+            'reason' => ['nullable', 'string', 'max:500'],
         ]);
 
         $updates = [];
+        $newRole = $currentRole;
 
         if (
             array_key_exists('name', $validated) ||
@@ -215,16 +315,45 @@ class AdminUserController extends Controller
                 $validated['last_name'] ?? $user->last_name
             );
 
+            abort_if(trim($firstName) === '', 422, 'First name is required.');
+
             $updates['first_name'] = $firstName;
             $updates['last_name'] = $lastName;
         }
 
         if (array_key_exists('email', $validated)) {
-            $updates['email'] = $validated['email'];
+            $email = $this->normalizeEmail($validated['email'] ?? null);
+
+            if ($email !== null) {
+                abort_if(
+                    User::whereRaw('LOWER(email) = ?', [$email])
+                        ->where('user_id', '!=', $user->user_id)
+                        ->exists(),
+                    422,
+                    'Email is already used by another account.'
+                );
+            }
+
+            $updates['email'] = $email;
         }
 
         if (array_key_exists('mobile_number', $validated) || array_key_exists('phone', $validated)) {
-            $updates['mobile_number'] = $validated['mobile_number'] ?? $validated['phone'] ?? $user->mobile_number;
+            $mobile = $this->normalizeMobileNumber(
+                $validated['mobile_number'] ?? $validated['phone'] ?? null
+            );
+
+            abort_if($mobile === '', 422, 'Mobile number is required.');
+            abort_unless($this->isValidPhilippineMobile($mobile), 422, 'Mobile number must use this format: 09XXXXXXXXX.');
+
+            abort_if(
+                User::where('mobile_number', $mobile)
+                    ->where('user_id', '!=', $user->user_id)
+                    ->exists(),
+                422,
+                'Mobile number is already used by another account.'
+            );
+
+            $updates['mobile_number'] = $mobile;
         }
 
         if (array_key_exists('barangay', $validated)) {
@@ -236,22 +365,49 @@ class AdminUserController extends Controller
         }
 
         if (!empty($validated['role'])) {
-            $roleName = $this->normalizeRoleName($validated['role']);
-            abort_unless(in_array($roleName, $this->allowedRoles, true), 422, 'Invalid role.');
+            $newRole = $this->normalizeRoleName((string) $validated['role']);
 
-            $this->authorizeRoleAssignment($request, $roleName);
+            abort_unless(in_array($newRole, $this->allowedRoles, true), 422, 'Invalid role.');
 
-            $roleId = $this->resolveRoleId($roleName);
-            abort_unless($roleId, 422, "Role '{$roleName}' was not found in user_roles table.");
+            $this->assertTargetCanBeChanged($request, $user);
+            $this->authorizeRoleAssignment($request, $newRole);
+
+            $roleId = $this->resolveRoleId($newRole);
+            abort_unless($roleId, 422, "Role '{$newRole}' was not found in user_roles table.");
 
             $updates['role_id'] = $roleId;
         }
 
         if (array_key_exists('account_status', $validated) || array_key_exists('status', $validated)) {
-            $updates['account_status'] = $validated['account_status'] ?? $validated['status'];
+            $newStatus = $this->normalizeStatus(
+                (string) ($validated['account_status'] ?? $validated['status'])
+            );
+
+            abort_unless(in_array($newStatus, $this->statusValues, true), 422, 'Invalid status.');
+
+            $this->assertSafeStatusChange($request, $user, $newStatus);
+
+            if ($newStatus === 'active' && $this->isStaffRole($newRole)) {
+                $updates['id_verified'] = true;
+                $updates['staff_approved_by'] = $request->user()?->user_id;
+                $updates['staff_approved_at'] = now();
+                $updates['rejection_reason'] = null;
+            }
+
+            if (in_array($newStatus, ['rejected', 'suspended'], true)) {
+                $updates['rejection_reason'] = $validated['reason'] ?? $user->rejection_reason;
+            }
+
+            if ($newStatus === 'inactive') {
+                $updates['rejection_reason'] = $validated['reason'] ?? null;
+            }
+
+            $updates['account_status'] = $newStatus;
         }
 
-        $user->update($updates);
+        DB::transaction(function () use ($user, $updates) {
+            $user->update($updates);
+        });
 
         return response()->json([
             'message' => 'User updated successfully.',
@@ -264,11 +420,44 @@ class AdminUserController extends Controller
         $this->authorizeUserManagement($request);
 
         $validated = $request->validate([
-            'status' => ['required', 'in:active,inactive,pending,suspended,rejected'],
+            'status' => ['required', 'string', Rule::in($this->statusValues)],
+            'reason' => ['nullable', 'string', 'max:500'],
         ]);
 
-        $user = User::findOrFail($id);
-        $user->update(['account_status' => $validated['status']]);
+        $user = User::with('role')->findOrFail($id);
+        $newStatus = $this->normalizeStatus((string) $validated['status']);
+
+        $this->assertSafeStatusChange($request, $user, $newStatus);
+
+        $updates = [
+            'account_status' => $newStatus,
+        ];
+
+        $roleName = $this->normalizeRoleName($user->role_name);
+
+        /*
+         * FIX FOR I-ENABLE:
+         * If an authorized admin activates a staff/admin account, it also approves
+         * the ID verification and staff approval fields.
+         */
+        if ($newStatus === 'active' && $this->isStaffRole($roleName)) {
+            $updates['id_verified'] = true;
+            $updates['staff_approved_by'] = $request->user()?->user_id;
+            $updates['staff_approved_at'] = now();
+            $updates['rejection_reason'] = null;
+        }
+
+        if (in_array($newStatus, ['rejected', 'suspended'], true)) {
+            $updates['rejection_reason'] = $validated['reason'] ?? 'Status changed by authorized admin.';
+        }
+
+        if ($newStatus === 'inactive') {
+            $updates['rejection_reason'] = $validated['reason'] ?? null;
+        }
+
+        DB::transaction(function () use ($user, $updates) {
+            $user->update($updates);
+        });
 
         return response()->json([
             'message' => 'User status updated.',
@@ -283,16 +472,22 @@ class AdminUserController extends Controller
         $user = User::with('role')->findOrFail($id);
         $roleName = $this->normalizeRoleName($user->role_name);
 
-        if (in_array($roleName, $this->staffRoles, true)) {
-            abort_unless((bool) $user->id_verified, 422, 'Cannot approve staff account until OCR/name verification is approved.');
-        }
+        $this->assertTargetCanBeChanged($request, $user);
 
-        $user->update([
-            'account_status' => 'active',
-            'staff_approved_by' => $request->user()?->user_id,
-            'staff_approved_at' => now(),
-            'rejection_reason' => null,
-        ]);
+        DB::transaction(function () use ($request, $user, $roleName) {
+            $updates = [
+                'account_status' => 'active',
+                'id_verified' => true,
+                'rejection_reason' => null,
+            ];
+
+            if ($this->isStaffRole($roleName)) {
+                $updates['staff_approved_by'] = $request->user()?->user_id;
+                $updates['staff_approved_at'] = now();
+            }
+
+            $user->update($updates);
+        });
 
         return response()->json([
             'message' => 'User approved successfully.',
@@ -305,15 +500,19 @@ class AdminUserController extends Controller
         $this->authorizeStaffApprover($request);
 
         $validated = $request->validate([
-            'reason' => ['nullable', 'string', 'max:500'],
+            'reason' => ['required', 'string', 'max:500'],
         ]);
 
-        $user = User::findOrFail($id);
+        $user = User::with('role')->findOrFail($id);
 
-        $user->update([
-            'account_status' => 'rejected',
-            'rejection_reason' => $validated['reason'] ?? 'Rejected by approver.',
-        ]);
+        $this->assertTargetCanBeChanged($request, $user);
+
+        DB::transaction(function () use ($user, $validated) {
+            $user->update([
+                'account_status' => 'rejected',
+                'rejection_reason' => trim((string) $validated['reason']),
+            ]);
+        });
 
         return response()->json([
             'message' => 'User rejected.',
@@ -329,14 +528,21 @@ class AdminUserController extends Controller
             'role' => ['required', 'string', 'max:50'],
         ]);
 
-        $roleName = $this->normalizeRoleName($validated['role']);
+        $roleName = $this->normalizeRoleName((string) $validated['role']);
+
         abort_unless(in_array($roleName, $this->allowedRoles, true), 422, 'Invalid role.');
+
+        $user = User::with('role')->findOrFail($id);
+
+        $this->assertTargetCanBeChanged($request, $user);
+        $this->authorizeRoleAssignment($request, $roleName);
 
         $roleId = $this->resolveRoleId($roleName);
         abort_unless($roleId, 422, "Role '{$roleName}' was not found.");
 
-        $user = User::findOrFail($id);
-        $user->update(['role_id' => $roleId]);
+        DB::transaction(function () use ($user, $roleId) {
+            $user->update(['role_id' => $roleId]);
+        });
 
         return response()->json([
             'message' => 'User role updated.',
@@ -344,16 +550,69 @@ class AdminUserController extends Controller
         ]);
     }
 
+    public function suspend(Request $request, int $id): JsonResponse
+    {
+        $request->merge([
+            'status' => 'suspended',
+            'reason' => $request->input('reason', 'User suspended by RHU admin.'),
+        ]);
+
+        return $this->status($request, $id);
+    }
+
+    public function activate(Request $request, int $id): JsonResponse
+    {
+        $request->merge([
+            'status' => 'active',
+            'reason' => $request->input('reason', 'User activated and verified by RHU admin.'),
+        ]);
+
+        return $this->status($request, $id);
+    }
+
     public function destroy(Request $request, int $id): JsonResponse
     {
         $this->authorizeUserManagement($request);
 
-        $user = User::findOrFail($id);
-        $user->update(['account_status' => 'inactive']);
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:500'],
+            'delete_reason' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $user = User::with('role')->findOrFail($id);
+
+        $this->assertSafeStatusChange($request, $user, 'inactive');
+
+        $reason = trim((string) (
+            $validated['reason']
+            ?? $validated['delete_reason']
+            ?? 'Deleted from RHU admin user management.'
+        ));
+
+        $oldValues = $user->toArray();
+
+        DB::transaction(function () use ($request, $user, $reason, $oldValues) {
+            $updates = [
+                'account_status' => 'inactive',
+                'rejection_reason' => $reason,
+            ];
+
+            if (Schema::hasColumn('users', 'deleted_by')) {
+                $updates['deleted_by'] = $request->user()?->user_id;
+            }
+
+            if (Schema::hasColumn('users', 'delete_reason')) {
+                $updates['delete_reason'] = $reason;
+            }
+
+            $user->update($updates);
+            $user->delete();
+
+            $this->logUserDeleteHistory($request, $user, $oldValues, $reason);
+        });
 
         return response()->json([
-            'message' => 'User deactivated.',
-            'data' => $this->userPayload($user->fresh()->load('role')),
+            'message' => 'User deleted safely. The account can be restored from Delete History.',
         ]);
     }
 
@@ -362,7 +621,7 @@ class AdminUserController extends Controller
         abort_unless(
             $request->user()?->hasAnyRole($this->approverRoles),
             403,
-            'Only MHO, Municipal Mayor, IT Staff, or Super Admin can manage users.'
+            'Only authorized RHU admins can manage users.'
         );
     }
 
@@ -371,14 +630,73 @@ class AdminUserController extends Controller
         abort_unless(
             $request->user()?->hasAnyRole($this->approverRoles),
             403,
-            'Only MHO, Municipal Mayor, IT Staff, or Super Admin can approve staff accounts.'
+            'Only authorized RHU admins can approve staff accounts.'
         );
     }
 
     private function authorizeRoleAssignment(Request $request, string $roleName): void
     {
-        if (in_array($roleName, $this->staffRoles, true)) {
+        if ($this->isProtectedRole($roleName)) {
+            abort_unless(
+                $this->currentUserIsSuperAdmin($request),
+                403,
+                'Only Super Admin can assign MHO, Municipal Mayor, IT Staff, or Super Admin roles.'
+            );
+        }
+
+        if ($this->isStaffRole($roleName)) {
             $this->authorizeStaffApprover($request);
+        }
+    }
+
+    private function assertTargetCanBeChanged(Request $request, User $target): void
+    {
+        $targetRole = $this->normalizeRoleName($target->role_name);
+
+        if ((int) $request->user()?->user_id === (int) $target->user_id) {
+            abort(422, 'You cannot change your own management role or approval status here.');
+        }
+
+        if ($this->isProtectedRole($targetRole) && !$this->currentUserIsSuperAdmin($request)) {
+            abort(403, 'Only Super Admin can modify protected management accounts.');
+        }
+    }
+
+    private function assertSafeStatusChange(Request $request, User $target, string $newStatus): void
+    {
+        if ((int) $request->user()?->user_id === (int) $target->user_id && $newStatus !== 'active') {
+            abort(422, 'You cannot disable, suspend, reject, or delete your own account.');
+        }
+
+        $targetRole = $this->normalizeRoleName($target->role_name);
+
+        if ($this->isProtectedRole($targetRole) && !$this->currentUserIsSuperAdmin($request)) {
+            abort(403, 'Only Super Admin can disable, suspend, reject, delete, or reactivate protected management accounts.');
+        }
+
+        if (in_array($targetRole, ['super_admin', 'superadmin'], true) && $newStatus !== 'active') {
+            $activeSuperAdmins = User::query()
+                ->where('user_id', '!=', $target->user_id)
+                ->where('account_status', 'active')
+                ->whereHas('role', function ($query) {
+                    $roleColumns = $this->roleNameColumns();
+
+                    $query->where(function ($q) use ($roleColumns) {
+                        foreach ($roleColumns as $column) {
+                            $q->orWhereRaw(
+                                "LOWER(REPLACE(REPLACE({$column}, ' ', '_'), '-', '_')) IN (?, ?)",
+                                ['super_admin', 'superadmin']
+                            );
+                        }
+
+                        if (empty($roleColumns)) {
+                            $q->whereRaw('1 = 0');
+                        }
+                    });
+                })
+                ->count();
+
+            abort_if($activeSuperAdmins < 1, 422, 'Cannot disable the last active Super Admin account.');
         }
     }
 
@@ -406,7 +724,10 @@ class AdminUserController extends Controller
 
         foreach ($roles as $role) {
             foreach (['name', 'role_name', 'slug', 'role', 'title', 'code'] as $field) {
-                if (isset($role->{$field}) && $this->normalizeRoleName((string) $role->{$field}) === $normalized) {
+                if (
+                    isset($role->{$field}) &&
+                    $this->normalizeRoleName((string) $role->{$field}) === $normalized
+                ) {
                     return (int) $role->role_id;
                 }
             }
@@ -429,9 +750,70 @@ class AdminUserController extends Controller
         ));
     }
 
-    private function normalizeRoleName(string $role): string
+    private function normalizeRoleName(?string $role): string
     {
-        return strtolower(str_replace([' ', '-'], '_', trim($role)));
+        return strtolower(str_replace([' ', '-'], '_', trim((string) $role)));
+    }
+
+    private function normalizeStatus(?string $status): string
+    {
+        return strtolower(str_replace([' ', '-'], '_', trim((string) $status)));
+    }
+
+    private function normalizeEmail(?string $email): ?string
+    {
+        $email = trim((string) $email);
+
+        if ($email === '') {
+            return null;
+        }
+
+        return strtolower($email);
+    }
+
+    private function normalizeMobileNumber(?string $mobile): string
+    {
+        $mobile = preg_replace('/[^\d+]/', '', trim((string) $mobile)) ?? '';
+
+        if (str_starts_with($mobile, '+63')) {
+            $mobile = '0' . substr($mobile, 3);
+        }
+
+        if (str_starts_with($mobile, '63') && strlen($mobile) === 12) {
+            $mobile = '0' . substr($mobile, 2);
+        }
+
+        return $mobile;
+    }
+
+    private function isValidPhilippineMobile(string $mobile): bool
+    {
+        return preg_match('/^09\d{9}$/', $mobile) === 1;
+    }
+
+    private function isResidentRole(string $role): bool
+    {
+        return in_array($this->normalizeRoleName($role), ['resident', 'patient'], true);
+    }
+
+    private function isStaffRole(string $role): bool
+    {
+        return in_array($this->normalizeRoleName($role), $this->staffRoles, true);
+    }
+
+    private function isProtectedRole(string $role): bool
+    {
+        return in_array($this->normalizeRoleName($role), $this->protectedRoles, true);
+    }
+
+    private function currentUserIsSuperAdmin(Request $request): bool
+    {
+        return (bool) $request->user()?->hasAnyRole(['super_admin', 'superadmin']);
+    }
+
+    private function likeOperator(): string
+    {
+        return DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
     }
 
     private function userPayload(User $user): array
@@ -441,25 +823,105 @@ class AdminUserController extends Controller
         return [
             'id' => $user->user_id,
             'user_id' => $user->user_id,
+
             'name' => $user->full_name,
             'full_name' => $user->full_name,
             'first_name' => $user->first_name,
             'last_name' => $user->last_name,
+
             'email' => $user->email,
+
             'phone' => $user->mobile_number,
             'mobile_number' => $user->mobile_number,
+
             'role' => $this->normalizeRoleName($user->role_name),
             'role_id' => $user->role_id,
+
             'status' => $user->account_status,
             'account_status' => $user->account_status,
+
             'barangay' => $user->barangay,
+
             'id_verified' => (bool) $user->id_verified,
+
             'staff_approved_by' => $user->staff_approved_by,
             'staff_approved_at' => optional($user->staff_approved_at)->toISOString(),
+
             'rejection_reason' => $user->rejection_reason,
+
             'capabilities' => $user->capabilities,
+
             'created_at' => optional($user->created_at)->toISOString(),
             'updated_at' => optional($user->updated_at)->toISOString(),
         ];
+    }
+
+    private function logUserDeleteHistory(Request $request, User $user, array $oldValues, string $reason): void
+    {
+        if (!Schema::hasTable('audit_logs')) {
+            return;
+        }
+
+        $actor = $request->user();
+
+        $recordName = trim((string) $user->first_name . ' ' . (string) $user->last_name);
+
+        if ($recordName === '') {
+            $recordName = 'User #' . $user->user_id;
+        }
+
+        $metadata = [
+            'reason' => $reason,
+            'delete_reason' => $reason,
+            'module' => 'users',
+
+            'subject_type' => User::class,
+            'subject_id' => $user->user_id,
+            'subject_label' => $recordName,
+
+            'record_type' => User::class,
+            'record_id' => $user->user_id,
+            'record_name' => $recordName,
+
+            'restore_model' => User::class,
+            'restore_key' => 'user_id',
+            'restore_id' => $user->user_id,
+        ];
+
+        $payload = [
+            'user_id' => $actor?->user_id,
+            'user_role' => $actor?->role_name,
+
+            'module' => 'users',
+            'action' => 'user.deleted',
+            'severity' => 'warning',
+
+            'subject_type' => User::class,
+            'subject_id' => $user->user_id,
+            'subject_label' => $recordName,
+
+            'old_values' => json_encode($oldValues),
+            'new_values' => null,
+            'metadata' => json_encode($metadata),
+
+            'ip_address' => $request->ip(),
+            'user_agent' => substr((string) $request->userAgent(), 0, 500),
+            'device_type' => 'desktop',
+            'http_method' => $request->method(),
+            'route_name' => optional($request->route())->getName() ?? $request->path(),
+
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        $columns = Schema::getColumnListing('audit_logs');
+
+        $safePayload = collect($payload)
+            ->filter(fn ($value, $key) => in_array($key, $columns, true))
+            ->toArray();
+
+        if (!empty($safePayload)) {
+            DB::table('audit_logs')->insert($safePayload);
+        }
     }
 }

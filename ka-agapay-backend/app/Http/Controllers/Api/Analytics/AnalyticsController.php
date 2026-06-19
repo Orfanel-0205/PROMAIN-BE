@@ -145,29 +145,35 @@ class AnalyticsController extends Controller
      * - disease: optional disease/diagnosis filter
      * - range: week | month
      */
-    public function heatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
-    {
-        $validated = $request->validate([
-            'disease' => ['nullable', 'string', 'max:100'],
-            'range' => ['nullable', 'in:week,month'],
-        ]);
+   public function heatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
+{
+    $validated = $request->validate([
+        'disease' => ['nullable', 'string', 'max:100'],
+        'range' => ['nullable', 'in:week,month'],
+        'active_only' => ['nullable', 'boolean'],
+    ]);
 
-        $disease = $validated['disease'] ?? null;
-        $range = $validated['range'] ?? 'week';
+    $disease = trim((string) ($validated['disease'] ?? ''));
+    $range = $validated['range'] ?? 'week';
+    $activeOnly = $request->boolean('active_only', true);
 
-        $points = $service->generateHeatmapData($disease, $range);
+    $points = $service->generateHeatmapData(
+        $disease !== '' ? $disease : null,
+        $range,
+        $activeOnly
+    );
 
-        return response()->json([
-            'status' => 'success',
-            'generated_at' => now()->toIso8601String(),
-            'filters' => [
-                'disease' => $disease,
-                'range' => $range,
-            ],
-            'data' => $points,
-        ]);
-    }
-
+    return response()->json([
+        'status' => 'success',
+        'generated_at' => now()->toIso8601String(),
+        'filters' => [
+            'disease' => $disease !== '' ? $disease : null,
+            'range' => $range,
+            'active_only' => $activeOnly,
+        ],
+        'data' => $points,
+    ]);
+}
     /**
      * GET /api/v1/analytics/queue-performance
      */
@@ -363,65 +369,72 @@ class AnalyticsController extends Controller
     /**
      * GET /api/v1/analytics/queue-heatmap
      */
-    public function queueHeatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
-    {
-        $validated = $request->validate([
-            'disease' => ['nullable', 'string', 'max:100'],
-            'range' => ['nullable', 'in:week,month'],
-        ]);
+   public function queueHeatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
+{
+    $validated = $request->validate([
+        'disease' => ['nullable', 'string', 'max:100'],
+        'range' => ['nullable', 'in:week,month'],
+        'active_only' => ['nullable', 'boolean'],
+    ]);
 
-        $disease = trim((string) ($validated['disease'] ?? ''));
-        $range = $validated['range'] ?? 'week';
+    $disease = trim((string) ($validated['disease'] ?? ''));
+    $range = $validated['range'] ?? 'week';
+    $activeOnly = $request->boolean('active_only', true);
 
-        $points = $service->generateHeatmapData(
-            $disease !== '' ? $disease : null,
-            $range
-        );
+    $points = $service->generateHeatmapData(
+        $disease !== '' ? $disease : null,
+        $range,
+        $activeOnly
+    );
 
-        return response()->json([
-            'status' => 'success',
-            'generated_at' => now()->toIso8601String(),
-            'filters' => [
-                'disease' => $disease !== '' ? $disease : null,
-                'range' => $range,
-            ],
-            'data' => $points,
-        ]);
-    }
-
+    return response()->json([
+        'status' => 'success',
+        'generated_at' => now()->toIso8601String(),
+        'filters' => [
+            'disease' => $disease !== '' ? $disease : null,
+            'range' => $range,
+            'active_only' => $activeOnly,
+        ],
+        'data' => $points,
+    ]);
+}
     /**
      * GET /api/v1/analytics/barangay-risk
      */
-    public function barangayRisk(Request $request, HeatmapAnalyticsService $service): JsonResponse
-    {
-        $validated = $request->validate([
-            'disease' => ['nullable', 'string', 'max:100'],
-            'range' => ['nullable', 'in:week,month'],
-        ]);
+   public function barangayRisk(Request $request, HeatmapAnalyticsService $service): JsonResponse
+{
+    $validated = $request->validate([
+        'disease' => ['nullable', 'string', 'max:100'],
+        'range' => ['nullable', 'in:week,month'],
+        'active_only' => ['nullable', 'boolean'],
+    ]);
 
-        $disease = trim((string) ($validated['disease'] ?? ''));
-        $range = $validated['range'] ?? 'week';
+    $disease = trim((string) ($validated['disease'] ?? ''));
+    $range = $validated['range'] ?? 'week';
+    $activeOnly = $request->boolean('active_only', true);
 
-        $items = collect(
-            $service->generateHeatmapData(
-                $disease !== '' ? $disease : null,
-                $range
-            )
+    $items = collect(
+        $service->generateHeatmapData(
+            $disease !== '' ? $disease : null,
+            $range,
+            $activeOnly
         )
-            ->sortByDesc('risk_score')
-            ->values();
+    )
+        ->sortByDesc('risk_score')
+        ->values();
 
-        return response()->json([
-            'status' => 'success',
-            'generated_at' => now()->toIso8601String(),
-            'filters' => [
-                'disease' => $disease !== '' ? $disease : null,
-                'range' => $range,
-            ],
-            'summary' => $items->countBy('risk_level'),
-            'data' => $items,
-        ]);
-    }
+    return response()->json([
+        'status' => 'success',
+        'generated_at' => now()->toIso8601String(),
+        'filters' => [
+            'disease' => $disease !== '' ? $disease : null,
+            'range' => $range,
+            'active_only' => $activeOnly,
+        ],
+        'summary' => $items->countBy('risk_level'),
+        'data' => $items,
+    ]);
+}
 
     /**
      * GET /api/v1/analytics/queue-density

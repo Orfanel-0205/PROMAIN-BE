@@ -14,127 +14,161 @@ class HeatmapAnalyticsService
     private const DEFAULT_LNG = 120.4145;
     private const DEFAULT_POPULATION = 800;
 
-    public function generateHeatmapData(?string $diseaseFilter = null, string $range = 'week'): array
-    {
-        if (!Schema::hasTable('barangays')) {
-            return [];
-        }
+    public function generateHeatmapData(
+    ?string $diseaseFilter = null,
+    string $range = 'week',
+    bool $activeOnly = false
+): array {
+    if (!Schema::hasTable('barangays')) {
+        return [];
+    }
 
-        $days = $range === 'month' ? 30 : 7;
-        $from = now()->subDays($days)->startOfDay();
-        $to = now()->endOfDay();
+    $days = $range === 'month' ? 30 : 7;
+    $from = now()->subDays($days)->startOfDay();
+    $to = now()->endOfDay();
 
-        $barangays = $this->barangays();
+    $barangays = $this->barangays();
 
-        $signals = collect()
-            ->merge($this->sourceSignals('consultations', 'c', 'consultation', ['consultation_date', 'created_at'], [
-                'chief_complaint',
-                'diagnosis',
-                'assessment',
-                'subjective',
-                'objective',
-                'notes',
-                'treatment',
-            ], $from, $to, $diseaseFilter))
-            ->merge($this->sourceSignals('appointments', 'a', 'appointment', ['appointment_date', 'scheduled_at', 'created_at'], [
-                'reason',
-                'symptoms',
-                'purpose',
-                'notes',
-                'description',
-            ], $from, $to, $diseaseFilter))
-            ->merge($this->sourceSignals('telemedicine_requests', 'tr', 'telemedicine', ['created_at', 'screened_at'], [
-                'chief_complaint',
-                'symptoms',
-                'additional_notes',
-                'screening_notes',
-            ], $from, $to, $diseaseFilter))
-            ->merge($this->chatSignals($from, $to, $diseaseFilter, $barangays));
+    $signals = collect()
+        ->merge($this->sourceSignals('consultations', 'c', 'consultation', ['consultation_date', 'created_at'], [
+            'chief_complaint',
+            'diagnosis',
+            'assessment',
+            'subjective',
+            'objective',
+            'notes',
+            'treatment',
+        ], $from, $to, $diseaseFilter))
+        ->merge($this->sourceSignals('appointments', 'a', 'appointment', ['appointment_date', 'scheduled_at', 'created_at'], [
+            'reason',
+            'symptoms',
+            'purpose',
+            'notes',
+            'description',
+        ], $from, $to, $diseaseFilter))
+        ->merge($this->sourceSignals('telemedicine_requests', 'tr', 'telemedicine', ['created_at', 'screened_at'], [
+            'chief_complaint',
+            'symptoms',
+            'additional_notes',
+            'screening_notes',
+        ], $from, $to, $diseaseFilter))
+        ->merge($this->chatSignals($from, $to, $diseaseFilter, $barangays));
 
-        $queueDensity = $this->queueDensityByBarangay();
+    $queueDensity = $this->queueDensityByBarangay();
 
-        $signalsByBarangay = $signals
-            ->filter(fn ($row) => (int) ($row->barangay_id ?? 0) > 0)
-            ->groupBy(fn ($row) => (int) $row->barangay_id)
-            ->map(function (Collection $items) {
-                $cases = $items
-                    ->pluck('case_type')
-                    ->map(fn ($value) => $this->classifyComplaint((string) $value))
-                    ->filter()
-                    ->countBy()
-                    ->sortDesc();
+    $signalsByBarangay = $signals
+        ->filter(fn ($row) => (int) ($row->barangay_id ?? 0) > 0)
+        ->groupBy(fn ($row) => (int) $row->barangay_id)
+        ->map(function (Collection $items) {
+            $cases = $items
+                ->pluck('case_type')
+                ->map(fn ($value) => $this->classifyComplaint((string) $value))
+                ->filter()
+                ->countBy()
+                ->sortDesc();
 
-                $sources = $items
-                    ->pluck('source')
-                    ->map(fn ($value) => trim((string) $value) ?: 'unknown')
-                    ->countBy()
-                    ->sortDesc();
+            $sources = $items
+                ->pluck('source')
+                ->map(fn ($value) => trim((string) $value) ?: 'unknown')
+                ->countBy()
+                ->sortDesc();
 
-                return [
-                    'total_cases' => $items->count(),
-                    'top_case_type' => (string) ($cases->keys()->first() ?? 'Unspecified'),
-                    'source_breakdown' => $sources->all(),
-                ];
-            });
+            return [
+                'total_cases' => $items->count(),
+                'top_case_type' => (string) ($cases->keys()->first() ?? 'Unspecified'),
+                'source_breakdown' => $sources->all(),
+            ];
+        });
 
-        $points = $barangays
-            ->map(function ($barangay) use ($signalsByBarangay, $queueDensity, $diseaseFilter) {
-                $barangayId = (int) $barangay->barangay_id;
+    $points = $barangays
+        ->map(function ($barangay) use ($signalsByBarangay, $queueDensity, $diseaseFilter, $activeOnly) {
+            $barangayId = (int) $barangay->barangay_id;
 
-                $data = $signalsByBarangay->get($barangayId, [
-                    'total_cases' => 0,
-                    'top_case_type' => 'Unspecified',
-                    'source_breakdown' => [],
-                ]);
+            $data = $signalsByBarangay->get($barangayId, [
+                'total_cases' => 0,
+                'top_case_type' => 'Unspecified',
+                'source_breakdown' => [],
+            ]);
 
-                $caseCount = (int) ($data['total_cases'] ?? 0);
-                $queueCount = (int) ($queueDensity[$barangayId] ?? 0);
+            $caseCount = (int) ($data['total_cases'] ?? 0);
 
-                $population = max(1, (int) ($barangay->population ?? self::DEFAULT_POPULATION));
-                $incidence = round(($caseCount / $population) * 1000, 2);
+            /*
+             * Real-life rule:
+             * Queue pressure should support case interpretation,
+             * but it must not create a map pin if there is no case signal.
+             */
+            $queueCount = $caseCount > 0
+                ? (int) ($queueDensity[$barangayId] ?? 0)
+                : 0;
 
-                $intensity = min(10, round(
-                    ($caseCount * 1.8) +
-                    ($incidence * 0.7) +
-                    ($queueCount * 0.7),
-                    2
-                ));
+            if ($activeOnly && $caseCount <= 0) {
+                return null;
+            }
 
-                $riskScore = min(100, round($intensity * 10, 2));
-                $riskLevel = $this->riskLevel($intensity);
+            $hasValidLat = $this->validLat($barangay->latitude);
+            $hasValidLng = $this->validLng($barangay->longitude);
 
-                $topCase = trim((string) ($data['top_case_type'] ?? 'Unspecified')) ?: 'Unspecified';
+            /*
+             * Do not use default/fallback coordinates for GIS heatmap pins.
+             * Returning fake coordinates causes wrong map alerts.
+             */
+            if (!$hasValidLat || !$hasValidLng) {
+                return null;
+            }
 
-                $point = [
-                    'barangay_id' => $barangayId,
-                    'barangay' => $barangay->barangay,
-                    'latitude' => $this->validLat($barangay->latitude) ? (float) $barangay->latitude : self::DEFAULT_LAT,
-                    'longitude' => $this->validLng($barangay->longitude) ? (float) $barangay->longitude : self::DEFAULT_LNG,
-                    'coordinate_source' => $this->validLat($barangay->latitude) && $this->validLng($barangay->longitude) ? 'database' : 'default',
-                    'population' => $population,
-                    'total_cases' => $caseCount,
-                    'queue_density' => $queueCount,
-                    'incidence_rate' => $incidence,
-                    'heatmap_intensity' => $intensity,
-                    'risk_score' => $riskScore,
-                    'risk_level' => $riskLevel,
-                    'top_case_type' => $topCase,
-                    'top_complaint' => $topCase,
-                    'source_breakdown' => $data['source_breakdown'] ?? [],
-                ];
+            $population = max(1, (int) ($barangay->population ?? self::DEFAULT_POPULATION));
+            $incidence = round(($caseCount / $population) * 1000, 2);
 
+            $intensity = min(10, round(
+                ($caseCount * 1.8) +
+                ($incidence * 0.7) +
+                ($queueCount * 0.7),
+                2
+            ));
+
+            $riskScore = min(100, round($intensity * 10, 2));
+            $riskLevel = $this->riskLevel($intensity);
+
+            $topCase = trim((string) ($data['top_case_type'] ?? 'Unspecified')) ?: 'Unspecified';
+
+            $point = [
+                'barangay_id' => $barangayId,
+                'barangay' => $barangay->barangay,
+                'latitude' => (float) $barangay->latitude,
+                'longitude' => (float) $barangay->longitude,
+                'coordinate_source' => 'database',
+                'population' => $population,
+                'total_cases' => $caseCount,
+                'queue_density' => $queueCount,
+                'incidence_rate' => $incidence,
+                'heatmap_intensity' => $intensity,
+                'risk_score' => $riskScore,
+                'risk_level' => $riskLevel,
+                'top_case_type' => $topCase,
+                'top_complaint' => $topCase,
+                'source_breakdown' => $data['source_breakdown'] ?? [],
+            ];
+
+            /*
+             * Storage-safe:
+             * Save only barangays with real case signals.
+             * This prevents barangay_heatmaps from filling with 73 zero rows daily.
+             */
+            if ($caseCount > 0) {
                 $this->storeSnapshot($point, $diseaseFilter);
                 $this->notifyIfRiskNeedsAction($point, $diseaseFilter);
+            }
 
-                return $point;
-            })
-            ->sortByDesc('risk_score')
-            ->sortByDesc('total_cases')
-            ->values()
-            ->all();
+            return $point;
+        })
+        ->filter()
+        ->sortByDesc('risk_score')
+        ->sortByDesc('total_cases')
+        ->values()
+        ->all();
 
-        return $points;
-    }
+    return $points;
+}
 
     private function barangays(): Collection
     {
@@ -353,7 +387,9 @@ class HeatmapAnalyticsService
     }
 
     private function storeSnapshot(array $point, ?string $diseaseFilter): void
-    {
+    {if ((int) ($point['total_cases'] ?? 0) <= 0) {
+    return;
+}
         if (!Schema::hasTable('barangay_heatmaps')) {
             return;
         }
@@ -392,10 +428,9 @@ class HeatmapAnalyticsService
             return;
         }
 
-        if ((int) $point['total_cases'] <= 0 && (int) $point['queue_density'] <= 0) {
-            return;
-        }
-
+       if ((int) ($point['total_cases'] ?? 0) <= 0) {
+    return;
+}
         $disease = trim((string) $diseaseFilter) !== ''
             ? trim((string) $diseaseFilter)
             : ($point['top_case_type'] ?: 'General Health Signal');

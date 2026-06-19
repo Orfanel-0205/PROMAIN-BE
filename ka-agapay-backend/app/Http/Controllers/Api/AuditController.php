@@ -1,11 +1,13 @@
 <?php
+// app/Http/Controllers/Api/AuditController.php
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\ActivityLog;
+use App\Models\AuditLog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class AuditController extends Controller
@@ -14,28 +16,56 @@ class AuditController extends Controller
         'super_admin',
         'superadmin',
         'mho',
+        'municipal_mayor',
         'admin',
         'rhu_admin',
         'staff_admin',
         'it_staff',
     ];
 
+    /*
+     * These are exact action names that should appear in Delete History.
+     * We also apply a pattern-based fallback below so simple actions like
+     * "deleted" and "record.deleted" are not accidentally hidden.
+     */
     private array $deleteHistoryActions = [
+        'deleted',
+        'archived',
+        'cancelled',
+        'rejected',
+        'voided',
+        'disabled',
+        'suspended',
+
+        'record.deleted',
+        'record.archived',
+        'record.expired',
+
         'announcement.deleted',
         'announcement.archived',
+
         'event.deleted',
         'event.archived',
+
         'appointment.cancelled',
         'appointment.rejected',
+        'appointment.deleted',
+
         'consultation.archived',
         'consultation.cancelled',
+        'consultation.deleted',
+
         'prescription.voided',
         'prescription.cancelled',
+        'prescription.deleted',
+
         'inventory.deleted',
         'inventory.archived',
+
+        'user.deleted',
         'user.disabled',
         'user.suspended',
-        'user.deleted',
+        'user.deactivated',
     ];
 
     public function index(Request $request): JsonResponse
@@ -56,7 +86,9 @@ class AuditController extends Controller
             'per_page' => ['nullable', 'integer', 'min:10', 'max:200'],
         ]);
 
-        $query = ActivityLog::query()
+        $like = $this->likeOperator();
+
+        $query = AuditLog::query()
             ->with('user:user_id,first_name,last_name,email,mobile_number')
             ->when($request->filled('user_id'), fn ($q) => $q->where('user_id', $validated['user_id']))
             ->when($request->filled('module'), fn ($q) => $q->where('module', $validated['module']))
@@ -64,17 +96,20 @@ class AuditController extends Controller
             ->when($request->filled('severity'), fn ($q) => $q->where('severity', $validated['severity']))
             ->when($request->filled('subject_type'), fn ($q) => $q->where('subject_type', $validated['subject_type']))
             ->when($request->filled('subject_id'), fn ($q) => $q->where('subject_id', $validated['subject_id']))
-            ->when($request->boolean('only_delete_history'), fn ($q) => $q->whereIn('action', $this->deleteHistoryActions))
+            ->when($request->boolean('only_delete_history'), function ($q) {
+                $this->applyDeleteHistoryFilter($q);
+            })
             ->when($request->filled('from'), fn ($q) => $q->where('created_at', '>=', $validated['from']))
             ->when($request->filled('to'), fn ($q) => $q->where('created_at', '<=', $validated['to'] . ' 23:59:59'))
-            ->when($request->filled('search'), function ($q) use ($validated) {
+            ->when($request->filled('search'), function ($q) use ($validated, $like) {
                 $search = trim((string) $validated['search']);
 
-                $q->where(function ($inner) use ($search) {
-                    $inner->where('action', 'ilike', "%{$search}%")
-                        ->orWhere('module', 'ilike', "%{$search}%")
-                        ->orWhere('subject_label', 'ilike', "%{$search}%")
-                        ->orWhere('user_role', 'ilike', "%{$search}%");
+                $q->where(function ($inner) use ($search, $like) {
+                    $inner->where('action', $like, "%{$search}%")
+                        ->orWhere('module', $like, "%{$search}%")
+                        ->orWhere('subject_label', $like, "%{$search}%")
+                        ->orWhere('user_role', $like, "%{$search}%")
+                        ->orWhereRaw('metadata::text ' . $like . ' ?', ["%{$search}%"]);
                 });
             })
             ->latest('created_at');
@@ -100,7 +135,7 @@ class AuditController extends Controller
             'subject_id' => ['required', 'integer'],
         ]);
 
-        $logs = ActivityLog::query()
+        $logs = AuditLog::query()
             ->with('user:user_id,first_name,last_name,email,mobile_number')
             ->where('subject_type', $validated['subject_type'])
             ->where('subject_id', $validated['subject_id'])
@@ -114,7 +149,7 @@ class AuditController extends Controller
     {
         $this->authorizeAudit($request);
 
-        $logs = ActivityLog::query()
+        $logs = AuditLog::query()
             ->with('user:user_id,first_name,last_name,email,mobile_number')
             ->where('user_id', $userId)
             ->latest('created_at')
@@ -139,7 +174,7 @@ class AuditController extends Controller
 
         $user = $request->user();
 
-        $log = ActivityLog::create([
+        $log = AuditLog::create([
             'user_id' => $user?->user_id ?? $user?->id,
             'user_role' => $user?->role?->name ?? $user?->role_name ?? 'unknown',
             'action' => $validated['action'],
@@ -164,6 +199,28 @@ class AuditController extends Controller
         ], 201);
     }
 
+    private function applyDeleteHistoryFilter($query): void
+    {
+        $query->where(function ($q) {
+            $q->whereIn('action', $this->deleteHistoryActions)
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%delete%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%deleted%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%archive%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%archived%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%cancel%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%cancelled%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%reject%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%rejected%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%void%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%voided%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%disable%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%disabled%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%suspend%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%suspended%'])
+                ->orWhereRaw('LOWER(action) LIKE ?', ['%expired%']);
+        });
+    }
+
     private function authorizeAudit(Request $request): void
     {
         abort_unless(
@@ -171,6 +228,11 @@ class AuditController extends Controller
             403,
             'Access to audit logs is restricted.'
         );
+    }
+
+    private function likeOperator(): string
+    {
+        return DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
     }
 
     private function detectDeviceType(?string $userAgent): string

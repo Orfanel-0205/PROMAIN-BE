@@ -4,226 +4,276 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\ResidentProfile;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class ProfileController extends Controller
 {
-    /**
-     * PATCH /api/v1/profile
-     */
+    public function show(Request $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user()->loadMissing('role');
+
+        return response()->json([
+            'data' => $this->profilePayload($user),
+            'user' => $this->profilePayload($user),
+        ]);
+    }
+
     public function update(Request $request): JsonResponse
     {
+        /** @var User $user */
         $user = $request->user();
 
         $validated = $request->validate([
-            'first_name'    => ['sometimes', 'string', 'max:100'],
-            'last_name'     => ['sometimes', 'string', 'max:100'],
-            'email'         => [
-                'sometimes',
+            'first_name' => ['nullable', 'string', 'max:100'],
+            'last_name' => ['nullable', 'string', 'max:100'],
+            'name' => ['nullable', 'string', 'max:180'],
+
+            'email' => [
                 'nullable',
                 'email',
+                'max:180',
                 Rule::unique('users', 'email')->ignore($user->user_id, 'user_id'),
             ],
+
             'mobile_number' => [
-                'sometimes',
+                'nullable',
                 'string',
-                'max:20',
+                'max:30',
                 Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id'),
             ],
 
-            // Mobile ProfileScreen may send barangay name.
-            'barangay'      => ['sometimes', 'nullable', 'string', 'max:150'],
-
-            // Future-proof: allow barangay_id too.
-            'barangay_id'   => ['sometimes', 'nullable', 'integer', Rule::exists('barangays', 'barangay_id')],
-
-            'birthday'      => ['sometimes', 'nullable', 'date'],
-            'birth_date'    => ['sometimes', 'nullable', 'date'],
-            'sex'           => ['sometimes', 'nullable', Rule::in(['male', 'female', 'other'])],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'barangay' => ['nullable', 'string', 'max:150'],
+            'birthday' => ['nullable', 'date'],
+            'birth_date' => ['nullable', 'date'],
+            'sex' => ['nullable', 'string', 'max:30'],
         ]);
 
-        $barangay = $this->resolveBarangay($validated);
+        $updates = [];
 
-        $userUpdates = collect($validated)
-            ->only(['first_name', 'last_name', 'email', 'mobile_number', 'sex'])
-            ->toArray();
+        if (!empty($validated['name']) && empty($validated['first_name']) && empty($validated['last_name'])) {
+            [$firstName, $lastName] = $this->splitName($validated['name']);
 
-        if (array_key_exists('birthday', $validated) || array_key_exists('birth_date', $validated)) {
-            $userUpdates['birthday'] = $validated['birthday'] ?? $validated['birth_date'] ?? null;
+            $updates['first_name'] = $firstName;
+            $updates['last_name'] = $lastName;
         }
 
-        if ($barangay) {
-            $userUpdates['barangay'] = $barangay->name;
+        foreach ([
+            'first_name',
+            'last_name',
+            'email',
+            'barangay',
+            'sex',
+        ] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $updates[$field] = $validated[$field];
+            }
         }
 
-        if (!empty($userUpdates)) {
-            $user->update($userUpdates);
-        }
-
-        $profileUpdates = [];
-
-        if ($barangay) {
-            $profileUpdates['barangay_id'] = (int) $barangay->barangay_id;
-        }
-
-        if (array_key_exists('first_name', $validated)) {
-            $profileUpdates['first_name'] = $validated['first_name'];
-        }
-
-        if (array_key_exists('last_name', $validated)) {
-            $profileUpdates['last_name'] = $validated['last_name'];
-        }
-
-        if (array_key_exists('mobile_number', $validated)) {
-            $profileUpdates['mobile_number'] = $validated['mobile_number'];
-        }
-
-        if (array_key_exists('sex', $validated)) {
-            $profileUpdates['sex'] = $validated['sex'];
-        }
-
-        if (array_key_exists('birthday', $validated) || array_key_exists('birth_date', $validated)) {
-            $birthDate = $validated['birthday'] ?? $validated['birth_date'] ?? null;
-            $profileUpdates['birth_date'] = $birthDate;
-            $profileUpdates['birthdate'] = $birthDate;
-        }
-
-        if (!empty($profileUpdates)) {
-            ResidentProfile::updateOrCreate(
-                ['user_id' => $user->user_id],
-                $profileUpdates
+        if (array_key_exists('mobile_number', $validated) || array_key_exists('phone', $validated)) {
+            $mobile = $this->normalizeMobileNumber(
+                $validated['mobile_number'] ?? $validated['phone'] ?? null
             );
+
+            if ($mobile !== '') {
+                abort_unless(
+                    preg_match('/^09\d{9}$/', $mobile) === 1,
+                    422,
+                    'Mobile number must use this format: 09XXXXXXXXX.'
+                );
+            }
+
+            $updates['mobile_number'] = $mobile;
         }
 
-        $user->refresh();
+        if (array_key_exists('birthday', $validated) || array_key_exists('birth_date', $validated)) {
+            $updates['birthday'] = $validated['birthday'] ?? $validated['birth_date'] ?? null;
+        }
+
+        if (!empty($updates)) {
+            $user->update($updates);
+        }
+
+        $fresh = $user->fresh()->loadMissing('role');
 
         return response()->json([
-            'message' => 'Profile updated.',
-            'user'    => $this->formatUser($user),
+            'message' => 'Profile updated successfully.',
+            'data' => $this->profilePayload($fresh),
+            'user' => $this->profilePayload($fresh),
         ]);
     }
 
-    /**
-     * POST /api/v1/profile/avatar
-     */
     public function updateAvatar(Request $request): JsonResponse
     {
-        $request->validate([
-            'avatar' => [
-                'required',
-                'image',
-                'mimes:jpg,jpeg,png,webp',
-                'max:5120',
-            ],
-        ]);
-
+        /** @var User $user */
         $user = $request->user();
 
-        if ($user->profile_picture) {
-            Storage::disk('public')->delete($user->profile_picture);
+        $validated = $request->validate([
+            'avatar' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:4096'],
+            'profile_picture' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:4096'],
+            'photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:4096'],
+        ]);
+
+        $file =
+            $request->file('avatar')
+            ?? $request->file('profile_picture')
+            ?? $request->file('photo');
+
+        abort_unless($file, 422, 'Please upload a valid profile picture.');
+
+        $oldProfilePicture = $user->profile_picture;
+        $oldAvatar = $user->avatar;
+
+        $path = $file->store('profile-pictures', 'public');
+
+        $updates = [];
+
+        if (Schema::hasColumn('users', 'profile_picture')) {
+            $updates['profile_picture'] = $path;
         }
 
-        $path = $request->file('avatar')->store(
-            "avatars/{$user->user_id}",
-            'public'
-        );
+        if (Schema::hasColumn('users', 'avatar')) {
+            $updates['avatar'] = $path;
+        }
 
-        $url = Storage::disk('public')->url($path);
+        if (!empty($updates)) {
+            $user->forceFill($updates)->save();
+        }
 
-        $user->update([
-            'profile_picture' => $path,
-            'avatar'          => $url,
-        ]);
+        $this->deleteOldProfilePicture($oldProfilePicture, $path);
+        $this->deleteOldProfilePicture($oldAvatar, $path);
+
+        $fresh = $user->fresh()->loadMissing('role');
 
         return response()->json([
-            'message'    => 'Avatar uploaded successfully.',
-            'avatar_url' => $url,
+            'message' => 'Profile picture updated successfully.',
+            'avatar_url' => $this->publicFileUrl($path),
+            'profile_picture_url' => $this->publicFileUrl($path),
+            'data' => $this->profilePayload($fresh),
+            'user' => $this->profilePayload($fresh),
         ]);
     }
 
-    private function resolveBarangay(array $validated): ?object
+    private function splitName(?string $name): array
     {
-        if (array_key_exists('barangay_id', $validated) && $validated['barangay_id']) {
-            return DB::table('barangays')
-                ->where('barangay_id', (int) $validated['barangay_id'])
-                ->first();
-        }
+        $parts = preg_split('/\s+/', trim((string) $name)) ?: [];
+        $firstName = array_shift($parts) ?: '';
+        $lastName = implode(' ', $parts);
 
-        if (!array_key_exists('barangay', $validated)) {
-            return null;
-        }
-
-        $name = trim((string) ($validated['barangay'] ?? ''));
-
-        if ($name === '') {
-            return null;
-        }
-
-        return DB::table('barangays')
-            ->whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
-            ->first();
+        return [$firstName, $lastName];
     }
 
-    private function formatUser($user): array
+    private function normalizeMobileNumber(?string $mobile): string
     {
-        $profile = DB::table('resident_profiles as rp')
-            ->leftJoin('barangays as b', 'b.barangay_id', '=', 'rp.barangay_id')
-            ->select(
-                'rp.barangay_id',
-                'b.name as barangay',
-                'rp.birth_date',
-                'rp.birthdate',
-                'rp.date_of_birth',
-                'rp.sex'
-            )
-            ->where('rp.user_id', $user->user_id)
-            ->first();
+        $mobile = preg_replace('/[^\d+]/', '', trim((string) $mobile)) ?? '';
 
-        $birthday = $profile->birth_date
-            ?? $profile->birthdate
-            ?? $profile->date_of_birth
-            ?? $user->birthday
-            ?? null;
+        if (str_starts_with($mobile, '+63')) {
+            $mobile = '0' . substr($mobile, 3);
+        }
+
+        if (str_starts_with($mobile, '63') && strlen($mobile) === 12) {
+            $mobile = '0' . substr($mobile, 2);
+        }
+
+        return $mobile;
+    }
+
+    private function profilePayload(User $user): array
+    {
+        $user->loadMissing('role');
+
+        $fullName = trim((string) $user->first_name . ' ' . (string) $user->last_name);
+        $avatarPath = $user->profile_picture ?: $user->avatar;
 
         return [
-            'user_id'           => $user->user_id,
-            'first_name'        => $user->first_name,
-            'last_name'         => $user->last_name,
-            'email'             => $user->email,
-            'mobile_number'     => $user->mobile_number,
-            'barangay_id'       => $profile?->barangay_id ? (int) $profile->barangay_id : null,
-            'barangay'          => $profile?->barangay ?: $user->barangay,
-            'birthday'          => $this->parseDate($birthday),
-            'sex'               => $profile?->sex ?: $user->sex,
-            'account_status'    => $user->account_status,
-            'role'              => $user->role?->name,
-            'id_verified'       => (bool) $user->id_verified,
-            'biometric_enabled' => (bool) $user->biometric_enabled,
-            'avatar'            => $user->profile_picture_url ?? $user->avatar,
-            'profile_picture'   => $user->profile_picture,
+            'id' => $user->user_id,
+            'user_id' => $user->user_id,
+
+            'name' => $fullName,
+            'full_name' => $fullName,
+            'first_name' => $user->first_name,
+            'last_name' => $user->last_name,
+
+            'email' => $user->email,
+            'mobile_number' => $user->mobile_number,
+            'phone' => $user->mobile_number,
+
+            'barangay' => $user->barangay,
+            'birthday' => optional($user->birthday)->toDateString(),
+            'sex' => $user->sex,
+
+            'role' => $this->normalizeRoleName($this->resolveRoleName($user)),
+            'role_name' => $this->normalizeRoleName($this->resolveRoleName($user)),
+            'role_id' => $user->role_id,
+
+            'account_status' => $user->account_status,
+            'status' => $user->account_status,
+
+            'id_verified' => (bool) $user->id_verified,
+            'staff_approved_by' => $user->staff_approved_by,
+            'staff_approved_at' => optional($user->staff_approved_at)->toISOString(),
+
+            'avatar' => $avatarPath,
+            'profile_picture' => $user->profile_picture,
+            'avatar_url' => $this->publicFileUrl($avatarPath),
+            'profile_picture_url' => $this->publicFileUrl($avatarPath),
+
+            'created_at' => optional($user->created_at)->toISOString(),
+            'updated_at' => optional($user->updated_at)->toISOString(),
         ];
     }
 
-    private function parseDate(mixed $value): ?string
+    private function normalizeRoleName(?string $role): string
     {
-        if ($value === null || $value === '') {
+        return strtolower(str_replace([' ', '-'], '_', trim((string) $role)));
+    }
+
+    private function resolveRoleName(User $user): string
+    {
+        if (is_object($user->role ?? null)) {
+            foreach (['name', 'role_name', 'slug', 'role', 'title', 'code'] as $field) {
+                if (!empty($user->role->{$field})) {
+                    return (string) $user->role->{$field};
+                }
+            }
+        }
+
+        return (string) ($user->role_name ?? 'resident');
+    }
+
+    private function publicFileUrl(?string $path): ?string
+    {
+        if (!$path) {
             return null;
         }
 
-        if ($value instanceof \DateTimeInterface) {
-            return Carbon::instance($value)->toDateString();
+        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+            return $path;
+        }
+
+        return asset('storage/' . ltrim($path, '/'));
+    }
+
+    private function deleteOldProfilePicture(?string $oldPath, string $newPath): void
+    {
+        if (!$oldPath || $oldPath === $newPath) {
+            return;
+        }
+
+        if (str_starts_with($oldPath, 'http://') || str_starts_with($oldPath, 'https://')) {
+            return;
         }
 
         try {
-            return Carbon::parse((string) $value)->toDateString();
+            Storage::disk('public')->delete($oldPath);
         } catch (\Throwable) {
-            return null;
+            // Do not fail upload if old image cannot be deleted.
         }
     }
 }
