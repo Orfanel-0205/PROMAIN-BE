@@ -432,17 +432,17 @@ Route::prefix('v1')->group(function () {
         // GET  /api/v1/ocr/result/{id}
         // =====================================================================
 
-        Route::prefix('ocr')->group(function () {
-            Route::post('/upload',      [OcrController::class, 'upload']);
-            Route::get('/results/{id}', [OcrController::class, 'result']);
-            Route::get('/result/{id}',  [OcrController::class, 'result']);
-            Route::post('/retry/{id}',  [OcrController::class, 'retry']);
+      Route::prefix('ocr')->group(function () {
+    Route::post('/upload',      [OcrController::class, 'upload']);
+    Route::get('/results/{id}', [OcrController::class, 'result']);
+    Route::get('/result/{id}',  [OcrController::class, 'result']);
+    Route::post('/retry/{id}',  [OcrController::class, 'retry']);
 
-            Route::post('/prescription/{consultationId}', [
-                OcrController::class,
-                'scanPrescription',
-            ]);
-        });
+    Route::post('/prescription/{consultationId}', [
+        OcrController::class,
+        'scanPrescription',
+    ]);
+});
 
         // =====================================================================
         // HOME VISITS

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
@@ -28,6 +29,11 @@ class OcrController extends Controller
         'it_staff',
     ];
 
+    // =========================================================================
+    // ID VERIFICATION OCR
+    // POST /api/v1/ocr/upload
+    // =========================================================================
+
     public function upload(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -46,7 +52,7 @@ class OcrController extends Controller
         $file = $request->file('id_image');
 
         $path = $file->store(
-            'ocr/id-verification/' . ($user->user_id ?? $user->id),
+            'ocr/id-verification/' . $this->authUserId($user),
             'public'
         );
 
@@ -62,7 +68,8 @@ class OcrController extends Controller
 
         $registeredName = trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''));
         $nameScore = $this->nameMatchScore($registeredName, $extractedName, $text);
-        $dateScore = $this->dateMatchScore($user->birthday ?? null, $birthdate);
+        $dateScore = $this->dateMatchScore($user->birthday ?? $user->birth_date ?? null, $birthdate);
+
         $overallMatch = $dateScore === null
             ? $nameScore
             : (($nameScore * 0.75) + ($dateScore * 0.25));
@@ -79,7 +86,7 @@ class OcrController extends Controller
 
         if (Schema::hasTable('ocr_results')) {
             $ocrId = DB::table('ocr_results')->insertGetId($this->onlyOcrColumns([
-                'user_id' => $user->user_id ?? $user->id,
+                'user_id' => $this->authUserId($user),
                 'id_type' => $validated['id_type'],
                 'file_path' => $path,
                 'extracted_text' => $text,
@@ -125,7 +132,7 @@ class OcrController extends Controller
 
             if (!empty($updates)) {
                 DB::table('users')
-                    ->where('user_id', $user->user_id ?? $user->id)
+                    ->where('user_id', $this->authUserId($user))
                     ->update($updates);
             }
         }
@@ -158,6 +165,180 @@ class OcrController extends Controller
         ]);
     }
 
+    // =========================================================================
+    // E-PRESCRIPTION OCR
+    // POST /api/v1/ocr/prescription/{consultationId}
+    // =========================================================================
+
+    public function scanPrescription(Request $request, int $consultationId): JsonResponse
+    {
+        abort_unless(Schema::hasTable('consultations'), 404, 'Consultations table not found.');
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+
+        $consultation = DB::table('consultations')->where('id', $consultationId)->first();
+
+        abort_unless($consultation, 404, 'Consultation not found.');
+
+        $file = $this->resolveUploadedPrescriptionFile($request);
+
+        if (!$file) {
+            return response()->json([
+                'message' => 'Please upload a prescription image or PDF.',
+                'errors' => [
+                    'prescription_file' => ['The prescription file field is required.'],
+                ],
+            ], 422);
+        }
+
+        if (!$file->isValid()) {
+            return response()->json([
+                'message' => 'Uploaded prescription file is invalid.',
+            ], 422);
+        }
+
+        $extension = strtolower($file->getClientOriginalExtension());
+
+        if (!in_array($extension, ['jpg', 'jpeg', 'png', 'webp', 'pdf'], true)) {
+            return response()->json([
+                'message' => 'Only JPG, JPEG, PNG, WEBP, or PDF files are allowed.',
+            ], 422);
+        }
+
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $path = $file->store(
+            'ocr/prescriptions/consultation-' . $consultationId,
+            'public'
+        );
+
+        $fullPath = Storage::disk('public')->path($path);
+
+        $ocr = $this->runOcr($fullPath, (string) $file->getMimeType());
+
+        $rawText = trim((string) ($ocr['text'] ?? ''));
+        $confidence = (float) ($ocr['confidence'] ?? 0);
+
+        $parsed = $this->parsePrescriptionText($rawText);
+
+        $medicines = $parsed['medicines'];
+
+        if (empty($medicines)) {
+            $medicines = [[
+                'name' => 'Unparsed medicine from uploaded prescription',
+                'dosage' => '',
+                'quantity' => 1,
+                'frequency' => '',
+                'duration' => '',
+                'route' => 'Oral',
+                'instructions' => $rawText
+                    ? Str::limit($rawText, 500)
+                    : 'OCR could not clearly detect medicine details. Please review and edit in E-Prescription.',
+                'is_controlled' => false,
+                'brand_alternatives_allowed' => true,
+            ]];
+        }
+
+        $residentProfileId = $this->resolveResidentProfileId($consultation);
+
+        if (!$residentProfileId) {
+            return response()->json([
+                'message' => 'Resident profile could not be resolved from this consultation.',
+            ], 422);
+        }
+
+        $rhuId = $this->resolveRhuId($consultation, $user);
+
+        $diagnosis = $request->input('diagnosis')
+            ?: $parsed['diagnosis']
+            ?: ($consultation->diagnosis ?? null)
+            ?: ($consultation->assessment ?? null)
+            ?: 'For clinical management';
+
+        $additionalInstructions = $request->input('notes')
+            ?: $request->input('additional_instructions')
+            ?: $parsed['notes']
+            ?: 'Generated from uploaded prescription OCR. Please verify medicine details before release.';
+
+        $number = $this->nextPrescriptionNumber($rhuId);
+
+        $hasControlled = collect($medicines)
+            ->contains(fn ($m) => (bool) ($m['is_controlled'] ?? false));
+
+        $prescriptionId = DB::table('prescriptions')->insertGetId(
+            $this->onlyPrescriptionColumns([
+                'resident_profile_id' => $residentProfileId,
+                'prescribed_by' => $this->authUserId($user),
+                'consultation_id' => $consultationId > 0 ? $consultationId : null,
+                'telemedicine_session_id' => $this->resolveTelemedicineSessionId($consultation),
+                'prescription_number' => $number,
+                'rhu_id' => $rhuId,
+                'prescription_date' => now()->toDateString(),
+                'valid_until' => now()->addDays(7)->toDateString(),
+                'diagnosis' => $diagnosis,
+                'diagnosis_code' => $request->input('diagnosis_code'),
+                'medications' => json_encode($medicines),
+                'has_controlled_substances' => $hasControlled,
+                's2_license_number' => null,
+                'additional_instructions' => $additionalInstructions,
+                'dispensing_notes' => 'Created from OCR prescription scan.',
+                'status' => 'active',
+                'file_path' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ])
+        );
+
+        $ocrId = null;
+
+        if (Schema::hasTable('ocr_results')) {
+            $ocrId = DB::table('ocr_results')->insertGetId($this->onlyOcrColumns([
+                'user_id' => $this->authUserId($user),
+                'id_type' => 'prescription',
+                'file_path' => $path,
+                'extracted_text' => $rawText,
+                'raw_ocr_response' => json_encode([
+                    'provider' => $ocr['raw']['provider'] ?? 'ocr.space',
+                    'raw' => $ocr['raw'] ?? [],
+                    'parsed' => $parsed,
+                    'consultation_id' => $consultationId,
+                    'prescription_id' => $prescriptionId,
+                ]),
+                'confidence_score' => $confidence > 0 ? $confidence : ($rawText ? 75 : 10),
+                'status' => $rawText ? 'approved' : 'failed',
+                'processed_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]));
+        }
+
+        $pdfEndpoint = url('/api/v1/prescriptions/' . $prescriptionId . '/pdf');
+
+        return response()->json([
+            'message' => 'Prescription scanned and e-prescription record created.',
+            'ocr_id' => $ocrId,
+            'prescription_id' => $prescriptionId,
+            'prescription_number' => $number,
+            'pdf_url' => $pdfEndpoint,
+            'pdf_endpoint' => $pdfEndpoint,
+            'release_url' => '/prescriptions',
+            'consultation_id' => $consultationId,
+            'resident_profile_id' => $residentProfileId,
+            'diagnosis' => $diagnosis,
+            'medicines' => $medicines,
+            'raw_text' => $rawText,
+            'confidence_score' => $confidence > 0 ? $confidence : ($rawText ? 75 : 10),
+            'next_step' => 'Open E-Prescription module to review and release this prescription.',
+        ], 201);
+    }
+
+    // =========================================================================
+    // OCR RESULT
+    // =========================================================================
+
     public function result(int $id): JsonResponse
     {
         abort_unless(Schema::hasTable('ocr_results'), 404, 'OCR results table not found.');
@@ -168,6 +349,51 @@ class OcrController extends Controller
 
         return response()->json(['data' => $row]);
     }
+
+    public function retry(int $id): JsonResponse
+    {
+        abort_unless(Schema::hasTable('ocr_results'), 404, 'OCR results table not found.');
+
+        $row = DB::table('ocr_results')->where('id', $id)->first();
+
+        abort_unless($row, 404, 'OCR result not found.');
+
+        $path = $row->file_path ?? null;
+
+        if (!$path || !Storage::disk('public')->exists($path)) {
+            return response()->json([
+                'message' => 'Original OCR file was not found.',
+            ], 404);
+        }
+
+        $fullPath = Storage::disk('public')->path($path);
+
+        $ocr = $this->runOcr($fullPath, 'image');
+
+        $text = trim((string) ($ocr['text'] ?? ''));
+
+        DB::table('ocr_results')->where('id', $id)->update($this->onlyOcrColumns([
+            'extracted_text' => $text,
+            'raw_ocr_response' => json_encode([
+                'provider' => $ocr['raw']['provider'] ?? 'ocr.space',
+                'raw' => $ocr['raw'] ?? [],
+                'retried_at' => now()->toIso8601String(),
+            ]),
+            'confidence_score' => (float) ($ocr['confidence'] ?? 0),
+            'status' => $text ? 'approved' : 'failed',
+            'processed_at' => now(),
+            'updated_at' => now(),
+        ]));
+
+        return response()->json([
+            'message' => 'OCR retry completed.',
+            'data' => DB::table('ocr_results')->where('id', $id)->first(),
+        ]);
+    }
+
+    // =========================================================================
+    // OCR PROVIDER
+    // =========================================================================
 
     private function runOcr(string $fullPath, string $mimeType): array
     {
@@ -186,8 +412,21 @@ class OcrController extends Controller
         }
 
         try {
-            $response = Http::timeout(60)
-                ->attach('file', fopen($fullPath, 'r'), basename($fullPath))
+            $handle = fopen($fullPath, 'r');
+
+            if (!$handle) {
+                return [
+                    'text' => '',
+                    'confidence' => 0,
+                    'raw' => [
+                        'provider' => 'ocr.space',
+                        'error' => 'Could not open uploaded file for OCR.',
+                    ],
+                ];
+            }
+
+            $response = Http::timeout(90)
+                ->attach('file', $handle, basename($fullPath))
                 ->post('https://api.ocr.space/parse/image', [
                     'apikey' => $apiKey,
                     'language' => 'eng',
@@ -196,6 +435,8 @@ class OcrController extends Controller
                     'detectOrientation' => 'true',
                     'OCREngine' => '2',
                 ]);
+
+            fclose($handle);
 
             if (!$response->successful()) {
                 return [
@@ -219,7 +460,9 @@ class OcrController extends Controller
             return [
                 'text' => trim($parsed),
                 'confidence' => trim($parsed) !== '' ? 85 : 0,
-                'raw' => $payload,
+                'raw' => array_merge($payload ?: [], [
+                    'provider' => 'ocr.space',
+                ]),
             ];
         } catch (\Throwable $e) {
             return [
@@ -232,6 +475,201 @@ class OcrController extends Controller
             ];
         }
     }
+
+    // =========================================================================
+    // PRESCRIPTION PARSING
+    // =========================================================================
+
+    private function parsePrescriptionText(string $text): array
+    {
+        $normalized = $this->normalizeText($text);
+
+        $diagnosis = $this->extractPrescriptionDiagnosis($normalized);
+        $doctorName = $this->extractPrescriptionDoctor($normalized);
+        $date = $this->extractPrescriptionDate($normalized);
+        $medicines = $this->extractMedicines($normalized);
+
+        $notes = trim(preg_replace('/\s+/', ' ', $normalized) ?? '');
+
+        return [
+            'medicines' => $medicines,
+            'doctor_name' => $doctorName,
+            'date' => $date,
+            'diagnosis' => $diagnosis,
+            'notes' => $notes ? Str::limit($notes, 700) : null,
+        ];
+    }
+
+    private function extractMedicines(string $text): array
+    {
+        $lines = collect(preg_split('/\r?\n+/', $text) ?: [])
+            ->map(fn ($line) => trim($line))
+            ->filter(fn ($line) => $line !== '')
+            ->values();
+
+        if ($lines->isEmpty()) {
+            $lines = collect(preg_split('/(?=\d+\.\s*)/', $text) ?: [])
+                ->map(fn ($line) => trim($line))
+                ->filter(fn ($line) => $line !== '')
+                ->values();
+        }
+
+        $medicines = [];
+
+        foreach ($lines as $line) {
+            if (!$this->looksLikeMedicineLine($line)) {
+                continue;
+            }
+
+            $medicines[] = $this->parseMedicineLine($line);
+        }
+
+        if (!empty($medicines)) {
+            return array_values($medicines);
+        }
+
+        preg_match_all(
+            '/(?:\d+\.\s*)?([A-Z][a-zA-Z0-9\- ]{2,40})\s+(\d+\s?(?:mg|mcg|g|gram|ml|iu|units?))([^,\n]*)/i',
+            $text,
+            $matches,
+            PREG_SET_ORDER
+        );
+
+        foreach ($matches as $match) {
+            $line = trim($match[0]);
+
+            if ($this->looksLikeMedicineLine($line)) {
+                $medicines[] = $this->parseMedicineLine($line);
+            }
+        }
+
+        return array_values($medicines);
+    }
+
+    private function looksLikeMedicineLine(string $line): bool
+    {
+        $lower = strtolower($line);
+
+        if (preg_match('/\b(mg|mcg|gram|g|ml|iu|tablet|tab|capsule|cap|syrup|drops?|ointment|cream|oral|od|bid|tid|qid|prn|daily|once|twice|thrice|every|q\d+h)\b/i', $line)) {
+            return true;
+        }
+
+        if (preg_match('/\b(paracetamol|amoxicillin|metformin|losartan|amlodipine|cetirizine|ibuprofen|salbutamol|omeprazole|simvastatin|atorvastatin)\b/i', $line)) {
+            return true;
+        }
+
+        return str_contains($lower, 'take ') || str_contains($lower, 'sig:');
+    }
+
+    private function parseMedicineLine(string $line): array
+    {
+        $clean = trim(preg_replace('/^\d+\.\s*/', '', $line) ?? $line);
+
+        $dosage = '';
+        if (preg_match('/\b(\d+(?:\.\d+)?\s?(?:mg|mcg|g|gram|ml|iu|units?))\b/i', $clean, $match)) {
+            $dosage = trim($match[1]);
+        }
+
+        $quantity = 1;
+        if (preg_match('/\b(?:qty|quantity)\s*[:\-]?\s*(\d+)\b/i', $clean, $match)) {
+            $quantity = (int) $match[1];
+        }
+
+        $duration = '';
+        if (preg_match('/\b(?:x|for)\s*(\d+\s*(?:day|days|week|weeks|month|months))\b/i', $clean, $match)) {
+            $duration = trim($match[1]);
+        }
+
+        $route = 'Oral';
+        if (preg_match('/\b(oral|po|iv|im|subcutaneous|topical|ophthalmic|otic|nasal|inhalation)\b/i', $clean, $match)) {
+            $route = ucfirst(strtolower($match[1]));
+        }
+
+        $frequency = '';
+        if (preg_match('/\b(od|bid|tid|qid|prn|once daily|twice daily|thrice daily|daily|every\s+\d+\s+hours?|q\d+h|once a day|twice a day|3x a day|2x a day)\b/i', $clean, $match)) {
+            $frequency = trim($match[1]);
+        }
+
+        $name = $clean;
+
+        if ($dosage) {
+            $name = trim(Str::before($clean, $dosage));
+        } elseif (preg_match('/^([A-Za-z][A-Za-z0-9\- ]{2,40})\b/', $clean, $match)) {
+            $name = trim($match[1]);
+        }
+
+        $name = trim(preg_replace('/\b(tab|tablet|cap|capsule|syrup|suspension)\b/i', '', $name) ?? $name);
+        $name = trim($name, " \t\n\r\0\x0B:-,.");
+
+        if ($name === '') {
+            $name = 'Medicine from OCR';
+        }
+
+        return [
+            'name' => Str::title($name),
+            'dosage' => $dosage,
+            'quantity' => $quantity,
+            'frequency' => $frequency,
+            'duration' => $duration,
+            'route' => $route,
+            'instructions' => $clean,
+            'is_controlled' => false,
+            'brand_alternatives_allowed' => true,
+        ];
+    }
+
+    private function extractPrescriptionDiagnosis(string $text): ?string
+    {
+        $patterns = [
+            '/(?:diagnosis|dx|assessment)\s*[:\-]\s*([^\n]+)/i',
+            '/(?:impression)\s*[:\-]\s*([^\n]+)/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanField($match[1]);
+            }
+        }
+
+        return null;
+    }
+
+    private function extractPrescriptionDoctor(string $text): ?string
+    {
+        $patterns = [
+            '/(?:physician|doctor|prescribed by|dr\.?)\s*[:\-]?\s*(Dr\.?\s*[A-Z][A-Za-z .,\-]+)/i',
+            '/(Dr\.?\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)+)/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanField($match[1]);
+            }
+        }
+
+        return null;
+    }
+
+    private function extractPrescriptionDate(string $text): ?string
+    {
+        $patterns = [
+            '/(?:date)\s*[:\-]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i',
+            '/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i',
+            '/([A-Za-z]+\.?\s+\d{1,2},?\s+\d{4})/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanField($match[1]);
+            }
+        }
+
+        return null;
+    }
+
+    // =========================================================================
+    // ID PARSING
+    // =========================================================================
 
     private function extractName(string $text): ?string
     {
@@ -309,6 +747,116 @@ class OcrController extends Controller
         return null;
     }
 
+    // =========================================================================
+    // DATABASE HELPERS
+    // =========================================================================
+
+    private function resolveUploadedPrescriptionFile(Request $request): ?UploadedFile
+    {
+        return $request->file('prescription_file')
+            ?: $request->file('file')
+            ?: $request->file('image')
+            ?: $request->file('id_image')
+            ?: $request->file('prescription');
+    }
+
+    private function resolveResidentProfileId(object $consultation): ?int
+    {
+        if (!empty($consultation->resident_profile_id)) {
+            return (int) $consultation->resident_profile_id;
+        }
+
+        if (!empty($consultation->user_id) && Schema::hasTable('resident_profiles')) {
+            $profileId = DB::table('resident_profiles')
+                ->where('user_id', $consultation->user_id)
+                ->value('id');
+
+            return $profileId ? (int) $profileId : null;
+        }
+
+        return null;
+    }
+
+    private function resolveTelemedicineSessionId(object $consultation): ?int
+    {
+        if (!Schema::hasTable('telemedicine_sessions')) {
+            return null;
+        }
+
+        if (!empty($consultation->telemedicine_session_id)) {
+            return (int) $consultation->telemedicine_session_id;
+        }
+
+        $sessionId = DB::table('telemedicine_sessions')
+            ->where('consultation_id', $consultation->id)
+            ->value('id');
+
+        return $sessionId ? (int) $sessionId : null;
+    }
+
+    private function resolveRhuId(object $consultation, object $user): int
+    {
+        if (!empty($consultation->rhu_id)) {
+            return (int) $consultation->rhu_id;
+        }
+
+        if (!empty($user->rhu_id)) {
+            return (int) $user->rhu_id;
+        }
+
+        if (!empty($user->barangay_id)) {
+            return (int) $user->barangay_id;
+        }
+
+        return 1;
+    }
+
+    private function nextPrescriptionNumber(int $rhuId): string
+    {
+        $prefix = 'RHU' . $rhuId . '-RX-' . now()->format('Y');
+
+        $count = DB::table('prescriptions')
+            ->where('prescription_number', 'like', $prefix . '%')
+            ->count() + 1;
+
+        return $prefix . '-' . str_pad((string) $count, 5, '0', STR_PAD_LEFT);
+    }
+
+    private function onlyPrescriptionColumns(array $data): array
+    {
+        if (!Schema::hasTable('prescriptions')) {
+            return $data;
+        }
+
+        $columns = Schema::getColumnListing('prescriptions');
+
+        return array_intersect_key($data, array_flip($columns));
+    }
+
+    private function onlyOcrColumns(array $data): array
+    {
+        if (!Schema::hasTable('ocr_results')) {
+            return $data;
+        }
+
+        $columns = Schema::getColumnListing('ocr_results');
+
+        return array_intersect_key($data, array_flip($columns));
+    }
+
+    private function authUserId(object $user): int
+    {
+        return (int) (
+            $user->user_id
+            ?? $user->getKey()
+            ?? 0
+        );
+    }
+
+    // =========================================================================
+    // MATCHING HELPERS
+    // =========================================================================
+
     private function nameMatchScore(string $registeredName, ?string $extractedName, string $fullText): float
     {
         $registered = $this->normalizeName($registeredName);
@@ -351,6 +899,7 @@ class OcrController extends Controller
         $tokenScore = $matched / count($registeredTokens);
 
         $maxLength = max(strlen($registered), strlen($candidate));
+
         $levenshteinScore = $maxLength > 0
             ? max(0, 1 - (levenshtein($registered, substr($candidate, 0, min(strlen($candidate), 255))) / $maxLength))
             : 0;
@@ -373,6 +922,10 @@ class OcrController extends Controller
             return null;
         }
     }
+
+    // =========================================================================
+    // TEXT HELPERS
+    // =========================================================================
 
     private function normalizeName(?string $name): string
     {
@@ -407,16 +960,5 @@ class OcrController extends Controller
     private function normalizeRoleName(string $role): string
     {
         return strtolower(str_replace([' ', '-'], '_', trim($role)));
-    }
-
-    private function onlyOcrColumns(array $data): array
-    {
-        if (!Schema::hasTable('ocr_results')) {
-            return $data;
-        }
-
-        $columns = Schema::getColumnListing('ocr_results');
-
-        return array_intersect_key($data, array_flip($columns));
     }
 }

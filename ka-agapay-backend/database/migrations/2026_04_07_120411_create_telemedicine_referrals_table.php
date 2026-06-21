@@ -1,4 +1,5 @@
 <?php
+//database/migrattions/2026_04_07_120411_create_telemedicine_referrals_table
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;

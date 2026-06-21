@@ -6,9 +6,10 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\DispensePrescriptionRequest;
-use App\Http\Resources\PrescriptionResource;
+use App\Http\Resources\Prescription\PrescriptionResource;
 use App\Models\Prescription;
 use App\Services\Prescription\PrescriptionService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,7 +34,7 @@ class PrescriptionController extends Controller
             ->selectRaw("p.*, CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as patient_name")
             ->selectRaw("CONCAT(COALESCE(d.first_name, ''), ' ', COALESCE(d.last_name, '')) as prescriber_name");
 
-        if ($request->filled('status')) {
+        if ($request->filled('status') && $request->query('status') !== 'all') {
             $query->where('p.status', $request->query('status'));
         }
 
@@ -58,6 +59,7 @@ class PrescriptionController extends Controller
 
         $rows = $query
             ->latest('p.prescription_date')
+            ->latest('p.id')
             ->paginate($request->integer('per_page', 20));
 
         $rows->getCollection()->transform(fn ($row) => $this->formatPrescription($row));
@@ -70,7 +72,7 @@ class PrescriptionController extends Controller
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
         abort_unless(Schema::hasTable('resident_profiles'), 404, 'Resident profiles table not found.');
 
-        $userId = $request->user()->user_id ?? $request->user()->id;
+        $userId = $request->user()->user_id ?? $request->user()->getKey();
 
         $profile = DB::table('resident_profiles')
             ->where('user_id', $userId)
@@ -127,23 +129,25 @@ class PrescriptionController extends Controller
         ]);
 
         $user = $request->user();
+        $authUserId = $this->currentUserId($request);
         $rhuId = (int) ($validated['rhu_id'] ?? $user->barangay_id ?? 1);
         $number = $this->nextPrescriptionNumber($rhuId);
 
-        $pdfPath = $this->generateAndStorePdf($number, [
-            'Prescription No' => $number,
-            'Date' => now()->format('Y-m-d'),
-            'Diagnosis' => $validated['diagnosis'] ?? 'Not specified',
-            'Medicines' => $this->medicinesToText($validated['medications']),
-            'Instructions' => $validated['additional_instructions'] ?? '',
-            'Prescriber ID' => (string) ($user->user_id ?? $user->id),
-        ]);
+        $consultationId = $this->nullableExistingId(
+            'consultations',
+            $validated['consultation_id'] ?? null
+        );
+
+        $telemedicineSessionId = $this->nullableExistingId(
+            'telemedicine_sessions',
+            $validated['telemedicine_session_id'] ?? null
+        );
 
         $id = DB::table('prescriptions')->insertGetId([
             'resident_profile_id' => $validated['resident_profile_id'],
-            'prescribed_by' => $user->user_id ?? $user->id,
-            'consultation_id' => $validated['consultation_id'] ?? null,
-            'telemedicine_session_id' => $validated['telemedicine_session_id'] ?? null,
+            'prescribed_by' => $authUserId,
+            'consultation_id' => $consultationId,
+            'telemedicine_session_id' => $telemedicineSessionId,
             'prescription_number' => $number,
             'rhu_id' => $rhuId,
             'prescription_date' => now()->toDateString(),
@@ -156,8 +160,16 @@ class PrescriptionController extends Controller
             'additional_instructions' => $validated['additional_instructions'] ?? null,
             'dispensing_notes' => $validated['dispensing_notes'] ?? null,
             'status' => 'active',
-            'file_path' => $pdfPath,
+            'file_path' => null,
             'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $row = DB::table('prescriptions')->where('id', $id)->first();
+        $pdfPath = $this->generateAndStoreModernPdf($row);
+
+        DB::table('prescriptions')->where('id', $id)->update([
+            'file_path' => $pdfPath,
             'updated_at' => now(),
         ]);
 
@@ -201,6 +213,17 @@ class PrescriptionController extends Controller
 
         DB::table('prescriptions')->where('id', $id)->update($updates);
 
+        $row = DB::table('prescriptions')->where('id', $id)->first();
+
+        if ($row) {
+            $pdfPath = $this->generateAndStoreModernPdf($row);
+
+            DB::table('prescriptions')->where('id', $id)->update([
+                'file_path' => $pdfPath,
+                'updated_at' => now(),
+            ]);
+        }
+
         return $this->show($id);
     }
 
@@ -225,19 +248,7 @@ class PrescriptionController extends Controller
         $row = DB::table('prescriptions')->where('id', $id)->first();
         abort_unless($row, 404, 'Prescription not found.');
 
-        $medications = $this->decodeMedications($row->medications ?? '[]');
-        $number = $row->prescription_number ?? ('RX-' . $row->id);
-
-        $pdfPath = $this->generateAndStorePdf($number, [
-            'Prescription No' => $number,
-            'Date' => $row->prescription_date ?? now()->format('Y-m-d'),
-            'Valid Until' => $row->valid_until ?? '',
-            'Patient' => $this->patientName((int) $row->resident_profile_id),
-            'Diagnosis' => $row->diagnosis ?? 'Not specified',
-            'Medicines' => $this->medicinesToText($medications),
-            'Instructions' => $row->additional_instructions ?? '',
-            'Released By' => (string) ($request->user()->full_name ?? $request->user()->user_id ?? $request->user()->id),
-        ]);
+        $pdfPath = $this->generateAndStoreModernPdf($row);
 
         DB::table('prescriptions')->where('id', $id)->update([
             'file_path' => $pdfPath,
@@ -247,7 +258,7 @@ class PrescriptionController extends Controller
         if ($request->boolean('dispense_from_rhu')) {
             $prescription = Prescription::findOrFail($id);
 
-            $prescription = $this->service->dispense($prescription->fresh(), [
+            $this->service->dispense($prescription->fresh(), [
                 'deduct_inventory' => true,
                 'strict_inventory' => $request->boolean('strict_inventory', true),
                 'fail_on_insufficient_stock' => true,
@@ -281,8 +292,6 @@ class PrescriptionController extends Controller
                 'is_partial_dispense' => ['nullable', 'boolean'],
                 'notes' => ['nullable', 'string', 'max:1000'],
                 'dispensing_notes' => ['nullable', 'string', 'max:1000'],
-
-                // Inventory integration flags
                 'deduct_inventory' => ['nullable', 'boolean'],
                 'strict_inventory' => ['nullable', 'boolean'],
                 'fail_on_insufficient_stock' => ['nullable', 'boolean'],
@@ -294,9 +303,27 @@ class PrescriptionController extends Controller
             'fail_on_insufficient_stock' => $request->boolean('fail_on_insufficient_stock', true),
         ]));
 
+        $row = DB::table('prescriptions')->where('id', $prescriptionModel->id)->first();
+
+        if ($row) {
+            $pdfPath = $this->generateAndStoreModernPdf($row);
+
+            DB::table('prescriptions')->where('id', $prescriptionModel->id)->update([
+                'file_path' => $pdfPath,
+                'updated_at' => now(),
+            ]);
+        }
+
         return response()->json([
             'message' => 'Prescription dispensed and inventory deducted.',
-            'data' => new PrescriptionResource($prescriptionModel),
+            'data' => new PrescriptionResource($prescriptionModel->fresh([
+                'dispensingLogs.dispensedBy',
+                'dispensedBy',
+                'residentProfile.user',
+                'prescribedBy',
+                'consultation',
+                'telemedicineSession',
+            ])),
         ]);
     }
 
@@ -307,25 +334,18 @@ class PrescriptionController extends Controller
         $row = DB::table('prescriptions')->where('id', $id)->first();
         abort_unless($row, 404, 'Prescription not found.');
 
-        $path = $row->file_path;
+        /*
+         * IMPORTANT:
+         * Always regenerate using the modern template.
+         * This prevents old file_path PDFs from showing the old plain format.
+         */
+        $pdfBytes = $this->renderModernPdf($row);
 
-        if ($path && Storage::disk('public')->exists($path)) {
-            return response(Storage::disk('public')->get($path), 200, [
-                'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'inline; filename="' . ($row->prescription_number ?? 'prescription') . '.pdf"',
-            ]);
-        }
+        $filename = Str::slug($row->prescription_number ?? ('prescription-' . $row->id)) . '.pdf';
 
-        $pdf = $this->buildPdf([
-            'Prescription No' => $row->prescription_number ?? ('RX-' . $row->id),
-            'Date' => $row->prescription_date ?? now()->format('Y-m-d'),
-            'Diagnosis' => $row->diagnosis ?? 'Not specified',
-            'Medicines' => $this->medicinesToText($this->decodeMedications($row->medications ?? '[]')),
-        ]);
-
-        return response($pdf, 200, [
+        return response($pdfBytes, 200, [
             'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'inline; filename="prescription-' . $row->id . '.pdf"',
+            'Content-Disposition' => 'inline; filename="' . $filename . '"',
         ]);
     }
 
@@ -363,6 +383,37 @@ class PrescriptionController extends Controller
         return $prefix . '-' . str_pad((string) $count, 5, '0', STR_PAD_LEFT);
     }
 
+    private function patientName(int $residentProfileId): string
+    {
+        if (!Schema::hasTable('resident_profiles') || !Schema::hasTable('users')) {
+            return 'Resident Profile #' . $residentProfileId;
+        }
+
+        $row = DB::table('resident_profiles as rp')
+            ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
+            ->where('rp.id', $residentProfileId)
+            ->selectRaw("CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as name")
+            ->first();
+
+        return trim((string) ($row->name ?? '')) ?: 'Resident Profile #' . $residentProfileId;
+    }
+
+    private function prescriberName(?int $userId): string
+    {
+        $userId = (int) ($userId ?? 0);
+
+        if ($userId <= 0 || !Schema::hasTable('users')) {
+            return 'Authorized RHU Staff';
+        }
+
+        $row = DB::table('users')
+            ->where('user_id', $userId)
+            ->selectRaw("CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')) as name")
+            ->first();
+
+        return trim((string) ($row->name ?? '')) ?: 'Authorized RHU Staff';
+    }
+
     private function medicinesToText(array $medicines): string
     {
         if (empty($medicines)) {
@@ -383,88 +434,136 @@ class PrescriptionController extends Controller
         })->implode("\n");
     }
 
-    private function patientName(int $residentProfileId): string
+    private function normalizeMedicinesForPdf(array $medicines): array
     {
-        if (!Schema::hasTable('resident_profiles') || !Schema::hasTable('users')) {
-            return 'Resident Profile #' . $residentProfileId;
+        if (empty($medicines)) {
+            return [[
+                'name' => 'Medication as prescribed',
+                'dosage' => '',
+                'quantity' => '',
+                'frequency' => '',
+                'duration' => '',
+                'route' => '',
+                'instructions' => 'Take as directed by RHU staff.',
+            ]];
         }
 
-        $row = DB::table('resident_profiles as rp')
-            ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
-            ->where('rp.id', $residentProfileId)
-            ->selectRaw("CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as name")
-            ->first();
+        return collect($medicines)
+            ->map(function ($medicine, $index) {
+                if (is_string($medicine)) {
+                    return [
+                        'name' => $medicine,
+                        'dosage' => '',
+                        'quantity' => '',
+                        'frequency' => '',
+                        'duration' => '',
+                        'route' => '',
+                        'instructions' => '',
+                    ];
+                }
 
-        return trim((string) ($row->name ?? '')) ?: 'Resident Profile #' . $residentProfileId;
+                return [
+                    'name' => $medicine['name']
+                        ?? $medicine['medicine']
+                        ?? $medicine['medicine_name']
+                        ?? $medicine['drug']
+                        ?? ('Medicine #' . ($index + 1)),
+                    'dosage' => $medicine['dosage']
+                        ?? $medicine['dose']
+                        ?? $medicine['strength']
+                        ?? '',
+                    'quantity' => $medicine['quantity']
+                        ?? $medicine['qty']
+                        ?? '',
+                    'frequency' => $medicine['frequency']
+                        ?? $medicine['freq']
+                        ?? '',
+                    'duration' => $medicine['duration']
+                        ?? '',
+                    'route' => $medicine['route']
+                        ?? '',
+                    'instructions' => $medicine['instructions']
+                        ?? $medicine['instruction']
+                        ?? $medicine['sig']
+                        ?? '',
+                ];
+            })
+            ->values()
+            ->all();
     }
 
-    private function generateAndStorePdf(string $number, array $fields): string
+    private function generateAndStoreModernPdf(object $row): string
     {
-        $path = 'prescriptions/manual/' . $number . '.pdf';
+        $number = $row->prescription_number ?? ('RX-' . $row->id);
+        $path = 'prescriptions/manual/' . Str::slug($number) . '.pdf';
 
-        Storage::disk('public')->put($path, $this->buildPdf($fields));
+        Storage::disk('public')->put($path, $this->renderModernPdf($row));
 
         return $path;
     }
 
-    private function buildPdf(array $fields): string
+    private function renderModernPdf(object $row): string
     {
-        $lines = [
-            'Ka-Agapay E-Prescription',
-            'RHU Malasiqui, Pangasinan',
-            '',
+        $medications = $this->decodeMedications($row->medications ?? '[]');
+
+        $data = [
+            'prescriptionNo' => $row->prescription_number ?? ('RX-' . $row->id),
+            'date' => $this->formatLongDate($row->prescription_date ?? now()->toDateString()),
+            'validUntil' => $this->formatLongDate($row->valid_until ?? now()->addDays(7)->toDateString()),
+            'patientName' => $this->patientName((int) $row->resident_profile_id),
+            'doctorName' => $this->prescriberName((int) ($row->prescribed_by ?? 0)),
+            'diagnosis' => $row->diagnosis ?: 'For clinical management',
+            'diagnosisCode' => $row->diagnosis_code ?? null,
+            'medicines' => $this->normalizeMedicinesForPdf($medications),
+            'additionalInstructions' => $row->additional_instructions
+                ?: 'Follow the prescribed dosage. Return to RHU if symptoms persist or worsen.',
+            'dispensingNotes' => $row->dispensing_notes ?? null,
+            'status' => $row->status ?? 'active',
+            'rhuName' => 'RHU Malasiqui',
+            'municipality' => 'Malasiqui, Pangasinan',
         ];
 
-        foreach ($fields as $key => $value) {
-            $valueLines = preg_split('/\r?\n/', (string) $value) ?: [''];
-            $lines[] = $key . ': ' . array_shift($valueLines);
+        return Pdf::loadView('pdf.prescription-modern', $data)
+            ->setPaper('a4', 'portrait')
+            ->output();
+    }
 
-            foreach ($valueLines as $extra) {
-                $lines[] = '    ' . $extra;
-            }
-
-            $lines[] = '';
+    private function formatLongDate(?string $value): string
+    {
+        if (!$value) {
+            return now()->format('F d, Y');
         }
 
-        $lines[] = 'This document was generated by Ka-Agapay.';
-        $lines[] = 'Please verify details with authorized RHU staff.';
+        try {
+            return \Carbon\Carbon::parse($value)->format('F d, Y');
+        } catch (\Throwable) {
+            return $value;
+        }
+    }
 
-        $stream = "BT\n/F1 12 Tf\n50 780 Td\n14 TL\n";
+    private function nullableExistingId(string $table, mixed $value, string $column = 'id'): ?int
+    {
+        $id = (int) ($value ?? 0);
 
-        foreach ($lines as $line) {
-            $safe = str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], Str::limit($line, 100, ''));
-            $stream .= "({$safe}) Tj\nT*\n";
+        if ($id <= 0) {
+            return null;
         }
 
-        $stream .= "ET";
-
-        $objects = [
-            "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
-            "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
-            "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
-            "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
-            "5 0 obj << /Length " . strlen($stream) . " >> stream\n{$stream}\nendstream endobj",
-        ];
-
-        $pdf = "%PDF-1.4\n";
-        $offsets = [0];
-
-        foreach ($objects as $object) {
-            $offsets[] = strlen($pdf);
-            $pdf .= $object . "\n";
+        if (!Schema::hasTable($table)) {
+            return null;
         }
 
-        $xref = strlen($pdf);
-        $pdf .= "xref\n0 " . (count($objects) + 1) . "\n";
-        $pdf .= "0000000000 65535 f \n";
+        return DB::table($table)->where($column, $id)->exists()
+            ? $id
+            : null;
+    }
 
-        for ($i = 1; $i <= count($objects); $i++) {
-            $pdf .= str_pad((string) $offsets[$i], 10, '0', STR_PAD_LEFT) . " 00000 n \n";
-        }
-
-        $pdf .= "trailer << /Root 1 0 R /Size " . (count($objects) + 1) . " >>\n";
-        $pdf .= "startxref\n{$xref}\n%%EOF";
-
-        return $pdf;
+    private function currentUserId(Request $request): int
+    {
+        return (int) (
+            $request->user()->user_id
+            ?? $request->user()->getKey()
+            ?? 0
+        );
     }
 }
