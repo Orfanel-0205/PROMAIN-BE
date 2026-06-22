@@ -3,6 +3,9 @@
 
 namespace App\Services\Queue;
 
+use App\Models\Appointment;
+use App\Models\Barangay;
+use App\Models\Consultation;
 use App\Models\QueueCounter;
 use App\Models\QueueLog;
 use App\Models\QueuePriorityScore;
@@ -119,6 +122,10 @@ class QueueService
                 $createPayload['queue_type'] = $priorityResult['queue_type'] ?? 'walk_in';
             }
 
+            if (Schema::hasColumn('queue_tickets', 'source')) {
+                $createPayload['source'] = $data['source'] ?? 'walk_in';
+            }
+
             $ticket = QueueTicket::create($createPayload);
 
             $this->storePriorityScoreSafely(
@@ -151,6 +158,203 @@ class QueueService
     }
 
     /**
+     * Sync an approved appointment into the RHU queue.
+     *
+     * Called when an admin approves/schedules/confirms an appointment.
+     * - Routes strictly to appointment.rhu_id (RHU 1 vs RHU 2).
+     * - Prevents duplicate tickets for the same appointment_id.
+     * - If a ticket already exists for this appointment, it is updated (RHU/source).
+     * - Otherwise a new ticket is issued via issueTicket() (counter, number,
+     *   priority, dedup all handled there) and linked back to the appointment.
+     *
+     * Returns the queue ticket, or null if it could not be synced (caller should
+     * treat a null as non-fatal — approval itself must still succeed).
+     */
+    public function syncAppointmentToQueue(Appointment $appointment): ?QueueTicket
+    {
+        if (!Schema::hasTable('queue_tickets') || empty($appointment->user_id)) {
+            return null;
+        }
+
+        $resident = $this->resolveResidentProfileForAppointment($appointment);
+
+        if (!$resident) {
+            return null;
+        }
+
+        $rhuId = $this->resolveAppointmentRhuId($appointment, $resident);
+
+        if (!$rhuId) {
+            return null;
+        }
+
+        $serviceType = $this->resolveAppointmentServiceType($appointment);
+
+        // 1) Already linked to a ticket? Update it instead of creating a duplicate.
+        $existing = QueueTicket::query()
+            ->where('appointment_id', $appointment->id)
+            ->latest('id')
+            ->first();
+
+        if ($existing) {
+            if (!$existing->isTerminal()) {
+                $updates = ['rhu_id' => $rhuId];
+
+                if (Schema::hasColumn('queue_tickets', 'source') && empty($existing->source)) {
+                    $updates['source'] = 'online_appointment';
+                }
+
+                $existing->update($updates);
+            }
+
+            return $existing->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
+        }
+
+        // 2) No ticket yet — issue one tied to this appointment.
+        $ticket = $this->issueTicket([
+            'resident_profile_id' => $resident->id,
+            'rhu_id' => $rhuId,
+            'service_type' => $serviceType,
+            'appointment_id' => $appointment->id,
+            'source' => 'online_appointment',
+        ]);
+
+        // issueTicket() dedups by resident/service/day, so it may have returned a
+        // pre-existing walk-in ticket without an appointment link — backfill it.
+        $needsLink = empty($ticket->appointment_id)
+            || (Schema::hasColumn('queue_tickets', 'source') && empty($ticket->source));
+
+        if ($needsLink && !$ticket->isTerminal()) {
+            $link = ['appointment_id' => $appointment->id];
+
+            if (Schema::hasColumn('queue_tickets', 'source')) {
+                $link['source'] = 'online_appointment';
+            }
+
+            $ticket->update($link);
+        }
+
+        return $ticket->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
+    }
+
+    private function resolveResidentProfileForAppointment(Appointment $appointment): ?ResidentProfile
+    {
+        $resident = ResidentProfile::query()
+            ->where('user_id', $appointment->user_id)
+            ->first();
+
+        if ($resident) {
+            return $resident;
+        }
+
+        // The backfill migration normally guarantees a profile exists; create a
+        // minimal one as a safety net so approval can still reach the queue.
+        try {
+            return ResidentProfile::create(['user_id' => $appointment->user_id]);
+        } catch (Throwable $e) {
+            logger()->warning('[QueueService] Could not create resident profile for appointment queue sync.', [
+                'appointment_id' => $appointment->id,
+                'user_id' => $appointment->user_id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private function resolveAppointmentRhuId(Appointment $appointment, ResidentProfile $resident): ?int
+    {
+        if (Schema::hasColumn('appointments', 'rhu_id') && !empty($appointment->rhu_id)) {
+            return (int) $appointment->rhu_id;
+        }
+
+        if (!empty($resident->barangay_id)) {
+            return (int) $resident->barangay_id;
+        }
+
+        $fallback = (int) (Barangay::query()->orderBy('barangay_id')->value('barangay_id') ?? 0);
+
+        return $fallback > 0 ? $fallback : null;
+    }
+
+    private function resolveAppointmentServiceType(Appointment $appointment): string
+    {
+        // Appointments do not carry a queue service_type; default OPD consultation.
+        // (Online + onsite both enter the queue as OPD unless extended later.)
+        return 'opd_consultation';
+    }
+
+    /**
+     * PHASE 1 GUARD.
+     *
+     * An OPD consultation queue ticket may only be completed once its SOAP
+     * consultation is completed. This blocks staff from closing the queue and
+     * bypassing the medical record from the queue monitor.
+     *
+     * IMPORTANT: The legitimate completion path is ConsultationController, which
+     * completes the consultation first and then updates the ticket via a direct
+     * DB write (NOT through transitionStatus), so this guard never blocks the
+     * normal SOAP → queue completion sync.
+     *
+     * @throws ValidationException
+     */
+    private function assertOpdConsultationCompleted(QueueTicket $ticket): void
+    {
+        if ((string) $ticket->service_type !== 'opd_consultation') {
+            return;
+        }
+
+        if (!Schema::hasTable('consultations')) {
+            return;
+        }
+
+        $consultation = $this->findConsultationForTicket($ticket);
+
+        if (!$consultation) {
+            throw ValidationException::withMessages([
+                'status' => 'Start the SOAP consultation first before completing this OPD queue ticket.',
+            ]);
+        }
+
+        if ((string) $consultation->status !== 'completed') {
+            throw ValidationException::withMessages([
+                'status' => 'Complete the SOAP consultation first before completing this OPD queue ticket.',
+            ]);
+        }
+    }
+
+    private function findConsultationForTicket(QueueTicket $ticket): ?Consultation
+    {
+        // Primary link: the appointment the ticket was issued from.
+        if (!empty($ticket->appointment_id)) {
+            $byAppointment = Consultation::query()
+                ->where('appointment_id', $ticket->appointment_id)
+                ->latest('id')
+                ->first();
+
+            if ($byAppointment) {
+                return $byAppointment;
+            }
+        }
+
+        // Fallback for walk-in OPD tickets with no appointment link:
+        // the resident's most recent consultation today.
+        $userId = DB::table('resident_profiles')
+            ->where('id', $ticket->resident_profile_id)
+            ->value('user_id');
+
+        if (!$userId) {
+            return null;
+        }
+
+        return Consultation::query()
+            ->where('user_id', $userId)
+            ->whereDate('consultation_date', today())
+            ->latest('id')
+            ->first();
+    }
+
+    /**
      * Update ticket status safely.
      */
     public function transitionStatus(QueueTicket $ticket, string $newStatus, array $data = []): QueueTicket
@@ -175,6 +379,13 @@ class QueueService
                 throw ValidationException::withMessages([
                     'status' => "Invalid queue action: {$ticket->status} cannot become {$newStatus}.",
                 ]);
+            }
+
+            // PHASE 1 GUARD: an OPD queue ticket can only be completed after its
+            // SOAP consultation is completed. Prevents bypassing the medical
+            // record from the queue monitor.
+            if ($newStatus === 'completed') {
+                $this->assertOpdConsultationCompleted($ticket);
             }
 
             $fromStatus = (string) $ticket->status;

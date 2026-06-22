@@ -21,6 +21,7 @@ class QueueTicket extends Model
         'served_by',
         'service_type',
         'queue_type',
+        'source',
         'priority_score',
         'priority_category',
         'is_senior',

@@ -3,12 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\Queue\QueueTicketResource;
 use App\Models\Appointment;
 use App\Models\Barangay;
 use App\Models\Consultation;
 use App\Models\ResidentProfile;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
+use App\Services\Queue\QueueService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,6 +20,10 @@ use Illuminate\Validation\Rule;
 
 class AppointmentController extends Controller
 {
+    public function __construct(private readonly QueueService $queueService)
+    {
+    }
+
     // =========================================================================
     // MOBILE / PATIENT SIDE
     // =========================================================================
@@ -159,7 +165,23 @@ class AppointmentController extends Controller
         ];
 
         if (Schema::hasColumn('appointments', 'rhu_id')) {
-            $payload['rhu_id'] = $validated['rhu_id'] ?? null;
+            // The patient selects RHU 1 / RHU 2 when booking. If the app did not
+            // send one, fall back to the resident's barangay so the appointment
+            // still routes to a queue on approval.
+            $rhuId = $validated['rhu_id'] ?? null;
+
+            // Guard the foreign key: only keep an rhu_id that actually exists.
+            if ($rhuId && !Barangay::query()->where('barangay_id', $rhuId)->exists()) {
+                $rhuId = null;
+            }
+
+            if (!$rhuId) {
+                $rhuId = ResidentProfile::query()
+                    ->where('user_id', $request->user()->user_id)
+                    ->value('barangay_id');
+            }
+
+            $payload['rhu_id'] = $rhuId ?: null;
         }
 
         $appointment = new Appointment();
@@ -223,8 +245,11 @@ class AppointmentController extends Controller
      */
     public function adminIndex(Request $request): JsonResponse
     {
+        // queueTicket + consultation are eager loaded so the Appointment Board
+        // can gate its actions (e.g. only allow "Start Consultation" once the
+        // patient's OPD queue ticket is in_service, and link to the SOAP record).
         $query = Appointment::query()
-            ->with(['resident', 'handler'])
+            ->with(['resident', 'handler', 'queueTicket', 'consultation'])
             ->latest();
 
         if ($request->filled('status') && $request->query('status') !== 'all') {
@@ -275,7 +300,7 @@ class AppointmentController extends Controller
     public function adminShow(int $id): JsonResponse
     {
         $appointment = Appointment::query()
-            ->with(['resident', 'handler'])
+            ->with(['resident', 'handler', 'queueTicket'])
             ->findOrFail($id);
 
         $data = $appointment->toArray();
@@ -372,9 +397,32 @@ class AppointmentController extends Controller
         $appointment->forceFill($this->filterTablePayload('appointments', $updateData));
         $appointment->save();
 
+        // When an appointment is approved/scheduled/confirmed, create or sync its
+        // queue ticket. The ticket is routed strictly by appointment.rhu_id, so
+        // an RHU 1 booking lands in the RHU 1 queue (and vice versa).
+        // The frontend never creates queue tickets — this is the single source.
+        $queueTicket = null;
+
+        if (in_array($status, ['approved', 'scheduled', 'confirmed'], true)) {
+            try {
+                $queueTicket = $this->queueService->syncAppointmentToQueue($appointment->fresh());
+            } catch (\Throwable $e) {
+                // Queue sync failure must NOT block the approval itself.
+                logger()->warning('[AppointmentController] Queue sync failed after approval.', [
+                    'appointment_id' => $appointment->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         return response()->json([
-            'message' => 'Appointment status updated.',
-            'appointment' => $appointment->fresh(['resident', 'handler']),
+            'message' => $queueTicket
+                ? 'Appointment approved and added to the RHU queue.'
+                : 'Appointment status updated.',
+            'appointment' => $appointment->fresh(['resident', 'handler', 'rhu']),
+            'queue_ticket' => $queueTicket
+                ? new QueueTicketResource($queueTicket)
+                : null,
         ]);
     }
 
@@ -638,7 +686,7 @@ class AppointmentController extends Controller
         $payload = [
             'resident_profile_id' => $residentProfile->id,
             'requested_by' => $appointment->user_id,
-            'queue_ticket_id' => null,
+            'queue_ticket_id' => $appointment->user_id,
             'appointment_id' => $appointment->id,
             'rhu_id' => $rhuId,
             'endorsed_by_bhw' => null,

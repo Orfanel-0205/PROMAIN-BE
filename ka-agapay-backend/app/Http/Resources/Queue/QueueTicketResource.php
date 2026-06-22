@@ -33,6 +33,8 @@ class QueueTicketResource extends JsonResource
             'service_label' => $this->serviceLabel((string) $this->service_type),
 
             'queue_type' => $this->queue_type ?? null,
+            'source' => $this->source ?? 'walk_in',
+            'appointment_id' => $this->appointment_id,
             'status' => $this->status,
 
             'priority_score' => (int) ($this->priority_score ?? 0),

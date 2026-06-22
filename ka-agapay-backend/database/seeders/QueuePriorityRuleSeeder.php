@@ -1,5 +1,5 @@
 <?php
-
+//DATABASE/MIGRATIONS/SyncHeatmapCoordinatesSeeder
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;

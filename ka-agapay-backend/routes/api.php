@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\BarangayController;
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\PatientController;
 use App\Http\Controllers\Api\HomeVisitController;
+use App\Http\Controllers\Api\FeedbackController;
 
 // =============================================================================
 // API V1
@@ -344,6 +345,7 @@ Route::prefix('v1')->group(function () {
 
         Route::middleware('auth:sanctum')->group(function () {
             Route::get('/notifications', [NotificationController::class, 'index']);
+            Route::post('/notifications/device-token', [NotificationController::class, 'storeDeviceToken']);
             Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
             Route::patch('/notifications/{id}/read', [NotificationController::class, 'markRead']);
             Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
@@ -372,6 +374,21 @@ Route::prefix('v1')->group(function () {
             Route::put('/{ticket}/status',   [QueueController::class, 'updateStatus']);
 
             Route::get('/{ticket}', [QueueController::class, 'show']);
+        });
+
+        // =====================================================================
+        // FEEDBACK (PHASE 5)
+        // GET   /api/v1/feedback
+        // POST  /api/v1/feedback
+        // GET   /api/v1/feedback/{id}
+        // PATCH /api/v1/feedback/{id}/respond
+        // =====================================================================
+
+        Route::prefix('feedback')->group(function () {
+            Route::get('/',              [FeedbackController::class, 'index']);
+            Route::post('/',             [FeedbackController::class, 'store']);
+            Route::get('/{id}',          [FeedbackController::class, 'show']);
+            Route::patch('/{id}/respond', [FeedbackController::class, 'respond']);
         });
 
         // =====================================================================

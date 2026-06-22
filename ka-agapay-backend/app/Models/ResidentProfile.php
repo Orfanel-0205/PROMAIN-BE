@@ -27,6 +27,10 @@ class ResidentProfile extends Model
         'sex',
         'gender',
         'civil_status',
+        'religion',
+        'educational_attainment',
+        'occupation',
+        'client_type',
 
         'mobile_number',
         'contact_number',
@@ -41,12 +45,27 @@ class ResidentProfile extends Model
         'philhealth_number',
         'philhealth_pin',
 
+        'guardian_name',
         'emergency_contact_name',
         'emergency_contact_number',
 
+        // Reusable patient-reported history (free text, NOT staff clinical findings).
         'medical_history',
         'allergies',
+        'past_medical_history',
         'maintenance_medications',
+        'family_history',
+        'personal_social_history',
+
+        // Lifestyle
+        'smoking_status',
+        'alcohol_intake',
+
+        // OB / GYN (patient-reported, reusable)
+        'lmp',
+        'menstrual_history',
+        'family_planning_method',
+        'pregnancy_history',
 
         'is_senior',
         'is_pwd',
@@ -60,10 +79,10 @@ class ResidentProfile extends Model
         'birth_date' => 'date',
         'birthdate' => 'date',
         'date_of_birth' => 'date',
+        'lmp' => 'date',
 
-        'medical_history' => 'array',
-        'allergies' => 'array',
-        'maintenance_medications' => 'array',
+        // NOTE: allergies / maintenance_medications / medical_history are stored as
+        // free-text columns (patient self-report), so they are NOT cast to array.
 
         'is_senior' => 'boolean',
         'is_pwd' => 'boolean',

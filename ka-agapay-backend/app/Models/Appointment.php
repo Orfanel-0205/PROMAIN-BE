@@ -11,6 +11,7 @@ class Appointment extends Model
     protected $fillable = [
         'user_id',
         'handled_by',
+        'rhu_id',
         'appointment_date',
         'appointment_time',
         'purpose',
@@ -40,6 +41,11 @@ class Appointment extends Model
     public function handler(): BelongsTo
     {
         return $this->belongsTo(User::class, 'handled_by', 'user_id');
+    }
+
+    public function rhu(): BelongsTo
+    {
+        return $this->belongsTo(Barangay::class, 'rhu_id', 'barangay_id');
     }
 
     public function consultation(): HasOne

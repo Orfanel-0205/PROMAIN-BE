@@ -96,6 +96,33 @@ class QueueController extends Controller
         return (int) ($firstBarangayId ?: 1);
     }
 
+    /**
+     * Resolve the RHU a request is actually allowed to touch.
+     *
+     * - super_admin / mho: may view/filter ANY RHU (uses the requested rhu_id,
+     *   or their own as a default).
+     * - everyone else (RHU admin/staff/BHW): is HARD-LOCKED to their assigned
+     *   RHU. Any rhu_id they pass is ignored so RHU 1 staff can never read or
+     *   act on the RHU 2 queue.
+     */
+    private function scopedRhuId(Request $request, ?int $requested): int
+    {
+        $user = $request->user();
+        $requested = ($requested && $requested > 0) ? $requested : null;
+
+        if ($user && $user->isGlobalRhuScope()) {
+            return (int) ($requested ?? $this->defaultRhuId($request));
+        }
+
+        $assigned = $user ? (int) ($user->effectiveRhuId() ?? 0) : 0;
+
+        if ($assigned > 0) {
+            return $assigned;
+        }
+
+        return (int) ($requested ?? $this->defaultRhuId($request));
+    }
+
     private function resolveBarangayIdFromUser(object $user): ?int
     {
         $direct = $user->barangay_id ?? $user->rhu_id ?? null;
@@ -270,7 +297,7 @@ class QueueController extends Controller
             'rhu',
             'issuedBy',
             'servedBy',
-        ])->forRhu($request->integer('rhu_id'));
+        ])->forRhu($this->scopedRhuId($request, $request->integer('rhu_id')));
 
         if ($request->filled('service_type')) {
             $query->byServiceType((string) $request->input('service_type'));
@@ -330,9 +357,17 @@ class QueueController extends Controller
             ], 422);
         }
 
+        $newStatus = (string) $request->input('status');
+
+        $guardResponse = $this->guardOpdConsultationBeforeQueueCompletion($ticket, $newStatus);
+
+        if ($guardResponse) {
+            return $guardResponse;
+        }
+
         $updatedTicket = $this->queueService->transitionStatus(
             $ticket,
-            (string) $request->input('status'),
+            $newStatus,
             $request->validated()
         );
 
@@ -340,6 +375,60 @@ class QueueController extends Controller
             'message' => 'Ticket status updated successfully.',
             'data' => new QueueTicketResource($updatedTicket),
         ]);
+    }
+
+    private function guardOpdConsultationBeforeQueueCompletion(
+        QueueTicket $ticket,
+        string $newStatus
+    ): ?JsonResponse {
+        if ($newStatus !== 'completed') {
+            return null;
+        }
+
+        if ((string) $ticket->service_type !== 'opd_consultation') {
+            return null;
+        }
+
+        $appointmentId = (int) ($ticket->appointment_id ?? 0);
+
+        if ($appointmentId <= 0) {
+            return null;
+        }
+
+        if (!Schema::hasTable('consultations')) {
+            return response()->json([
+                'message' => 'Consultation records table is not available. Queue cannot be completed.',
+            ], 422);
+        }
+
+        $consultation = DB::table('consultations')
+            ->where('appointment_id', $appointmentId)
+            ->latest('id')
+            ->first();
+
+        if (!$consultation) {
+            return response()->json([
+                'message' => 'Start the SOAP consultation first before completing this OPD queue ticket.',
+                'errors' => [
+                    'consultation' => [
+                        'No consultation record exists for this appointment yet.',
+                    ],
+                ],
+            ], 422);
+        }
+
+        if ((string) $consultation->status !== 'completed') {
+            return response()->json([
+                'message' => 'Complete the SOAP consultation first before completing this OPD queue ticket.',
+                'errors' => [
+                    'consultation' => [
+                        'The consultation exists but is not completed yet.',
+                    ],
+                ],
+            ], 422);
+        }
+
+        return null;
     }
 
     public function callNext(Request $request): JsonResponse
@@ -359,7 +448,7 @@ class QueueController extends Controller
             ],
         ]);
 
-        $rhuId = (int) ($validated['rhu_id'] ?? $this->defaultRhuId($request));
+        $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
         $serviceType = $validated['service_type'] ?? 'opd_consultation';
 
         $ticket = $this->queueService->callNext($rhuId, $serviceType);
@@ -392,7 +481,7 @@ class QueueController extends Controller
             ],
         ]);
 
-        $rhuId = (int) ($validated['rhu_id'] ?? $this->defaultRhuId($request));
+        $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
 
         $live = $this->queueService->getLiveQueue(
             $rhuId,
@@ -425,7 +514,7 @@ class QueueController extends Controller
             ],
         ]);
 
-        $rhuId = (int) ($validated['rhu_id'] ?? $this->defaultRhuId($request));
+        $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
 
         $summary = $this->queueService->getDailySummary(
             $rhuId,

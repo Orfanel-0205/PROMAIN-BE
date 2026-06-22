@@ -4,6 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ResidentProfile;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,14 +14,50 @@ use Illuminate\Validation\Rule;
 
 class ProfileController extends Controller
 {
+    /**
+     * Reusable, NON-CLINICAL patient ITR details that live on resident_profiles
+     * and may be edited by the patient. These are self-reported and are re-used
+     * across appointments / queue / consultations.
+     *
+     * Vitals, diagnosis, assessment, plan, prescription, and lab fields are
+     * intentionally NOT here — those are staff-only and live elsewhere.
+     */
+    private const PROFILE_FIELDS = [
+        'civil_status',
+        'religion',
+        'educational_attainment',
+        'occupation',
+        'client_type',
+        'guardian_name',
+        'emergency_contact_name',
+        'emergency_contact_number',
+        'philhealth_number',
+        'street',
+        'purok',
+        'household_number',
+        'allergies',
+        'past_medical_history',
+        'maintenance_medications',
+        'family_history',
+        'personal_social_history',
+        'smoking_status',
+        'alcohol_intake',
+        'lmp',
+        'menstrual_history',
+        'family_planning_method',
+        'pregnancy_history',
+    ];
     public function show(Request $request): JsonResponse
     {
         /** @var User $user */
         $user = $request->user()->loadMissing('role');
 
+        $profile = $this->residentProfileFor($user);
+        $payload = $this->profilePayload($user, $profile);
+
         return response()->json([
-            'data' => $this->profilePayload($user),
-            'user' => $this->profilePayload($user),
+            'data' => $payload,
+            'user' => $payload,
         ]);
     }
 
@@ -53,6 +90,31 @@ class ProfileController extends Controller
             'birthday' => ['nullable', 'date'],
             'birth_date' => ['nullable', 'date'],
             'sex' => ['nullable', 'string', 'max:30'],
+
+            // Reusable patient ITR profile details (non-clinical, patient-editable)
+            'civil_status' => ['nullable', 'string', 'max:50'],
+            'religion' => ['nullable', 'string', 'max:100'],
+            'educational_attainment' => ['nullable', 'string', 'max:100'],
+            'occupation' => ['nullable', 'string', 'max:150'],
+            'client_type' => ['nullable', 'string', 'max:50'],
+            'guardian_name' => ['nullable', 'string', 'max:150'],
+            'emergency_contact_name' => ['nullable', 'string', 'max:150'],
+            'emergency_contact_number' => ['nullable', 'string', 'max:30'],
+            'philhealth_number' => ['nullable', 'string', 'max:50'],
+            'street' => ['nullable', 'string', 'max:150'],
+            'purok' => ['nullable', 'string', 'max:100'],
+            'household_number' => ['nullable', 'string', 'max:50'],
+            'allergies' => ['nullable', 'string', 'max:2000'],
+            'past_medical_history' => ['nullable', 'string', 'max:2000'],
+            'maintenance_medications' => ['nullable', 'string', 'max:2000'],
+            'family_history' => ['nullable', 'string', 'max:2000'],
+            'personal_social_history' => ['nullable', 'string', 'max:2000'],
+            'smoking_status' => ['nullable', 'string', 'max:30'],
+            'alcohol_intake' => ['nullable', 'string', 'max:30'],
+            'lmp' => ['nullable', 'date'],
+            'menstrual_history' => ['nullable', 'string', 'max:2000'],
+            'family_planning_method' => ['nullable', 'string', 'max:100'],
+            'pregnancy_history' => ['nullable', 'string', 'max:2000'],
         ]);
 
         $updates = [];
@@ -100,13 +162,70 @@ class ProfileController extends Controller
             $user->update($updates);
         }
 
+        $profile = $this->persistProfileFields($user, $validated);
+
         $fresh = $user->fresh()->loadMissing('role');
+        $payload = $this->profilePayload($fresh, $profile);
 
         return response()->json([
             'message' => 'Profile updated successfully.',
-            'data' => $this->profilePayload($fresh),
-            'user' => $this->profilePayload($fresh),
+            'data' => $payload,
+            'user' => $payload,
         ]);
+    }
+
+    /**
+     * Persist reusable ITR profile fields to resident_profiles.
+     * Only writes columns that actually exist (the table varied across
+     * deployments), and only fields present in this request.
+     */
+    private function persistProfileFields(User $user, array $validated): ?ResidentProfile
+    {
+        if (!Schema::hasTable('resident_profiles')) {
+            return null;
+        }
+
+        $profileData = [];
+
+        foreach (self::PROFILE_FIELDS as $field) {
+            if (!array_key_exists($field, $validated)) {
+                continue;
+            }
+
+            if (!Schema::hasColumn('resident_profiles', $field)) {
+                continue;
+            }
+
+            $value = $validated[$field];
+            $profileData[$field] = ($value === '') ? null : $value;
+        }
+
+        // Keep the canonical philhealth columns in sync when only one is sent.
+        if (
+            array_key_exists('philhealth_number', $profileData)
+            && Schema::hasColumn('resident_profiles', 'philhealth_no')
+            && !array_key_exists('philhealth_no', $profileData)
+        ) {
+            $profileData['philhealth_no'] = $profileData['philhealth_number'];
+        }
+
+        if (empty($profileData)) {
+            return $this->residentProfileFor($user);
+        }
+
+        return ResidentProfile::updateOrCreate(
+            ['user_id' => $user->user_id],
+            $profileData
+        );
+    }
+
+    private function residentProfileFor(User $user): ?ResidentProfile
+    {
+        if (!Schema::hasTable('resident_profiles')) {
+            return null;
+        }
+
+        return ResidentProfile::where('user_id', $user->user_id)->first();
     }
 
     public function updateAvatar(Request $request): JsonResponse
@@ -184,9 +303,11 @@ class ProfileController extends Controller
         return $mobile;
     }
 
-    private function profilePayload(User $user): array
+    private function profilePayload(User $user, ?ResidentProfile $profile = null): array
     {
         $user->loadMissing('role');
+
+        $profile = $profile ?? $this->residentProfileFor($user);
 
         $fullName = trim((string) $user->first_name . ' ' . (string) $user->last_name);
         $avatarPath = $user->profile_picture ?: $user->avatar;
@@ -223,6 +344,31 @@ class ProfileController extends Controller
             'profile_picture' => $user->profile_picture,
             'avatar_url' => $this->publicFileUrl($avatarPath),
             'profile_picture_url' => $this->publicFileUrl($avatarPath),
+
+            // Reusable patient ITR details (from resident_profiles)
+            'civil_status' => $profile?->civil_status,
+            'religion' => $profile?->religion,
+            'educational_attainment' => $profile?->educational_attainment,
+            'occupation' => $profile?->occupation,
+            'client_type' => $profile?->client_type,
+            'guardian_name' => $profile?->guardian_name,
+            'emergency_contact_name' => $profile?->emergency_contact_name,
+            'emergency_contact_number' => $profile?->emergency_contact_number,
+            'philhealth_number' => $profile?->philhealth_number ?? $profile?->philhealth_no,
+            'street' => $profile?->street,
+            'purok' => $profile?->purok,
+            'household_number' => $profile?->household_number,
+            'allergies' => $profile?->allergies,
+            'past_medical_history' => $profile?->past_medical_history,
+            'maintenance_medications' => $profile?->maintenance_medications,
+            'family_history' => $profile?->family_history,
+            'personal_social_history' => $profile?->personal_social_history,
+            'smoking_status' => $profile?->smoking_status,
+            'alcohol_intake' => $profile?->alcohol_intake,
+            'lmp' => optional($profile?->lmp)->toDateString(),
+            'menstrual_history' => $profile?->menstrual_history,
+            'family_planning_method' => $profile?->family_planning_method,
+            'pregnancy_history' => $profile?->pregnancy_history,
 
             'created_at' => optional($user->created_at)->toISOString(),
             'updated_at' => optional($user->updated_at)->toISOString(),

@@ -6,11 +6,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\NotificationPreference;
 use App\Models\User;
+use App\Models\UserDeviceToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class NotificationController extends Controller
 {
@@ -155,6 +154,46 @@ class NotificationController extends Controller
         ]);
     }
 
+    public function storeDeviceToken(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'token' => ['nullable', 'string', 'max:255'],
+            'expo_push_token' => ['nullable', 'string', 'max:255'],
+            'provider' => ['nullable', 'string', 'max:30'],
+            'platform' => ['nullable', 'string', 'max:30'],
+            'device_name' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        $token = $validated['expo_push_token'] ?? $validated['token'] ?? null;
+
+        if (!$token) {
+            return response()->json([
+                'message' => 'Device token is required.',
+            ], 422);
+        }
+
+        $userId = $this->userKey($request->user());
+
+        $deviceToken = UserDeviceToken::updateOrCreate(
+            [
+                'token' => $token,
+            ],
+            [
+                'user_id' => $userId,
+                'provider' => $validated['provider'] ?? 'expo',
+                'platform' => $validated['platform'] ?? null,
+                'device_name' => $validated['device_name'] ?? null,
+                'is_active' => true,
+                'last_seen_at' => now(),
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Device token saved.',
+            'data' => $deviceToken,
+        ]);
+    }
+
     private function notificationQuery(User $user)
     {
         $ids = array_values(array_unique(array_filter([
@@ -181,7 +220,10 @@ class NotificationController extends Controller
 
     private function userKey(User $user): int
     {
-        return (int) ($user->getKey() ?: ($user->user_id ?? $user->id));
+        return (int) (
+            $user->getKey()
+            ?: ($user->user_id ?? $user->id ?? 0)
+        );
     }
 
     private function formatRawNotification(object $notification): array

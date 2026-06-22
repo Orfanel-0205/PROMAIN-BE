@@ -16,6 +16,7 @@ class User extends Authenticatable
     protected $fillable = [
         'role_id',
         'barangay_id',
+        'assigned_rhu_id',
 
         'first_name',
         'last_name',
@@ -122,5 +123,26 @@ class User extends Authenticatable
         $current = strtolower((string) $this->role?->name);
 
         return in_array($current, array_map('strtolower', $roles), true);
+    }
+
+    /**
+     * Roles that may view/manage ALL RHUs and filter by RHU.
+     * Everyone else is locked to a single RHU.
+     */
+    public function isGlobalRhuScope(): bool
+    {
+        return $this->hasAnyRole(['super_admin', 'mho']);
+    }
+
+    /**
+     * The RHU this staff/admin account is bound to.
+     * Prefers the explicit assigned_rhu_id, falling back to barangay_id so
+     * existing accounts keep working before assignments are set.
+     */
+    public function effectiveRhuId(): ?int
+    {
+        $rhu = $this->assigned_rhu_id ?? $this->barangay_id ?? null;
+
+        return $rhu ? (int) $rhu : null;
     }
 }
