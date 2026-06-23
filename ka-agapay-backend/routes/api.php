@@ -133,20 +133,20 @@ Route::prefix('v1')->group(function () {
         // PATCH  /api/v1/admin/users/{id}/reject
         // =====================================================================
 
-       Route::prefix('admin/users')
-    ->middleware('role:admin,staff_admin,rhu_admin,mho,municipal_mayor,it_staff,super_admin,superadmin')
-    ->group(function () {
-        Route::get('/',                    [AdminUserController::class, 'index']);
-        Route::post('/',                   [AdminUserController::class, 'store']);
-        Route::patch('/{id}',              [AdminUserController::class, 'update']);
-        Route::put('/{id}',                [AdminUserController::class, 'update']);
-        Route::delete('/{id}',             [AdminUserController::class, 'destroy']);
+        Route::prefix('admin/users')
+            ->middleware('role:admin,staff_admin,rhu_admin,mho,municipal_mayor,it_staff,super_admin,superadmin')
+            ->group(function () {
+                Route::get('/',                    [AdminUserController::class, 'index']);
+                Route::post('/',                   [AdminUserController::class, 'store']);
+                Route::patch('/{id}',              [AdminUserController::class, 'update']);
+                Route::put('/{id}',                [AdminUserController::class, 'update']);
+                Route::delete('/{id}',             [AdminUserController::class, 'destroy']);
 
-        Route::patch('/{id}/status',       [AdminUserController::class, 'status']);
-        Route::patch('/{id}/assign-role',  [AdminUserController::class, 'assignRole']);
-        Route::patch('/{id}/approve',      [AdminUserController::class, 'approve']);
-        Route::patch('/{id}/reject',       [AdminUserController::class, 'reject']);
-    });
+                Route::patch('/{id}/status',       [AdminUserController::class, 'status']);
+                Route::patch('/{id}/assign-role',  [AdminUserController::class, 'assignRole']);
+                Route::patch('/{id}/approve',      [AdminUserController::class, 'approve']);
+                Route::patch('/{id}/reject',       [AdminUserController::class, 'reject']);
+            });
 
         // =====================================================================
         // ADMIN SMS
@@ -387,9 +387,9 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('feedback')->group(function () {
-            Route::get('/',              [FeedbackController::class, 'index']);
-            Route::post('/',             [FeedbackController::class, 'store']);
-            Route::get('/{id}',          [FeedbackController::class, 'show']);
+            Route::get('/',               [FeedbackController::class, 'index']);
+            Route::post('/',              [FeedbackController::class, 'store']);
+            Route::get('/{id}',           [FeedbackController::class, 'show']);
             Route::patch('/{id}/respond', [FeedbackController::class, 'respond']);
         });
 
@@ -401,18 +401,29 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('follow-up-reminders')->group(function () {
-            Route::get('/',                  [FollowUpReminderController::class, 'index']);
-            Route::post('/',                 [FollowUpReminderController::class, 'store']);
-            Route::patch('/{id}/status',     [FollowUpReminderController::class, 'updateStatus']);
-            Route::post('/{id}/resend-sms',  [FollowUpReminderController::class, 'resendSms']);
+            Route::get('/',                 [FollowUpReminderController::class, 'index']);
+            Route::post('/',                [FollowUpReminderController::class, 'store']);
+            Route::patch('/{id}/status',    [FollowUpReminderController::class, 'updateStatus']);
+            Route::post('/{id}/resend-sms', [FollowUpReminderController::class, 'resendSms']);
         });
 
         // =====================================================================
-        // REPORTS — Diagnosis + ITR combined CSV export
-        // GET /api/v1/reports/consultations/export
+        // REPORTS — WEB ADMIN
         // =====================================================================
 
-        Route::get('/reports/consultations/export', [ReportController::class, 'exportConsultationsCsv']);
+        Route::prefix('reports')
+            ->middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
+            ->group(function () {
+                Route::get('/consultations/diagnosis-itr', [
+                    ReportController::class,
+                    'diagnosisItr',
+                ]);
+
+                Route::get('/consultations/export', [
+                    ReportController::class,
+                    'exportDiagnosisItrCsv',
+                ]);
+            });
 
         // =====================================================================
         // TELEMEDICINE
@@ -472,17 +483,17 @@ Route::prefix('v1')->group(function () {
         // GET  /api/v1/ocr/result/{id}
         // =====================================================================
 
-      Route::prefix('ocr')->group(function () {
-    Route::post('/upload',      [OcrController::class, 'upload']);
-    Route::get('/results/{id}', [OcrController::class, 'result']);
-    Route::get('/result/{id}',  [OcrController::class, 'result']);
-    Route::post('/retry/{id}',  [OcrController::class, 'retry']);
+        Route::prefix('ocr')->group(function () {
+            Route::post('/upload',      [OcrController::class, 'upload']);
+            Route::get('/results/{id}', [OcrController::class, 'result']);
+            Route::get('/result/{id}',  [OcrController::class, 'result']);
+            Route::post('/retry/{id}',  [OcrController::class, 'retry']);
 
-    Route::post('/prescription/{consultationId}', [
-        OcrController::class,
-        'scanPrescription',
-    ]);
-});
+            Route::post('/prescription/{consultationId}', [
+                OcrController::class,
+                'scanPrescription',
+            ]);
+        });
 
         // =====================================================================
         // HOME VISITS
@@ -544,6 +555,16 @@ Route::prefix('v1')->group(function () {
                 Route::get('/registration-stats',      [AnalyticsController::class, 'registrationStats']);
                 Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
                 Route::get('/realtime',                [AnalyticsController::class, 'realtime']);
+
+                Route::get('/diagnosis-itr-summary', [
+                    AnalyticsController::class,
+                    'diagnosisItrSummary',
+                ]);
+
+                Route::get('/heatmap/diagnosis-itr-signals', [
+                    AnalyticsController::class,
+                    'heatmapDiagnosisItrSignals',
+                ]);
 
                 Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
                 Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
