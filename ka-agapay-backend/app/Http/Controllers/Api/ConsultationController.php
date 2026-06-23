@@ -4,10 +4,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Appointment;
 use App\Models\Consultation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
@@ -107,15 +107,23 @@ class ConsultationController extends Controller
         ]);
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Request $request, int $id): JsonResponse
     {
-        $relations = ['resident', 'attendant', 'appointment'];
-
-        if (method_exists(Consultation::class, 'medicalReports')) {
-            $relations[] = 'medicalReports';
-        }
+        $relations = $this->consultationRelations();
 
         $consultation = Consultation::with($relations)->findOrFail($id);
+
+        // Onsite "first attended" capture: the moment RHU staff opens an ACTIVE
+        // chart at the desk. Sets the timestamp + ITR snapshot once; never on a
+        // completed/cancelled record. The read response is never blocked by this.
+        $this->ensureFirstAttended($consultation, $request);
+
+        $consultation = $consultation->fresh($relations);
+
+        $consultation->setAttribute(
+            'past_consultations',
+            $this->recentConsultationsFor($consultation)
+        );
 
         return response()->json([
             'consultation' => $consultation,
@@ -141,7 +149,7 @@ class ConsultationController extends Controller
 
         $payload = $this->filterConsultationPayload([
             ...$validated,
-            'attended_by' => $request->user()->user_id,
+            'attended_by' => $this->currentUserId($request),
             'consultation_date' => $validated['consultation_date'] ?? now()->toDateString(),
             'status' => $validated['status'] ?? 'open',
             'started_at' => now(),
@@ -151,12 +159,14 @@ class ConsultationController extends Controller
             $payload['chief_complaint'] = $payload['subjective'];
         }
 
-        $consultation = Consultation::create($payload)
-            ->load(['resident', 'attendant', 'appointment']);
+        $consultation = Consultation::create($payload);
+
+        // Patient is at the desk: stamp first-attended + ITR snapshot on creation.
+        $this->ensureFirstAttended($consultation, $request);
 
         return response()->json([
             'message' => 'Consultation created.',
-            'consultation' => $consultation,
+            'consultation' => $consultation->fresh($this->consultationRelations()),
         ], 201);
     }
 
@@ -167,13 +177,15 @@ class ConsultationController extends Controller
 
     public function updateSoap(Request $request, int $id): JsonResponse
     {
-        $consultation = Consultation::findOrFail($id);
+        $consultation = Consultation::with('appointment')->findOrFail($id);
 
         if ($consultation->status === 'completed') {
             return response()->json([
                 'message' => 'This consultation is already completed and cannot be edited.',
             ], 422);
         }
+
+        $this->ensureFirstAttended($consultation, $request);
 
         $validated = $request->validate([
             'consultation_date' => ['nullable', 'date'],
@@ -191,23 +203,23 @@ class ConsultationController extends Controller
 
         $updates = $this->buildSoapUpdates($consultation, $validated, $request);
 
-        $consultation->update($updates);
+        DB::transaction(function () use ($consultation, $updates, $request) {
+            $consultation->update($updates);
 
-        if (($updates['status'] ?? null) === 'cancelled' && $consultation->appointment) {
-            $consultation->appointment->update([
-                'status' => 'cancelled',
-                'handled_by' => $consultation->appointment->handled_by ?: $request->user()->user_id,
-            ]);
-        }
+            $freshConsultation = $consultation->fresh('appointment');
+
+            if (($updates['status'] ?? null) === 'cancelled') {
+                $this->syncCancelledConsultationFlow($freshConsultation, $request);
+            }
+
+            if (($updates['status'] ?? null) === 'completed') {
+                $this->syncCompletedConsultationFlow($freshConsultation, $request);
+            }
+        });
 
         return response()->json([
             'message' => 'SOAP note saved.',
-            'consultation' => $consultation->fresh([
-                'resident',
-                'attendant',
-                'appointment',
-                'medicalReports',
-            ]),
+            'consultation' => $consultation->fresh($this->consultationRelations()),
         ]);
     }
 
@@ -215,19 +227,9 @@ class ConsultationController extends Controller
     {
         $consultation = Consultation::with('appointment')->findOrFail($id);
 
-        if ($consultation->status === 'completed') {
-            return response()->json([
-                'message' => 'This consultation is already completed.',
-                'consultation' => $consultation->fresh([
-                    'resident',
-                    'attendant',
-                    'appointment',
-                    'medicalReports',
-                ]),
-            ]);
-        }
+        $this->ensureFirstAttended($consultation, $request);
 
-        if ($request->all()) {
+        if ($request->all() && $consultation->status !== 'completed') {
             $updates = $this->buildSoapUpdates($consultation, $request->all(), $request);
             unset($updates['status']);
             unset($updates['completed_at']);
@@ -236,58 +238,54 @@ class ConsultationController extends Controller
             $consultation = Consultation::with('appointment')->findOrFail($id);
         }
 
-        $subjective = trim((string) (
-            $consultation->subjective
-            ?: $consultation->chief_complaint
-            ?: ''
-        ));
+        if ($consultation->status !== 'completed') {
+            $subjective = trim((string) (
+                $consultation->subjective
+                ?: $consultation->chief_complaint
+                ?: ''
+            ));
 
-        $assessment = trim((string) (
-            $consultation->assessment
-            ?: $consultation->diagnosis
-            ?: ''
-        ));
+            $assessment = trim((string) (
+                $consultation->assessment
+                ?: $consultation->diagnosis
+                ?: ''
+            ));
 
-        $plan = trim((string) (
-            $consultation->plan
-            ?: $consultation->treatment
-            ?: ''
-        ));
+            $plan = trim((string) (
+                $consultation->plan
+                ?: $consultation->treatment
+                ?: ''
+            ));
 
-        if ($subjective === '' || $assessment === '' || $plan === '') {
-            return response()->json([
-                'message' => 'Please complete the SOAP note before completing the consultation. Subjective, Assessment/Diagnosis, and Plan/Treatment are required.',
-                'errors' => [
-                    'soap' => [
-                        'Subjective, Assessment/Diagnosis, and Plan/Treatment are required.',
+            if ($subjective === '' || $assessment === '' || $plan === '') {
+                return response()->json([
+                    'message' => 'Please complete the SOAP note before completing the consultation. Subjective, Assessment/Diagnosis, and Plan/Treatment are required.',
+                    'errors' => [
+                        'soap' => [
+                            'Subjective, Assessment/Diagnosis, and Plan/Treatment are required.',
+                        ],
                     ],
-                ],
-            ], 422);
+                ], 422);
+            }
         }
 
-        $consultation->update($this->filterConsultationPayload([
-            'status' => 'completed',
-            'completed_at' => now(),
-            'attended_by' => $consultation->attended_by ?: $request->user()->user_id,
-            'diagnosis' => $consultation->diagnosis ?: $consultation->assessment,
-            'treatment' => $consultation->treatment ?: $consultation->plan,
-        ]));
+        DB::transaction(function () use ($consultation, $request) {
+            if ($consultation->status !== 'completed') {
+                $consultation->update($this->filterConsultationPayload([
+                    'status' => 'completed',
+                    'completed_at' => now(),
+                    'attended_by' => $consultation->attended_by ?: $this->currentUserId($request),
+                    'diagnosis' => $consultation->diagnosis ?: $consultation->assessment,
+                    'treatment' => $consultation->treatment ?: $consultation->plan,
+                ]));
+            }
 
-        if ($consultation->appointment) {
-            $consultation->appointment->update([
-                'status' => 'completed',
-                'handled_by' => $consultation->appointment->handled_by ?: $request->user()->user_id,
-            ]);
-        }
+            $this->syncCompletedConsultationFlow($consultation->fresh('appointment'), $request);
+        });
 
         return response()->json([
             'message' => 'Consultation completed.',
-            'consultation' => $consultation->fresh([
-                'resident',
-                'attendant',
-                'appointment',
-                'medicalReports',
-            ]),
+            'consultation' => $consultation->fresh($this->consultationRelations()),
         ]);
     }
 
@@ -318,6 +316,10 @@ class ConsultationController extends Controller
 
         if (($updates['status'] ?? null) === 'completed') {
             $updates['completed_at'] = now();
+        } else {
+            // Saving without completing = a draft save. Stamp the time so the SOAP
+            // page can show "Draft saved …" and drive the draft TTL indicator.
+            $updates['draft_saved_at'] = now();
         }
 
         if (!$consultation->started_at) {
@@ -325,7 +327,7 @@ class ConsultationController extends Controller
         }
 
         if (!$consultation->attended_by) {
-            $updates['attended_by'] = $request->user()->user_id;
+            $updates['attended_by'] = $this->currentUserId($request);
         }
 
         if (
@@ -349,6 +351,255 @@ class ConsultationController extends Controller
         }
 
         return $filtered;
+    }
+
+    private function syncCompletedConsultationFlow(Consultation $consultation, Request $request): void
+    {
+        $appointmentId = (int) ($consultation->appointment_id ?? 0);
+
+        if ($appointmentId <= 0) {
+            return;
+        }
+
+        $staffId = $this->currentUserId($request);
+
+        $appointmentUpdates = [
+            'status' => 'completed',
+        ];
+
+        if (Schema::hasColumn('appointments', 'handled_by') && $staffId > 0) {
+            $appointmentUpdates['handled_by'] = DB::raw('COALESCE(handled_by, ' . $staffId . ')');
+        }
+
+        if (Schema::hasColumn('appointments', 'updated_at')) {
+            $appointmentUpdates['updated_at'] = now();
+        }
+
+        DB::table('appointments')
+            ->where('id', $appointmentId)
+            ->update($appointmentUpdates);
+
+        if (!Schema::hasTable('queue_tickets')) {
+            return;
+        }
+
+        $ticket = DB::table('queue_tickets')
+            ->where('appointment_id', $appointmentId)
+            ->latest('id')
+            ->first();
+
+        if (!$ticket) {
+            return;
+        }
+
+        $queueUpdates = [
+            'status' => 'completed',
+        ];
+
+        if (Schema::hasColumn('queue_tickets', 'service_ended_at')) {
+            $queueUpdates['service_ended_at'] = now();
+        }
+
+        if (Schema::hasColumn('queue_tickets', 'served_by') && $staffId > 0) {
+            $queueUpdates['served_by'] = $ticket->served_by ?: $staffId;
+        }
+
+        if (
+            Schema::hasColumn('queue_tickets', 'service_time_minutes') &&
+            !empty($ticket->service_started_at)
+        ) {
+            $startedAt = strtotime((string) $ticket->service_started_at);
+
+            if ($startedAt) {
+                $queueUpdates['service_time_minutes'] = max(
+                    0,
+                    (int) floor((time() - $startedAt) / 60)
+                );
+            }
+        }
+
+        if (Schema::hasColumn('queue_tickets', 'updated_at')) {
+            $queueUpdates['updated_at'] = now();
+        }
+
+        DB::table('queue_tickets')
+            ->where('id', $ticket->id)
+            ->update($queueUpdates);
+    }
+
+    private function syncCancelledConsultationFlow(Consultation $consultation, Request $request): void
+    {
+        $appointmentId = (int) ($consultation->appointment_id ?? 0);
+
+        if ($appointmentId <= 0) {
+            return;
+        }
+
+        $staffId = $this->currentUserId($request);
+
+        $appointmentUpdates = [
+            'status' => 'cancelled',
+        ];
+
+        if (Schema::hasColumn('appointments', 'handled_by') && $staffId > 0) {
+            $appointmentUpdates['handled_by'] = DB::raw('COALESCE(handled_by, ' . $staffId . ')');
+        }
+
+        if (Schema::hasColumn('appointments', 'updated_at')) {
+            $appointmentUpdates['updated_at'] = now();
+        }
+
+        DB::table('appointments')
+            ->where('id', $appointmentId)
+            ->update($appointmentUpdates);
+
+        if (!Schema::hasTable('queue_tickets')) {
+            return;
+        }
+
+        $queueUpdates = [
+            'status' => 'cancelled',
+        ];
+
+        if (Schema::hasColumn('queue_tickets', 'cancelled_at')) {
+            $queueUpdates['cancelled_at'] = now();
+        }
+
+        if (Schema::hasColumn('queue_tickets', 'cancellation_reason')) {
+            $queueUpdates['cancellation_reason'] = 'Consultation cancelled by RHU staff.';
+        }
+
+        if (Schema::hasColumn('queue_tickets', 'updated_at')) {
+            $queueUpdates['updated_at'] = now();
+        }
+
+        DB::table('queue_tickets')
+            ->where('appointment_id', $appointmentId)
+            ->whereNotIn('status', ['completed', 'cancelled'])
+            ->update($queueUpdates);
+    }
+
+    private function currentUserId(Request $request): int
+    {
+        $user = $request->user();
+
+        return (int) (
+            $user->user_id
+            ?? $user->id
+            ?? $user->getKey()
+            ?? 0
+        );
+    }
+
+    private function consultationRelations(): array
+    {
+        // Includes the patient's ITR/profile + queue ticket so the SOAP page can
+        // show the "Patient ITR Snapshot" panel after every load/save.
+        $relations = [
+            'resident.residentProfile.barangay',
+            'attendant',
+            'appointment.queueTicket',
+        ];
+
+        if (method_exists(Consultation::class, 'firstAttendant')) {
+            $relations[] = 'firstAttendant';
+        }
+
+        if (method_exists(Consultation::class, 'medicalReports')) {
+            $relations[] = 'medicalReports';
+        }
+
+        return $relations;
+    }
+
+    /**
+     * Capture the first time staff opened/worked an ACTIVE chart at the desk,
+     * and snapshot the patient's ITR once for record consistency. Idempotent and
+     * non-fatal: never blocks reads/writes, never touches completed records.
+     */
+    private function ensureFirstAttended(Consultation $consultation, Request $request): void
+    {
+        if (!Schema::hasColumn('consultations', 'first_attended_at')) {
+            return;
+        }
+
+        $status = strtolower((string) $consultation->status);
+
+        if (in_array($status, ['completed', 'cancelled'], true)) {
+            return;
+        }
+
+        if (!empty($consultation->first_attended_at)) {
+            return;
+        }
+
+        $updates = [
+            'first_attended_at' => now(),
+            'first_attended_by' => $consultation->first_attended_by ?: $this->currentUserId($request),
+        ];
+
+        if (Schema::hasColumn('consultations', 'itr_snapshot') && empty($consultation->itr_snapshot)) {
+            $updates['itr_snapshot'] = $this->buildItrSnapshot($consultation);
+        }
+
+        try {
+            $consultation->forceFill($this->filterConsultationPayload($updates))->save();
+        } catch (\Throwable $e) {
+            logger()->warning('[ConsultationController] first-attended capture failed.', [
+                'consultation_id' => $consultation->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function buildItrSnapshot(Consultation $consultation): array
+    {
+        $consultation->loadMissing('resident.residentProfile.barangay');
+
+        $user = $consultation->resident;
+        $profile = $user?->residentProfile;
+
+        return [
+            'captured_at' => now()->toIso8601String(),
+            'full_name' => $user?->full_name,
+            'sex' => $user?->sex ?? $profile?->sex ?? $profile?->gender,
+            'birth_date' => optional($user?->birthday)->toDateString()
+                ?? optional($profile?->birth_date)->toDateString()
+                ?? optional($profile?->birthdate)->toDateString(),
+            'mobile_number' => $user?->mobile_number ?? $profile?->mobile_number ?? $profile?->contact_number,
+            'barangay' => $profile?->barangay?->name ?? $user?->barangay,
+            'address' => $profile?->address,
+            'civil_status' => $profile?->civil_status,
+            'philhealth' => $profile?->philhealth_number ?? $profile?->philhealth_no,
+            'guardian_name' => $profile?->guardian_name,
+            'emergency_contact_name' => $profile?->emergency_contact_name,
+            'emergency_contact_number' => $profile?->emergency_contact_number,
+            'allergies' => $profile?->allergies,
+            'past_medical_history' => $profile?->past_medical_history ?? $profile?->medical_history,
+            'maintenance_medications' => $profile?->maintenance_medications,
+            'family_history' => $profile?->family_history,
+            'personal_social_history' => $profile?->personal_social_history,
+        ];
+    }
+
+    private function recentConsultationsFor(Consultation $consultation): array
+    {
+        return Consultation::query()
+            ->where('user_id', $consultation->user_id)
+            ->where('id', '!=', $consultation->id)
+            ->orderByDesc('consultation_date')
+            ->orderByDesc('id')
+            ->limit(5)
+            ->get(['id', 'consultation_date', 'diagnosis', 'chief_complaint', 'status', 'completed_at'])
+            ->map(fn (Consultation $c) => [
+                'id' => $c->id,
+                'consultation_date' => optional($c->consultation_date)->toDateString(),
+                'diagnosis' => $c->diagnosis,
+                'chief_complaint' => $c->chief_complaint,
+                'status' => $c->status,
+                'completed_at' => optional($c->completed_at)->toIso8601String(),
+            ])
+            ->all();
     }
 
     private function formatForMobile(Consultation $consultation): array

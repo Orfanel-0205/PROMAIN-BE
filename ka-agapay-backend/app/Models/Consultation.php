@@ -24,12 +24,22 @@ class Consultation extends Model
         'notes',
         'started_at',
         'completed_at',
+
+        // Slice B1 — visit tracking (additive)
+        'first_attended_at',
+        'first_attended_by',
+        'draft_saved_at',
+        'itr_snapshot',
     ];
 
     protected $casts = [
         'consultation_date' => 'date:Y-m-d',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
+
+        'first_attended_at' => 'datetime',
+        'draft_saved_at' => 'datetime',
+        'itr_snapshot' => 'array',
     ];
 
     public function appointment(): BelongsTo
@@ -45,6 +55,11 @@ class Consultation extends Model
     public function attendant(): BelongsTo
     {
         return $this->belongsTo(User::class, 'attended_by', 'user_id');
+    }
+
+    public function firstAttendant(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'first_attended_by', 'user_id');
     }
 
     public function medicalReports(): HasMany
