@@ -1,5 +1,6 @@
 <?php
-//app/Models/Consultation.php
+// app/Models/Consultation.php
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
@@ -31,7 +32,7 @@ class Consultation extends Model
         'draft_saved_at',
         'itr_snapshot',
 
-        // Heatmap freshness window (visibility only — never deletion)
+        // Diagnosis + ITR heatmap freshness (additive)
         'heatmap_posted_at',
         'heatmap_signal_expires_at',
     ];
