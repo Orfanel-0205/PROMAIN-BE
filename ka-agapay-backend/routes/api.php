@@ -556,16 +556,15 @@ Route::prefix('v1')->group(function () {
                 Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
                 Route::get('/realtime',                [AnalyticsController::class, 'realtime']);
 
-                Route::get('/diagnosis-itr-summary', [
-                    AnalyticsController::class,
-                    'diagnosisItrSummary',
-                ]);
+               Route::get('/diagnosis-itr-summary', [
+    AnalyticsController::class,
+    'diagnosisItrSummary',
+]);
 
-                Route::get('/heatmap/diagnosis-itr-signals', [
-                    AnalyticsController::class,
-                    'heatmapDiagnosisItrSignals',
-                ]);
-
+Route::get('/heatmap/diagnosis-itr-signals', [
+    AnalyticsController::class,
+    'heatmapDiagnosisItrSignals',
+]);
                 Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
                 Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
                 Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);

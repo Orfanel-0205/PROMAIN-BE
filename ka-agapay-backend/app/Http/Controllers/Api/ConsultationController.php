@@ -294,7 +294,7 @@ class ConsultationController extends Controller
         ]);
     }
 
-    private function buildSoapUpdates(
+       private function buildSoapUpdates(
         Consultation $consultation,
         array $validated,
         Request $request
@@ -320,7 +320,20 @@ class ConsultationController extends Controller
         }
 
         if (($updates['status'] ?? null) === 'completed') {
-            $updates['completed_at'] = now();
+            $completedAt = now();
+
+            $updates['completed_at'] = $completedAt;
+
+            // 3-hour fresh heatmap signal window.
+            // This is only for realtime/freshness visibility.
+            // The consultation remains permanently available for reports.
+            if (Schema::hasColumn('consultations', 'heatmap_posted_at')) {
+                $updates['heatmap_posted_at'] = $completedAt;
+            }
+
+            if (Schema::hasColumn('consultations', 'heatmap_signal_expires_at')) {
+                $updates['heatmap_signal_expires_at'] = $completedAt->copy()->addHours(3);
+            }
         } else {
             // Saving without completing = a draft save. Stamp the time so the SOAP
             // page can show "Draft saved …" and drive the draft TTL indicator.

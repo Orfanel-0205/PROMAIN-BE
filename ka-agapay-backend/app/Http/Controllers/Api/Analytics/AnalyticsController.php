@@ -7,12 +7,14 @@ use App\Http\Controllers\Controller;
 use App\Services\Analytics\HeatmapAnalyticsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Services\Reports\DiagnosisItrReportService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class AnalyticsController extends Controller
+
 {
     /**
      * GET /api/v1/analytics/realtime
@@ -550,6 +552,77 @@ class AnalyticsController extends Controller
             : now()->subDays(30)->startOfDay();
 
         return [$from, $to];
+    }
+        /**
+     * GET /api/v1/analytics/diagnosis-itr-summary
+     *
+     * Diagnosis + ITR summary for the Analytics dashboard.
+     */
+    public function diagnosisItrSummary(
+        Request $request,
+        DiagnosisItrReportService $diagnosisItr
+    ): JsonResponse {
+        $validated = $request->validate([
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
+            'rhu_id' => ['nullable'],
+            'barangay_id' => ['nullable'],
+            'diagnosis' => ['nullable', 'string', 'max:150'],
+            'disease' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        $filters = [
+            'date_from' => $validated['date_from'] ?? $validated['from'] ?? null,
+            'date_to' => $validated['date_to'] ?? $validated['to'] ?? null,
+            'rhu_id' => $validated['rhu_id'] ?? null,
+            'barangay_id' => $validated['barangay_id'] ?? null,
+            'diagnosis' => trim((string) ($validated['diagnosis'] ?? $validated['disease'] ?? '')) ?: null,
+        ];
+
+        return response()->json([
+            'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => $filters,
+            'data' => $diagnosisItr->summary($filters, $request->user()),
+        ]);
+    }
+
+    /**
+     * GET /api/v1/analytics/heatmap/diagnosis-itr-signals
+     *
+     * Completed consultation heatmap signals with Diagnosis + ITR fields.
+     */
+    public function heatmapDiagnosisItrSignals(
+        Request $request,
+        DiagnosisItrReportService $diagnosisItr
+    ): JsonResponse {
+        $validated = $request->validate([
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
+            'rhu_id' => ['nullable'],
+            'barangay_id' => ['nullable'],
+            'diagnosis' => ['nullable', 'string', 'max:150'],
+            'disease' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        $filters = [
+            'date_from' => $validated['date_from'] ?? $validated['from'] ?? null,
+            'date_to' => $validated['date_to'] ?? $validated['to'] ?? null,
+            'rhu_id' => $validated['rhu_id'] ?? null,
+            'barangay_id' => $validated['barangay_id'] ?? null,
+            'diagnosis' => trim((string) ($validated['diagnosis'] ?? $validated['disease'] ?? '')) ?: null,
+        ];
+
+        return response()->json([
+            'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => $filters,
+            'data' => $diagnosisItr->heatmapSignals($filters, $request->user())->values(),
+        ]);
     }
 
     private function safeCount(string $table): int
