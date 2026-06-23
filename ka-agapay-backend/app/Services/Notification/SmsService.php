@@ -22,10 +22,21 @@ class SmsService
         try {
             $response = $this->callProvider($mobile, $message);
 
+            // Semaphore returns a list: [{ "message_id": 123, "recipient": "...", "status": "Pending" }]
+            $first = is_array($response) ? ($response[0] ?? []) : [];
+
+            $messageId  = $first['message_id'] ?? null;
+            $rawStatus  = $first['status'] ?? null;
+            $status     = $this->mapStatus($rawStatus);
+
             $log->update([
-                'status'              => 'sent',
-                'provider_message_id' => $response['message_id'] ?? null,
-                'sent_at'             => now(),
+                'status'              => $status,
+                'provider_message_id' => $messageId,
+                // Only stamp sent_at once the message is actually sent/delivered.
+                'sent_at'             => $status === 'sent' ? now() : null,
+                'error_message'       => $status === 'failed'
+                    ? ('Semaphore status: ' . ($rawStatus ?? 'unknown'))
+                    : null,
             ]);
         } catch (\Throwable $e) {
             Log::error('SMS send failed', [
@@ -43,10 +54,13 @@ class SmsService
         return $log;
     }
 
+    /**
+     * Calls Semaphore and returns the decoded JSON list of result objects.
+     */
     private function callProvider(string $mobile, string $message): array
     {
-        // Semaphore (Philippine SMS provider)
-        $response = Http::post('https://api.semaphore.co/api/v4/messages', [
+        // Semaphore (Philippine SMS provider). Sent as form data, which Semaphore expects.
+        $response = Http::asForm()->post('https://api.semaphore.co/api/v4/messages', [
             'apikey'      => config('services.sms.semaphore_key'),
             'number'      => $mobile,
             'message'     => $message,
@@ -57,6 +71,27 @@ class SmsService
             throw new \RuntimeException('SMS provider returned error: ' . $response->body());
         }
 
-        return $response->json()[0] ?? [];
+        $json = $response->json();
+
+        if (!is_array($json)) {
+            throw new \RuntimeException('Invalid Semaphore response: ' . $response->body());
+        }
+
+        return $json;
+    }
+
+    /**
+     * Maps the Semaphore status string to our sms_logs status vocabulary.
+     * Unknown values fall back to "pending" so we never falsely claim "sent".
+     */
+    private function mapStatus(mixed $status): string
+    {
+        $value = strtolower(trim((string) $status));
+
+        return match ($value) {
+            'sent', 'delivered', 'success', 'successful' => 'sent',
+            'failed', 'error', 'undelivered', 'refunded', 'rejected' => 'failed',
+            default => 'pending', // pending, queued, processing, empty, or anything unexpected
+        };
     }
 }
