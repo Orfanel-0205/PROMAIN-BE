@@ -393,8 +393,105 @@ class ProfileController extends Controller
             'cycle' => $profile?->cycle,
             'menopausal_age' => $profile?->menopausal_age,
 
+            // Mandatory-profile gating for consultation booking (ITR readiness).
+            'profile_completion' => $this->profileCompletionFor($user, $profile),
+
             'created_at' => optional($user->created_at)->toISOString(),
             'updated_at' => optional($user->updated_at)->toISOString(),
+        ];
+    }
+
+    /**
+     * Compute whether the resident has the minimum ITR profile fields required
+     * to book a consultation. Safe against missing columns / missing profile;
+     * supports legacy field names; never blocks login — only informs the app.
+     *
+     * PhilHealth is reported as a non-blocking warning (the system still allows
+     * patients without PhilHealth), so it does NOT count toward can_book.
+     */
+    public function profileCompletionFor(User $user, ?ResidentProfile $profile = null): array
+    {
+        $profile = $profile ?? $this->residentProfileFor($user);
+
+        // First non-empty value across candidate [source, attribute] pairs.
+        $val = function (array $candidates) use ($user, $profile): ?string {
+            foreach ($candidates as [$source, $attr]) {
+                $obj = $source === 'user' ? $user : $profile;
+                if (!$obj) {
+                    continue;
+                }
+                $raw = $obj->getAttribute($attr);
+                $value = trim((string) ($raw ?? ''));
+                if ($value !== '') {
+                    return $value;
+                }
+            }
+            return null;
+        };
+
+        // key => [label, candidate [source, attribute] pairs]
+        $checks = [
+            'first_name' => ['First Name', [['user', 'first_name'], ['profile', 'first_name']]],
+            'last_name' => ['Last Name', [['user', 'last_name'], ['profile', 'last_name']]],
+            'birth_date' => ['Birth Date', [
+                ['user', 'birthday'], ['user', 'birth_date'],
+                ['profile', 'birth_date'], ['profile', 'birthdate'], ['profile', 'date_of_birth'],
+            ]],
+            'gender' => ['Gender / Sex', [['user', 'sex'], ['user', 'gender'], ['profile', 'sex'], ['profile', 'gender']]],
+            'civil_status' => ['Civil Status', [['profile', 'civil_status'], ['user', 'civil_status']]],
+            'mobile_number' => ['Mobile Number', [
+                ['user', 'mobile_number'],
+                ['profile', 'mobile_number'], ['profile', 'contact_number'], ['profile', 'phone_number'],
+            ]],
+            'barangay' => ['Barangay / Address', [
+                ['profile', 'barangay_id'], ['user', 'barangay_id'],
+                ['user', 'barangay'], ['profile', 'address'], ['user', 'address'],
+            ]],
+            'guardian_name' => ['Guardian / Emergency Contact Name', [
+                ['profile', 'guardian_name'], ['profile', 'emergency_contact_name'],
+            ]],
+            'guardian_contact' => ['Guardian Contact Number', [
+                ['profile', 'guardian_contact'], ['profile', 'emergency_contact_number'], ['profile', 'emergency_contact'],
+            ]],
+        ];
+
+        $missingFields = [];
+        $missingLabels = [];
+        $filled = 0;
+
+        foreach ($checks as $key => [$label, $candidates]) {
+            if ($val($candidates) !== null) {
+                $filled++;
+            } else {
+                $missingFields[] = $key;
+                $missingLabels[] = $label;
+            }
+        }
+
+        $total = count($checks);
+        $percent = $total > 0 ? (int) round(($filled / $total) * 100) : 100;
+        $isComplete = count($missingFields) === 0;
+
+        // PhilHealth — informational only (does not block booking).
+        $philhealthNumber = $val([
+            ['profile', 'philhealth_number'], ['profile', 'philhealth_no'], ['profile', 'philhealth_pin'],
+        ]);
+        $philhealthVerified = (bool) ($profile && $profile->getAttribute('philhealth_verified_at'));
+
+        return [
+            'is_complete' => $isComplete,
+            'can_book_consultation' => $isComplete,
+            'percent' => $percent,
+            'missing_fields' => $missingFields,
+            'missing_labels' => $missingLabels,
+            'philhealth_present' => $philhealthNumber !== null,
+            'philhealth_verified' => $philhealthVerified,
+            'philhealth_warning' => $philhealthVerified
+                ? null
+                : 'PhilHealth is not yet verified. You may continue only if PhilHealth is not available.',
+            'message' => $isComplete
+                ? 'Your health profile is complete. You can book a consultation.'
+                : 'Complete your health profile before booking a consultation. These details are required for your ITR.',
         ];
     }
 

@@ -466,6 +466,41 @@ class QueueController extends Controller
         ]);
     }
 
+    public function callPriorityNext(Request $request): JsonResponse
+    {
+        $this->authorize('callNext', QueueTicket::class);
+
+        $validated = $request->validate([
+            'rhu_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('barangays', 'barangay_id'),
+            ],
+            'service_type' => [
+                'nullable',
+                'string',
+                Rule::in($this->serviceTypes()),
+            ],
+        ]);
+
+        $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
+        $serviceType = $validated['service_type'] ?? 'opd_consultation';
+
+        $ticket = $this->queueService->callPriorityNext($rhuId, $serviceType);
+
+        if (!$ticket) {
+            return response()->json([
+                'message' => 'No priority patients (senior, PWD, pregnant, pediatric, or emergency) are currently waiting.',
+                'data' => null,
+            ]);
+        }
+
+        return response()->json([
+            'message' => "Now calling priority patient: {$ticket->ticket_number}",
+            'data' => new QueueTicketResource($ticket),
+        ]);
+    }
+
     public function live(Request $request): JsonResponse
     {
         $validated = $request->validate([

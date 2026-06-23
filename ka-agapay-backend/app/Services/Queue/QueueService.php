@@ -513,6 +513,70 @@ class QueueService
     }
 
     /**
+     * Call the next PRIORITY patient explicitly.
+     *
+     * Unlike callNext (which is priority-first but will call anyone if no
+     * priority case is waiting), this only pulls a genuine priority case:
+     * emergency / pregnant / senior / PWD / pediatric / BHW-endorsed, or a
+     * high computed score. Returns null when there is no priority patient
+     * waiting, so staff get a clear "no priority patients" message instead of
+     * accidentally pulling a regular walk-in.
+     *
+     * Keeps the single-active-call guarantee: if a patient is already called,
+     * that ticket is returned instead of calling a second patient.
+     */
+    public function callPriorityNext(int $rhuId, string $serviceType): ?QueueTicket
+    {
+        return DB::transaction(function () use ($rhuId, $serviceType) {
+            $this->applyAntiStarvationSafely($rhuId);
+            $this->reflowQueuePositions($rhuId, $serviceType);
+
+            $alreadyCalled = QueueTicket::query()
+                ->forRhu($rhuId)
+                ->byServiceType($serviceType)
+                ->forToday()
+                ->where('status', 'called')
+                ->orderBy('called_at')
+                ->lockForUpdate()
+                ->first();
+
+            if ($alreadyCalled) {
+                return $alreadyCalled->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
+            }
+
+            $next = QueueTicket::query()
+                ->forRhu($rhuId)
+                ->byServiceType($serviceType)
+                ->forToday()
+                ->waiting()
+                ->where(function ($q) {
+                    $q->where('is_emergency', true)
+                        ->orWhere('is_pregnant', true)
+                        ->orWhere('is_senior', true)
+                        ->orWhere('is_pwd', true)
+                        ->orWhere('is_pediatric', true)
+                        ->orWhere('is_bhw_endorsed', true)
+                        ->orWhere('priority_score', '>=', 35)
+                        ->orWhereNotIn('priority_category', ['', 'regular', 'Low']);
+                })
+                ->orderByDesc('is_emergency')
+                ->orderByDesc('priority_score')
+                ->orderBy('issued_at')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->first();
+
+            if (!$next) {
+                return null;
+            }
+
+            return $this->transitionStatus($next, 'called', [
+                'system_action' => 'call_priority_next',
+            ]);
+        });
+    }
+
+    /**
      * Live queue for monitor.
      */
     public function getLiveQueue(int $rhuId, ?string $serviceType = null): array
