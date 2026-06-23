@@ -277,6 +277,11 @@ class ConsultationController extends Controller
                     'attended_by' => $consultation->attended_by ?: $this->currentUserId($request),
                     'diagnosis' => $consultation->diagnosis ?: $consultation->assessment,
                     'treatment' => $consultation->treatment ?: $consultation->plan,
+
+                    // 3-hour "fresh heatmap signal" window. Visibility/freshness
+                    // only — the record itself is kept permanently for reports.
+                    'heatmap_posted_at' => now(),
+                    'heatmap_signal_expires_at' => now()->addHours(3),
                 ]));
             }
 

@@ -42,6 +42,8 @@ use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\PatientController;
 use App\Http\Controllers\Api\HomeVisitController;
 use App\Http\Controllers\Api\FeedbackController;
+use App\Http\Controllers\Api\FollowUpReminderController;
+use App\Http\Controllers\Api\ReportController;
 
 // =============================================================================
 // API V1
@@ -390,6 +392,26 @@ Route::prefix('v1')->group(function () {
             Route::get('/{id}',          [FeedbackController::class, 'show']);
             Route::patch('/{id}/respond', [FeedbackController::class, 'respond']);
         });
+
+        // =====================================================================
+        // FOLLOW-UP REMINDERS (staff SOAP follow-ups + SMS)
+        // GET   /api/v1/follow-up-reminders
+        // POST  /api/v1/follow-up-reminders
+        // PATCH /api/v1/follow-up-reminders/{id}/status
+        // =====================================================================
+
+        Route::prefix('follow-up-reminders')->group(function () {
+            Route::get('/',               [FollowUpReminderController::class, 'index']);
+            Route::post('/',              [FollowUpReminderController::class, 'store']);
+            Route::patch('/{id}/status',  [FollowUpReminderController::class, 'updateStatus']);
+        });
+
+        // =====================================================================
+        // REPORTS — Diagnosis + ITR combined CSV export
+        // GET /api/v1/reports/consultations/export
+        // =====================================================================
+
+        Route::get('/reports/consultations/export', [ReportController::class, 'exportConsultationsCsv']);
 
         // =====================================================================
         // TELEMEDICINE

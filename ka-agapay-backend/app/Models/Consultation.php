@@ -30,6 +30,10 @@ class Consultation extends Model
         'first_attended_by',
         'draft_saved_at',
         'itr_snapshot',
+
+        // Heatmap freshness window (visibility only — never deletion)
+        'heatmap_posted_at',
+        'heatmap_signal_expires_at',
     ];
 
     protected $casts = [
@@ -40,6 +44,9 @@ class Consultation extends Model
         'first_attended_at' => 'datetime',
         'draft_saved_at' => 'datetime',
         'itr_snapshot' => 'array',
+
+        'heatmap_posted_at' => 'datetime',
+        'heatmap_signal_expires_at' => 'datetime',
     ];
 
     public function appointment(): BelongsTo
