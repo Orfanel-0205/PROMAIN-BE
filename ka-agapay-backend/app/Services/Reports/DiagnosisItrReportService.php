@@ -216,6 +216,30 @@ class DiagnosisItrReportService
             $this->selectColumn('consultations', 'c', 'heatmap_posted_at', 'heatmap_posted_at'),
             $this->selectColumn('consultations', 'c', 'heatmap_signal_expires_at', 'heatmap_signal_expires_at'),
 
+            // Vitals / RHU staff-filled clinical fields
+            $this->selectColumn('consultations', 'c', 'vital_signs', 'vital_signs'),
+            $this->selectColumn('consultations', 'c', 'weight', 'weight'),
+            $this->selectColumn('consultations', 'c', 'bmi', 'bmi'),
+            $this->selectColumn('consultations', 'c', 'temperature_celsius', 'temperature_celsius'),
+            $this->selectColumn('consultations', 'c', 'blood_pressure', 'blood_pressure'),
+            $this->selectColumn('consultations', 'c', 'spo2', 'spo2'),
+            $this->selectColumn('consultations', 'c', 'heart_rate', 'heart_rate'),
+            $this->selectColumn('consultations', 'c', 'visual_acuity', 'visual_acuity'),
+            $this->selectColumn('consultations', 'c', 'visual_acuity_left', 'visual_acuity_left'),
+            $this->selectColumn('consultations', 'c', 'visual_acuity_right', 'visual_acuity_right'),
+            $this->selectColumn('consultations', 'c', 'pediatric_client', 'pediatric_client'),
+            $this->selectColumn('consultations', 'c', 'length_cm', 'length_cm'),
+            $this->selectColumn('consultations', 'c', 'head_circumference_cm', 'head_circumference_cm'),
+            $this->selectColumn('consultations', 'c', 'skinfold_thickness_cm', 'skinfold_thickness_cm'),
+            $this->selectColumn('consultations', 'c', 'waist_cm', 'waist_cm'),
+            $this->selectColumn('consultations', 'c', 'hip_cm', 'hip_cm'),
+            $this->selectColumn('consultations', 'c', 'limbs_cm', 'limbs_cm'),
+            $this->selectColumn('consultations', 'c', 'muac_cm', 'muac_cm'),
+            $this->selectColumn('consultations', 'c', 'general_survey', 'general_survey'),
+            $this->selectColumn('consultations', 'c', 'awake_and_alert', 'awake_and_alert'),
+            $this->selectColumn('consultations', 'c', 'altered_sensorium', 'altered_sensorium'),
+            $this->selectColumn('consultations', 'c', 'prescribed_drugs', 'prescribed_drugs'),
+
             $this->selectColumn('appointments', 'a', 'rhu_id', 'appointment_rhu_id'),
             $this->selectColumn('appointments', 'a', 'consultation_type', 'appointment_type'),
             $this->selectColumn('appointments', 'a', 'reason', 'appointment_reason'),
@@ -256,6 +280,29 @@ class DiagnosisItrReportService
             $this->selectColumn('resident_profiles', 'rp', 'philhealth_no', 'philhealth_no'),
             $this->selectColumn('resident_profiles', 'rp', 'philhealth_number', 'philhealth_number'),
             $this->selectColumn('resident_profiles', 'rp', 'philhealth_pin', 'philhealth_pin'),
+            $this->selectColumn('resident_profiles', 'rp', 'philhealth_verified_at', 'philhealth_verified_at'),
+
+            // ITR demographic / lifestyle / history (patient-reported)
+            $this->selectColumn('resident_profiles', 'rp', 'civil_status', 'civil_status'),
+            $this->selectColumn('resident_profiles', 'rp', 'religion', 'religion'),
+            $this->selectColumn('resident_profiles', 'rp', 'educational_attainment', 'educational_attainment'),
+            $this->selectColumn('resident_profiles', 'rp', 'blood_type', 'blood_type'),
+            $this->selectColumn('resident_profiles', 'rp', 'guardian_birthdate', 'guardian_birthdate'),
+            $this->selectColumn('resident_profiles', 'rp', 'smoking_status', 'smoking_status'),
+            $this->selectColumn('resident_profiles', 'rp', 'alcohol_intake', 'alcohol_intake'),
+            $this->selectColumn('resident_profiles', 'rp', 'personal_social_history', 'personal_social_history'),
+            $this->selectColumn('resident_profiles', 'rp', 'past_medical_history', 'past_medical_history'),
+            $this->selectColumn('resident_profiles', 'rp', 'medical_history', 'medical_history'),
+            $this->selectColumn('resident_profiles', 'rp', 'allergies', 'allergies'),
+            $this->selectColumn('resident_profiles', 'rp', 'maintenance_medications', 'maintenance_medications'),
+
+            // Female-specific ITR fields
+            $this->selectColumn('resident_profiles', 'rp', 'number_of_children', 'number_of_children'),
+            $this->selectColumn('resident_profiles', 'rp', 'lmp', 'lmp'),
+            $this->selectColumn('resident_profiles', 'rp', 'period_duration', 'period_duration'),
+            $this->selectColumn('resident_profiles', 'rp', 'cycle', 'cycle'),
+            $this->selectColumn('resident_profiles', 'rp', 'family_planning_method', 'family_planning_method'),
+            $this->selectColumn('resident_profiles', 'rp', 'menopausal_age', 'menopausal_age'),
 
             $this->selectFirstAvailableColumn('barangays', 'b', ['name', 'barangay_name'], 'barangay_name'),
 
@@ -370,6 +417,7 @@ class DiagnosisItrReportService
                 $row->philhealth_no ?? null,
                 $row->philhealth_pin ?? null,
             ]),
+            'philhealth_verified' => $this->filled($row->philhealth_verified_at ?? null) ? 'Yes' : 'No',
             'appointment_reason' => $this->nullIfBlank($appointmentReason),
             'chief_complaint' => $this->nullIfBlank($row->chief_complaint ?? null),
             'subjective' => $this->nullIfBlank($row->subjective ?? null),
@@ -389,7 +437,70 @@ class DiagnosisItrReportService
             ]) ?: (($row->staff_user_id ?? null) ? 'RHU Staff #' . $row->staff_user_id : null),
             'heatmap_posted_at' => $this->dateTimeString($row->heatmap_posted_at ?? null),
             'heatmap_signal_expires_at' => $this->dateTimeString($row->heatmap_signal_expires_at ?? null),
+
+            // ITR demographic / lifestyle / history (patient-reported)
+            'civil_status' => $this->nullIfBlank($row->civil_status ?? null),
+            'religion' => $this->nullIfBlank($row->religion ?? null),
+            'educational_attainment' => $this->nullIfBlank($row->educational_attainment ?? null),
+            'blood_type' => $this->nullIfBlank($row->blood_type ?? null),
+            'guardian_birthdate' => $this->dateString($row->guardian_birthdate ?? null),
+            'smoking' => $this->nullIfBlank($row->smoking_status ?? null),
+            'alcohol_intake' => $this->nullIfBlank($row->alcohol_intake ?? null),
+            'personal_social_history' => $this->nullIfBlank($row->personal_social_history ?? null),
+            'past_medical_history' => $this->firstFilled([
+                $row->past_medical_history ?? null,
+                $row->medical_history ?? null,
+            ]),
+            'allergies' => $this->nullIfBlank($row->allergies ?? null),
+            'maintenance_medications' => $this->nullIfBlank($row->maintenance_medications ?? null),
+
+            // Female-specific ITR fields
+            'number_of_children' => $this->nullIfBlank($row->number_of_children ?? null),
+            'lmp' => $this->dateString($row->lmp ?? null),
+            'period_duration' => $this->nullIfBlank($row->period_duration ?? null),
+            'cycle' => $this->nullIfBlank($row->cycle ?? null),
+            'family_planning_method' => $this->nullIfBlank($row->family_planning_method ?? null),
+            'menopausal_age' => $this->nullIfBlank($row->menopausal_age ?? null),
+
+            // Vitals / RHU staff-filled
+            'vital_signs' => $this->nullIfBlank($row->vital_signs ?? null),
+            'weight' => $this->nullIfBlank($row->weight ?? null),
+            'bmi' => $this->nullIfBlank($row->bmi ?? null),
+            'temperature_celsius' => $this->nullIfBlank($row->temperature_celsius ?? null),
+            'blood_pressure' => $this->nullIfBlank($row->blood_pressure ?? null),
+            'spo2' => $this->nullIfBlank($row->spo2 ?? null),
+            'heart_rate' => $this->nullIfBlank($row->heart_rate ?? null),
+            'visual_acuity' => $this->nullIfBlank($row->visual_acuity ?? null),
+            'visual_acuity_left' => $this->nullIfBlank($row->visual_acuity_left ?? null),
+            'visual_acuity_right' => $this->nullIfBlank($row->visual_acuity_right ?? null),
+
+            // Pediatric client
+            'pediatric_client' => $this->boolText($row->pediatric_client ?? null),
+            'length_cm' => $this->nullIfBlank($row->length_cm ?? null),
+            'head_circumference_cm' => $this->nullIfBlank($row->head_circumference_cm ?? null),
+            'skinfold_thickness_cm' => $this->nullIfBlank($row->skinfold_thickness_cm ?? null),
+            'waist_cm' => $this->nullIfBlank($row->waist_cm ?? null),
+            'hip_cm' => $this->nullIfBlank($row->hip_cm ?? null),
+            'limbs_cm' => $this->nullIfBlank($row->limbs_cm ?? null),
+            'muac_cm' => $this->nullIfBlank($row->muac_cm ?? null),
+
+            // General survey
+            'general_survey' => $this->nullIfBlank($row->general_survey ?? null),
+            'awake_and_alert' => $this->boolText($row->awake_and_alert ?? null),
+            'altered_sensorium' => $this->boolText($row->altered_sensorium ?? null),
+
+            // Prescription summary
+            'prescribed_drugs' => $this->nullIfBlank($row->prescribed_drugs ?? null),
         ];
+    }
+
+    private function boolText(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN) ? 'Yes' : 'No';
     }
 
     private function applyRhuScope($query, array $filters, mixed $viewer): void

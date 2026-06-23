@@ -33,6 +33,8 @@ class FollowUpReminder extends Model
         'sms_status',
         'sms_sent_at',
         'sms_error',
+        'sms_log_id',
+        'sms_last_attempt_at',
     ];
 
     protected $casts = [
@@ -40,6 +42,7 @@ class FollowUpReminder extends Model
         'follow_up_date' => 'date:Y-m-d',
         'sms_enabled' => 'boolean',
         'sms_sent_at' => 'datetime',
+        'sms_last_attempt_at' => 'datetime',
     ];
 
     public function consultation(): BelongsTo

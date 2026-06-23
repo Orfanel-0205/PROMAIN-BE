@@ -44,10 +44,16 @@ class ResidentProfile extends Model
         'philhealth_no',
         'philhealth_number',
         'philhealth_pin',
+        'philhealth_verified_at',
+        'philhealth_ocr_result_id',
+        'philhealth_name_matched',
 
         'guardian_name',
+        'guardian_birthdate',
         'emergency_contact_name',
         'emergency_contact_number',
+
+        'blood_type',
 
         // Reusable patient-reported history (free text, NOT staff clinical findings).
         'medical_history',
@@ -66,6 +72,10 @@ class ResidentProfile extends Model
         'menstrual_history',
         'family_planning_method',
         'pregnancy_history',
+        'number_of_children',
+        'period_duration',
+        'cycle',
+        'menopausal_age',
 
         'is_senior',
         'is_pwd',
@@ -87,6 +97,9 @@ class ResidentProfile extends Model
         'is_senior' => 'boolean',
         'is_pwd' => 'boolean',
         'is_pregnant' => 'boolean',
+
+        'philhealth_verified_at' => 'datetime',
+        'philhealth_name_matched' => 'boolean',
     ];
 
     public function user(): BelongsTo

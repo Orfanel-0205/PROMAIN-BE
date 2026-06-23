@@ -15,19 +15,36 @@ class SmsService
             'mobile_number'     => $mobile,
             'message'           => $message,
             'notification_type' => $notificationType,
-            'provider'          => config('services.sms.provider', 'semaphore'),
+            'provider'          => $this->providerName(),
             'status'            => 'pending',
         ]);
 
         try {
-            $response = $this->callProvider($mobile, $message);
+            $apiKey = $this->apiKey();
+
+            // Fail fast with a clear message if the key is missing — otherwise
+            // Semaphore returns a confusing error and message_id stays null.
+            if ($apiKey === '') {
+                $log->update([
+                    'status'        => 'failed',
+                    'error_message' => 'SEMAPHORE_API_KEY is not configured on the server.',
+                ]);
+
+                Log::error('SMS send failed: Semaphore API key not configured', [
+                    'log_id' => $log->id,
+                ]);
+
+                return $log->fresh() ?? $log;
+            }
+
+            $response = $this->callProvider($apiKey, $mobile, $message);
 
             // Semaphore returns a list: [{ "message_id": 123, "recipient": "...", "status": "Pending" }]
             $first = is_array($response) ? ($response[0] ?? []) : [];
 
-            $messageId  = $first['message_id'] ?? null;
-            $rawStatus  = $first['status'] ?? null;
-            $status     = $this->mapStatus($rawStatus);
+            $messageId = $first['message_id'] ?? null;
+            $rawStatus = $first['status'] ?? null;
+            $status    = $this->mapStatus($rawStatus);
 
             $log->update([
                 'status'              => $status,
@@ -51,30 +68,43 @@ class SmsService
             ]);
         }
 
-        return $log;
+        return $log->fresh() ?? $log;
     }
 
     /**
      * Calls Semaphore and returns the decoded JSON list of result objects.
      */
-    private function callProvider(string $mobile, string $message): array
+    private function callProvider(string $apiKey, string $mobile, string $message): array
     {
-        // Semaphore (Philippine SMS provider). Sent as form data, which Semaphore expects.
-        $response = Http::asForm()->post('https://api.semaphore.co/api/v4/messages', [
-            'apikey'      => config('services.sms.semaphore_key'),
-            'number'      => $mobile,
-            'message'     => $message,
-            'sendername'  => config('services.sms.sender_name', 'KAAGAPAY'),
+        $baseUrl = rtrim(
+            (string) config('services.semaphore.base_url', 'https://api.semaphore.co/api/v4'),
+            '/'
+        );
+
+        // Semaphore expects form-encoded data.
+        $response = Http::asForm()->timeout(30)->post("{$baseUrl}/messages", [
+            'apikey'     => $apiKey,
+            'number'     => $mobile,
+            'message'    => $message,
+            'sendername' => $this->senderName(),
         ]);
 
         if (!$response->successful()) {
-            throw new \RuntimeException('SMS provider returned error: ' . $response->body());
+            throw new \RuntimeException(
+                'SMS provider returned HTTP ' . $response->status() . ': ' . $response->body()
+            );
         }
 
         $json = $response->json();
 
         if (!is_array($json)) {
             throw new \RuntimeException('Invalid Semaphore response: ' . $response->body());
+        }
+
+        // Semaphore validation errors arrive as a 2xx body shaped like
+        // {"number":["The number field is required."]} — surface them as failures.
+        if (!array_is_list($json)) {
+            throw new \RuntimeException('Semaphore rejected the request: ' . $response->body());
         }
 
         return $json;
@@ -93,5 +123,39 @@ class SmsService
             'failed', 'error', 'undelivered', 'refunded', 'rejected' => 'failed',
             default => 'pending', // pending, queued, processing, empty, or anything unexpected
         };
+    }
+
+    /**
+     * API key — primary canonical config, with a fallback to the older key path
+     * so existing deployments keep working.
+     */
+    private function apiKey(): string
+    {
+        return trim((string) (
+            config('services.semaphore.api_key')
+            ?: config('services.sms.semaphore_key')
+            ?: env('SEMAPHORE_API_KEY')
+        ));
+    }
+
+    private function senderName(): string
+    {
+        $name = trim((string) (
+            config('services.semaphore.sendername')
+            ?: config('services.sms.sender_name')
+            ?: env('SEMAPHORE_SENDER_NAME')
+            ?: 'KAAGAPAY'
+        ));
+
+        return $name !== '' ? $name : 'KAAGAPAY';
+    }
+
+    private function providerName(): string
+    {
+        return (string) (
+            config('services.sms_provider')
+            ?: config('services.sms.provider')
+            ?: 'semaphore'
+        );
     }
 }

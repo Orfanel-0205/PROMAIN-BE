@@ -198,7 +198,35 @@ class ConsultationController extends Controller
             'assessment' => ['nullable', 'string'],
             'plan' => ['nullable', 'string'],
             'notes' => ['nullable', 'string'],
+            'prescribed_drugs' => ['nullable', 'string'],
             'status' => ['nullable', Rule::in(self::VALID_STATUSES)],
+
+            // Vitals / RHU staff-filled (optional; persisted only if the column exists)
+            'vital_signs' => ['nullable', 'string', 'max:255'],
+            'weight' => ['nullable', 'string', 'max:50'],
+            'bmi' => ['nullable', 'string', 'max:50'],
+            'temperature_celsius' => ['nullable', 'string', 'max:50'],
+            'blood_pressure' => ['nullable', 'string', 'max:50'],
+            'spo2' => ['nullable', 'string', 'max:50'],
+            'heart_rate' => ['nullable', 'string', 'max:50'],
+            'visual_acuity' => ['nullable', 'string', 'max:100'],
+            'visual_acuity_left' => ['nullable', 'string', 'max:50'],
+            'visual_acuity_right' => ['nullable', 'string', 'max:50'],
+
+            // Pediatric client
+            'pediatric_client' => ['nullable', 'boolean'],
+            'length_cm' => ['nullable', 'string', 'max:50'],
+            'head_circumference_cm' => ['nullable', 'string', 'max:50'],
+            'skinfold_thickness_cm' => ['nullable', 'string', 'max:50'],
+            'waist_cm' => ['nullable', 'string', 'max:50'],
+            'hip_cm' => ['nullable', 'string', 'max:50'],
+            'limbs_cm' => ['nullable', 'string', 'max:50'],
+            'muac_cm' => ['nullable', 'string', 'max:50'],
+
+            // General survey
+            'general_survey' => ['nullable', 'string', 'max:100'],
+            'awake_and_alert' => ['nullable', 'boolean'],
+            'altered_sensorium' => ['nullable', 'boolean'],
         ]);
 
         $updates = $this->buildSoapUpdates($consultation, $validated, $request);

@@ -23,15 +23,18 @@ class ProfileController extends Controller
      * intentionally NOT here — those are staff-only and live elsewhere.
      */
     private const PROFILE_FIELDS = [
+        'middle_name',
         'civil_status',
         'religion',
         'educational_attainment',
         'occupation',
         'client_type',
         'guardian_name',
+        'guardian_birthdate',
         'emergency_contact_name',
         'emergency_contact_number',
         'philhealth_number',
+        'blood_type',
         'street',
         'purok',
         'household_number',
@@ -46,6 +49,10 @@ class ProfileController extends Controller
         'menstrual_history',
         'family_planning_method',
         'pregnancy_history',
+        'number_of_children',
+        'period_duration',
+        'cycle',
+        'menopausal_age',
     ];
     public function show(Request $request): JsonResponse
     {
@@ -92,6 +99,13 @@ class ProfileController extends Controller
             'sex' => ['nullable', 'string', 'max:30'],
 
             // Reusable patient ITR profile details (non-clinical, patient-editable)
+            'middle_name' => ['nullable', 'string', 'max:100'],
+            'guardian_birthdate' => ['nullable', 'date'],
+            'blood_type' => ['nullable', 'string', 'max:10'],
+            'number_of_children' => ['nullable', 'string', 'max:20'],
+            'period_duration' => ['nullable', 'string', 'max:50'],
+            'cycle' => ['nullable', 'string', 'max:50'],
+            'menopausal_age' => ['nullable', 'string', 'max:20'],
             'civil_status' => ['nullable', 'string', 'max:50'],
             'religion' => ['nullable', 'string', 'max:100'],
             'educational_attainment' => ['nullable', 'string', 'max:100'],
@@ -346,15 +360,20 @@ class ProfileController extends Controller
             'profile_picture_url' => $this->publicFileUrl($avatarPath),
 
             // Reusable patient ITR details (from resident_profiles)
+            'middle_name' => $profile?->middle_name,
             'civil_status' => $profile?->civil_status,
             'religion' => $profile?->religion,
             'educational_attainment' => $profile?->educational_attainment,
             'occupation' => $profile?->occupation,
             'client_type' => $profile?->client_type,
             'guardian_name' => $profile?->guardian_name,
+            'guardian_birthdate' => optional($profile?->guardian_birthdate)->toDateString(),
             'emergency_contact_name' => $profile?->emergency_contact_name,
             'emergency_contact_number' => $profile?->emergency_contact_number,
             'philhealth_number' => $profile?->philhealth_number ?? $profile?->philhealth_no,
+            'philhealth_verified_at' => optional($profile?->philhealth_verified_at)->toIso8601String(),
+            'philhealth_name_matched' => $profile?->philhealth_name_matched,
+            'blood_type' => $profile?->blood_type,
             'street' => $profile?->street,
             'purok' => $profile?->purok,
             'household_number' => $profile?->household_number,
@@ -369,6 +388,10 @@ class ProfileController extends Controller
             'menstrual_history' => $profile?->menstrual_history,
             'family_planning_method' => $profile?->family_planning_method,
             'pregnancy_history' => $profile?->pregnancy_history,
+            'number_of_children' => $profile?->number_of_children,
+            'period_duration' => $profile?->period_duration,
+            'cycle' => $profile?->cycle,
+            'menopausal_age' => $profile?->menopausal_age,
 
             'created_at' => optional($user->created_at)->toISOString(),
             'updated_at' => optional($user->updated_at)->toISOString(),

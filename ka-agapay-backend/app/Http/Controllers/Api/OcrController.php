@@ -166,6 +166,134 @@ class OcrController extends Controller
     }
 
     // =========================================================================
+    // PHILHEALTH OCR VERIFICATION
+    // POST /api/v1/ocr/philhealth
+    //
+    // Scans a PhilHealth ID, extracts the PhilHealth number + printed name, and
+    // verifies the printed name against the patient's profile name. Only when the
+    // name matches is the number saved to the resident profile + marked verified.
+    // Does NOT touch the existing /ocr/upload ID-verification flow.
+    // =========================================================================
+
+    public function scanPhilHealth(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'id_image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
+        ]);
+
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $user->loadMissing('role');
+
+        $file = $request->file('id_image');
+        $path = $file->store('ocr/philhealth/' . $this->authUserId($user), 'public');
+        $fullPath = Storage::disk('public')->path($path);
+
+        $ocr = $this->runOcr($fullPath, (string) $file->getMimeType());
+        $text = trim((string) ($ocr['text'] ?? ''));
+
+        $philhealth = $this->extractPhilHealthNumber($text);
+        $extractedName = $this->extractName($text);
+
+        // Build the registered name from the resident profile (first+middle+last),
+        // falling back to the user account.
+        $profile = $this->residentProfileRow($user);
+        $registeredName = $this->buildRegisteredName($user, $profile);
+
+        $nameScore = $this->nameMatchScore($registeredName, $extractedName, $text);
+        $nameMatched = $text !== '' && $nameScore >= 0.65;
+        $hasNumber = $philhealth !== null && $philhealth !== '';
+
+        $verified = $nameMatched && $hasNumber;
+
+        // Always log the OCR attempt.
+        $ocrId = null;
+        if (Schema::hasTable('ocr_results')) {
+            $ocrId = DB::table('ocr_results')->insertGetId($this->onlyOcrColumns([
+                'user_id' => $this->authUserId($user),
+                'id_type' => 'philhealth',
+                'file_path' => $path,
+                'extracted_text' => $text,
+                'extracted_name' => $extractedName,
+                'extracted_id_number' => $philhealth,
+                'raw_ocr_response' => json_encode([
+                    'provider' => $ocr['raw']['provider'] ?? 'ocr.space',
+                    'registered_name' => $registeredName,
+                    'extracted_name' => $extractedName,
+                    'name_match_score' => $nameScore,
+                    'philhealth_number' => $philhealth,
+                ]),
+                'confidence_score' => (float) ($ocr['confidence'] ?? ($text ? 80 : 10)),
+                'name_match_score' => round($nameScore, 2),
+                'overall_match' => round($nameScore, 2),
+                'status' => $verified ? 'approved' : 'failed',
+                'processed_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]));
+        }
+
+        if (!$hasNumber) {
+            return response()->json([
+                'verified' => false,
+                'message' => 'No PhilHealth number could be read from the image. Please upload a clearer photo of your PhilHealth ID.',
+                'ocr_id' => $ocrId,
+                'name_match_score' => round($nameScore, 2),
+            ], 422);
+        }
+
+        if (!$nameMatched) {
+            return response()->json([
+                'verified' => false,
+                'message' => 'The name on the PhilHealth ID does not match your profile name.',
+                'ocr_id' => $ocrId,
+                'registered_name' => $registeredName,
+                'extracted_name' => $extractedName,
+                'name_match_score' => round($nameScore, 2),
+            ], 422);
+        }
+
+        // Verified → persist to the resident profile (number + verification flags).
+        if ($profile && Schema::hasTable('resident_profiles')) {
+            $profileUpdates = ['updated_at' => now()];
+
+            if (Schema::hasColumn('resident_profiles', 'philhealth_number')) {
+                $profileUpdates['philhealth_number'] = $philhealth;
+            }
+            if (Schema::hasColumn('resident_profiles', 'philhealth_no')) {
+                $profileUpdates['philhealth_no'] = $philhealth;
+            }
+            if (Schema::hasColumn('resident_profiles', 'philhealth_verified_at')) {
+                $profileUpdates['philhealth_verified_at'] = now();
+            }
+            if (Schema::hasColumn('resident_profiles', 'philhealth_ocr_result_id')) {
+                $profileUpdates['philhealth_ocr_result_id'] = $ocrId;
+            }
+            if (Schema::hasColumn('resident_profiles', 'philhealth_name_matched')) {
+                $profileUpdates['philhealth_name_matched'] = true;
+            }
+
+            DB::table('resident_profiles')->where('id', $profile->id)->update($profileUpdates);
+        }
+
+        return response()->json([
+            'verified' => true,
+            'message' => 'PhilHealth ID verified. The number was saved to your profile.',
+            'ocr_id' => $ocrId,
+            'philhealth_number' => $philhealth,
+            'philhealth_masked' => $this->maskPhilHealth($philhealth),
+            'registered_name' => $registeredName,
+            'extracted_name' => $extractedName,
+            'name_match_score' => round($nameScore, 2),
+            'verified_at' => now()->toIso8601String(),
+        ]);
+    }
+
+    // =========================================================================
     // E-PRESCRIPTION OCR
     // POST /api/v1/ocr/prescription/{consultationId}
     // =========================================================================
@@ -851,6 +979,46 @@ class OcrController extends Controller
             ?? $user->getKey()
             ?? 0
         );
+    }
+
+    private function residentProfileRow(object $user): ?object
+    {
+        if (!Schema::hasTable('resident_profiles')) {
+            return null;
+        }
+
+        return DB::table('resident_profiles')
+            ->where('user_id', $this->authUserId($user))
+            ->first();
+    }
+
+    private function buildRegisteredName(object $user, ?object $profile): string
+    {
+        $parts = [
+            $profile->first_name ?? $user->first_name ?? null,
+            $profile->middle_name ?? null,
+            $profile->last_name ?? $user->last_name ?? null,
+        ];
+
+        $name = trim(preg_replace('/\s+/', ' ', implode(' ', array_filter(array_map('trim', array_map('strval', array_filter($parts, fn ($p) => $p !== null)))))) ?? '');
+
+        return $name !== '' ? $name : trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''));
+    }
+
+    private function maskPhilHealth(?string $number): ?string
+    {
+        if (!$number) {
+            return null;
+        }
+
+        $digits = preg_replace('/\D/', '', $number) ?? '';
+        $last4 = substr($digits, -4);
+
+        if ($last4 === '') {
+            return null;
+        }
+
+        return '****-****-' . str_pad($last4, 4, '*', STR_PAD_LEFT);
     }
 
     // =========================================================================

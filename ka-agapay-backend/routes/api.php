@@ -485,6 +485,7 @@ Route::prefix('v1')->group(function () {
 
         Route::prefix('ocr')->group(function () {
             Route::post('/upload',      [OcrController::class, 'upload']);
+            Route::post('/philhealth',  [OcrController::class, 'scanPhilHealth']);
             Route::get('/results/{id}', [OcrController::class, 'result']);
             Route::get('/result/{id}',  [OcrController::class, 'result']);
             Route::post('/retry/{id}',  [OcrController::class, 'retry']);

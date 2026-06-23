@@ -35,6 +35,36 @@ class Consultation extends Model
         // Diagnosis + ITR heatmap freshness (additive)
         'heatmap_posted_at',
         'heatmap_signal_expires_at',
+
+        // Vitals / RHU staff-filled clinical fields (additive)
+        'vital_signs',
+        'weight',
+        'bmi',
+        'temperature_celsius',
+        'blood_pressure',
+        'spo2',
+        'heart_rate',
+        'visual_acuity',
+        'visual_acuity_left',
+        'visual_acuity_right',
+
+        // Pediatric client measurements
+        'pediatric_client',
+        'length_cm',
+        'head_circumference_cm',
+        'skinfold_thickness_cm',
+        'waist_cm',
+        'hip_cm',
+        'limbs_cm',
+        'muac_cm',
+
+        // General survey
+        'general_survey',
+        'awake_and_alert',
+        'altered_sensorium',
+
+        // Prescription summary (free text)
+        'prescribed_drugs',
     ];
 
     protected $casts = [
@@ -48,6 +78,10 @@ class Consultation extends Model
 
         'heatmap_posted_at' => 'datetime',
         'heatmap_signal_expires_at' => 'datetime',
+
+        'pediatric_client' => 'boolean',
+        'awake_and_alert' => 'boolean',
+        'altered_sensorium' => 'boolean',
     ];
 
     public function appointment(): BelongsTo

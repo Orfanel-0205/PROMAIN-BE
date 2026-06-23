@@ -4,7 +4,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Barangay;
 use App\Models\Consultation;
 use App\Models\FollowUpReminder;
 use App\Models\User;
@@ -12,6 +11,7 @@ use App\Services\Notification\SmsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
 class FollowUpReminderController extends Controller
@@ -74,6 +74,7 @@ class FollowUpReminderController extends Controller
             'urgency' => ['nullable', Rule::in(FollowUpReminder::URGENCY_LEVELS)],
             'sms_enabled' => ['nullable', 'boolean'],
             'force_sms' => ['nullable', 'boolean'],
+            'mobile_number' => ['nullable', 'string', 'max:40'],
         ]);
 
         $consultation = !empty($validated['consultation_id'])
@@ -83,9 +84,15 @@ class FollowUpReminderController extends Controller
         $user = $consultation?->resident;
         $profile = $user?->residentProfile;
 
-        $mobile = $user?->mobile_number
-            ?? $profile?->mobile_number
-            ?? $profile?->contact_number;
+        // Mobile number priority:
+        // 1) editable form field, 2) user, 3) profile mobile/contact/phone.
+        $mobile = $this->firstFilled([
+            $validated['mobile_number'] ?? null,
+            $user?->mobile_number,
+            $profile?->mobile_number,
+            $profile?->contact_number,
+            $profile?->phone_number,
+        ]);
 
         $rhuId = ($consultation?->appointment?->rhu_id ?? null) ?: ($profile?->barangay_id ?? null);
         $appointmentId = $validated['appointment_id'] ?? $consultation?->appointment_id;
@@ -274,51 +281,69 @@ class FollowUpReminderController extends Controller
         try {
             $message = $this->buildSmsMessage($reminder, $rhuId);
 
+            // SmsService always creates a fresh sms_logs row and never throws.
             $log = $this->sms->send($normalized, $message, 'followup_reminder', $reminder->user_id);
 
-            $reminder->update([
+            $reminder->fill([
                 'sms_status' => $log->status,
                 'sms_sent_at' => $log->status === 'sent' ? now() : null,
                 'sms_error' => $log->status === 'failed'
                     ? ($log->error_message ?? 'SMS failed')
                     : null,
             ]);
+
+            // Optional tracking columns (only if the additive migration has run).
+            if (Schema::hasColumn('follow_up_reminders', 'sms_last_attempt_at')) {
+                $reminder->sms_last_attempt_at = now();
+            }
+            if (Schema::hasColumn('follow_up_reminders', 'sms_log_id')) {
+                $reminder->sms_log_id = $log->id;
+            }
+
+            $reminder->save();
         } catch (\Throwable $e) {
             // Never break the SOAP save because of SMS.
-            $reminder->update([
+            $reminder->fill([
                 'sms_status' => 'failed',
                 'sms_error' => $e->getMessage(),
             ]);
+
+            if (Schema::hasColumn('follow_up_reminders', 'sms_last_attempt_at')) {
+                $reminder->sms_last_attempt_at = now();
+            }
+
+            $reminder->save();
         }
     }
 
     private function buildSmsMessage(FollowUpReminder $reminder, ?int $rhuId): string
     {
-        $name = $reminder->patient_name ?: 'Resident';
+        $date = $reminder->follow_up_date
+            ? Carbon::parse($reminder->follow_up_date)->format('M d, Y')
+            : 'your scheduled date';
 
-        $rhuName = $rhuId
-            ? (Barangay::query()->where('barangay_id', $rhuId)->value('name')
-                ?? Barangay::query()->where('barangay_id', $rhuId)->value('barangay_name'))
-            : null;
+        $time = $reminder->follow_up_time
+            ? substr((string) $reminder->follow_up_time, 0, 5)
+            : 'the set time';
 
-        $when = trim(
-            ($reminder->follow_up_date ? Carbon::parse($reminder->follow_up_date)->format('M d, Y') : '')
-            . ' ' . ($reminder->follow_up_time ? substr((string) $reminder->follow_up_time, 0, 5) : '')
-        );
+        $reason = trim((string) ($reminder->reason ?: $reminder->instructions ?: 'follow-up consultation'));
 
-        $parts = [
-            "Ka-Agapay RHU: Hi {$name},",
-            $when ? "you have a health follow-up on {$when}" : 'you have a health follow-up',
-            $rhuName ? "at {$rhuName} RHU." : 'at the RHU.',
-        ];
+        // Keep it short for a single SMS segment where possible.
+        return "Ka-Agapay RHU Reminder: You have a follow-up consultation scheduled on "
+            . "{$date} at {$time}. Reason: {$reason}. Please visit your assigned RHU. "
+            . "If you cannot attend, contact the RHU.";
+    }
 
-        if ($reminder->instructions) {
-            $parts[] = trim((string) $reminder->instructions);
+    private function firstFilled(array $values): ?string
+    {
+        foreach ($values as $value) {
+            $string = trim((string) ($value ?? ''));
+            if ($string !== '') {
+                return $string;
+            }
         }
 
-        $parts[] = 'Please visit the RHU on schedule.';
-
-        return trim(implode(' ', array_filter($parts)));
+        return null;
     }
 
     private function combineDateTime(?string $date, ?string $time): ?Carbon
@@ -335,6 +360,10 @@ class FollowUpReminderController extends Controller
         }
     }
 
+    /**
+     * Normalise a PH mobile number to Semaphore's accepted 09XXXXXXXXX format.
+     * Accepts 09XXXXXXXXX, +639XXXXXXXXX, and 639XXXXXXXXX.
+     */
     private function normalizePhone(?string $number): ?string
     {
         if (!$number) {
@@ -343,15 +372,22 @@ class FollowUpReminderController extends Controller
 
         $n = preg_replace('/[^\d+]/', '', trim($number)) ?? '';
 
+        // 09XXXXXXXXX → already valid.
         if (preg_match('/^09\d{9}$/', $n)) {
-            return $n; // Semaphore accepts 09XXXXXXXXX
+            return $n;
         }
 
+        // +639XXXXXXXXX or 639XXXXXXXXX → convert to 09XXXXXXXXX.
         if (preg_match('/^\+?639\d{9}$/', $n)) {
-            return ltrim($n, '+');
+            return '0' . substr(ltrim($n, '+'), 2);
         }
 
-        return $n !== '' ? $n : null;
+        // 9XXXXXXXXX (missing leading 0) → prepend 0.
+        if (preg_match('/^9\d{9}$/', $n)) {
+            return '0' . $n;
+        }
+
+        return null;
     }
 
     private function isStaff(?User $user): bool
