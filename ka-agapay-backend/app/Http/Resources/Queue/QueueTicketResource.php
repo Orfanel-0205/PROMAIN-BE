@@ -35,6 +35,7 @@ class QueueTicketResource extends JsonResource
             'queue_type' => $this->queue_type ?? null,
             'source' => $this->source ?? 'walk_in',
             'appointment_id' => $this->appointment_id,
+            'consultation_id' => $this->consultation_id,
             'status' => $this->status,
 
             'priority_score' => (int) ($this->priority_score ?? 0),
@@ -55,6 +56,7 @@ class QueueTicketResource extends JsonResource
             'called_at' => $this->called_at?->toIso8601String(),
             'service_started_at' => $this->service_started_at?->toIso8601String(),
             'service_ended_at' => $this->service_ended_at?->toIso8601String(),
+            'completed_at' => $this->completed_at?->toIso8601String(),
             'cancelled_at' => $this->cancelled_at?->toIso8601String(),
 
             'wait_time_minutes' => $this->wait_time_minutes,

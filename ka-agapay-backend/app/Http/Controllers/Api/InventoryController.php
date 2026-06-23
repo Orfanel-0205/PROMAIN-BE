@@ -70,6 +70,61 @@ class InventoryController extends Controller
         return response()->json($items);
     }
 
+    public function searchMedicines(Request $request): JsonResponse
+    {
+        $this->authorizeInventory($request);
+
+        $validated = $request->validate([
+            'q' => ['nullable', 'string', 'max:100'],
+            'rhu_id' => ['nullable', 'integer'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:20'],
+        ]);
+
+        $queryText = trim((string) ($validated['q'] ?? ''));
+        $rhuId = (int) (
+            $validated['rhu_id']
+            ?? $request->user()?->effectiveRhuId()
+            ?? $request->user()?->barangay_id
+            ?? 1
+        );
+
+        $items = InventoryItem::query()
+            ->forRhu($rhuId)
+            ->active()
+            ->where('category', 'medicine')
+            ->when($queryText !== '', function ($query) use ($queryText) {
+                $query->where(function ($inner) use ($queryText) {
+                    $inner->where('name', 'ilike', "%{$queryText}%")
+                        ->orWhere('generic_name', 'ilike', "%{$queryText}%")
+                        ->orWhere('item_code', 'ilike', "%{$queryText}%");
+                });
+            })
+            ->when($queryText !== '', function ($query) use ($queryText) {
+                $query->orderByRaw(
+                    "CASE WHEN name ILIKE ? THEN 0 WHEN generic_name ILIKE ? THEN 1 ELSE 2 END",
+                    [$queryText . '%', $queryText . '%']
+                );
+            })
+            ->orderBy('name')
+            ->limit((int) ($validated['limit'] ?? 10))
+            ->get();
+
+        return response()->json([
+            'data' => $items->map(fn (InventoryItem $item) => [
+                'id' => $item->id,
+                'name' => $item->name,
+                'generic_name' => $item->generic_name,
+                'brand_name' => null,
+                'dosage_form' => $item->dosage_form,
+                'strength' => null,
+                'unit_of_measure' => $item->unit_of_measure,
+                'stock' => $item->current_stock,
+                'current_stock' => $item->current_stock,
+                'item_code' => $item->item_code,
+            ])->values(),
+        ]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $this->authorizeInventory($request);

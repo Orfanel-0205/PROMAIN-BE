@@ -377,6 +377,20 @@ class QueueController extends Controller
         ]);
     }
 
+    public function startService(Request $request, QueueTicket $ticket): JsonResponse
+    {
+        $this->authorize('updateStatus', $ticket);
+
+        $result = $this->queueService->startService($ticket);
+
+        return response()->json([
+            'message' => 'Service started. Opening SOAP consultation.',
+            'data' => new QueueTicketResource($result['ticket']),
+            'consultation' => $result['consultation'],
+            'consultation_id' => $result['consultation']->id,
+        ]);
+    }
+
     private function guardOpdConsultationBeforeQueueCompletion(
         QueueTicket $ticket,
         string $newStatus
@@ -389,22 +403,32 @@ class QueueController extends Controller
             return null;
         }
 
-        $appointmentId = (int) ($ticket->appointment_id ?? 0);
-
-        if ($appointmentId <= 0) {
-            return null;
-        }
-
         if (!Schema::hasTable('consultations')) {
             return response()->json([
                 'message' => 'Consultation records table is not available. Queue cannot be completed.',
             ], 422);
         }
 
-        $consultation = DB::table('consultations')
-            ->where('appointment_id', $appointmentId)
-            ->latest('id')
-            ->first();
+        $consultation = null;
+
+        if (Schema::hasColumn('queue_tickets', 'consultation_id') && !empty($ticket->consultation_id)) {
+            $consultation = DB::table('consultations')
+                ->where('id', $ticket->consultation_id)
+                ->first();
+        }
+
+        $appointmentId = (int) ($ticket->appointment_id ?? 0);
+
+        if (!$consultation && $appointmentId > 0) {
+            $consultation = DB::table('consultations')
+                ->where('appointment_id', $appointmentId)
+                ->latest('id')
+                ->first();
+        }
+
+        if (!$consultation && $appointmentId <= 0) {
+            return null;
+        }
 
         if (!$consultation) {
             return response()->json([

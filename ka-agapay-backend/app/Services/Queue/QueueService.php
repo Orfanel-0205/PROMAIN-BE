@@ -325,6 +325,19 @@ class QueueService
 
     private function findConsultationForTicket(QueueTicket $ticket): ?Consultation
     {
+        if (
+            Schema::hasColumn('queue_tickets', 'consultation_id')
+            && !empty($ticket->consultation_id)
+        ) {
+            $byTicket = Consultation::query()
+                ->whereKey($ticket->consultation_id)
+                ->first();
+
+            if ($byTicket) {
+                return $byTicket;
+            }
+        }
+
         // Primary link: the appointment the ticket was issued from.
         if (!empty($ticket->appointment_id)) {
             $byAppointment = Consultation::query()
@@ -417,6 +430,10 @@ class QueueService
             if ($newStatus === 'completed') {
                 $updates['service_ended_at'] = $now;
 
+                if (Schema::hasColumn('queue_tickets', 'completed_at')) {
+                    $updates['completed_at'] = $now;
+                }
+
                 if (!$ticket->service_started_at) {
                     $updates['service_started_at'] = $now;
                 }
@@ -459,6 +476,154 @@ class QueueService
 
             return $ticket->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
         });
+    }
+
+    /**
+     * Move a called ticket into service and guarantee a SOAP consultation exists.
+     * Repeated clicks return the same linked consultation instead of creating
+     * duplicate records.
+     *
+     * @return array{ticket: QueueTicket, consultation: Consultation}
+     */
+    public function startService(QueueTicket $ticket): array
+    {
+        return DB::transaction(function () use ($ticket) {
+            $ticket = QueueTicket::query()
+                ->whereKey($ticket->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($ticket->isTerminal()) {
+                throw ValidationException::withMessages([
+                    'status' => "Ticket {$ticket->ticket_number} is already {$ticket->status}.",
+                ]);
+            }
+
+            $fromStatus = (string) $ticket->status;
+            $now = now();
+
+            if ($ticket->status === 'called') {
+                $updates = [
+                    'status' => 'in_service',
+                    'service_started_at' => $ticket->service_started_at ?: $now,
+                    'served_by' => $ticket->served_by ?: Auth::id(),
+                ];
+
+                if (!$ticket->called_at) {
+                    $updates['called_at'] = $now;
+                    $updates['wait_time_minutes'] = $this->minutesBetween($ticket->issued_at, $now);
+                }
+
+                $ticket->update($updates);
+                $this->writeLog($ticket, $fromStatus, 'in_service', 'start_service');
+            } elseif ($ticket->status !== 'in_service') {
+                throw ValidationException::withMessages([
+                    'status' => "Start Service is only available for called tickets. Current status: {$ticket->status}.",
+                ]);
+            }
+
+            $ticket = $ticket->fresh(['residentProfile.barangay', 'appointment', 'rhu', 'issuedBy', 'servedBy']);
+            $consultation = $this->ensureConsultationForTicket($ticket);
+
+            if (
+                Schema::hasColumn('queue_tickets', 'consultation_id')
+                && (int) ($ticket->consultation_id ?? 0) !== (int) $consultation->id
+            ) {
+                $ticket->update(['consultation_id' => $consultation->id]);
+            }
+
+            $this->reflowQueuePositions((int) $ticket->rhu_id, (string) $ticket->service_type);
+
+            return [
+                'ticket' => $ticket->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']),
+                'consultation' => $consultation->fresh(),
+            ];
+        });
+    }
+
+    private function ensureConsultationForTicket(QueueTicket $ticket): Consultation
+    {
+        $existing = $this->findConsultationForTicket($ticket);
+
+        if ($existing) {
+            return $existing;
+        }
+
+        $ticket->loadMissing(['residentProfile', 'appointment']);
+
+        $resident = $ticket->residentProfile;
+        $appointment = $ticket->appointment;
+        $userId = (int) ($appointment?->user_id ?? $resident?->user_id ?? 0);
+
+        if ($userId <= 0) {
+            throw ValidationException::withMessages([
+                'consultation' => 'Cannot start SOAP because this queue ticket is not linked to a patient account.',
+            ]);
+        }
+
+        $sameDayOpen = Consultation::query()
+            ->where('user_id', $userId)
+            ->whereDate('consultation_date', today())
+            ->whereNotIn('status', ['completed', 'cancelled'])
+            ->latest('id')
+            ->first();
+
+        if ($sameDayOpen) {
+            return $sameDayOpen;
+        }
+
+        $complaint = $this->ticketChiefComplaint($ticket);
+
+        $payload = $this->filterTablePayload('consultations', [
+            'appointment_id' => $ticket->appointment_id,
+            'user_id' => $userId,
+            'attended_by' => Auth::id(),
+            'consultation_date' => today()->toDateString(),
+            'chief_complaint' => $complaint,
+            'subjective' => $complaint,
+            'status' => 'open',
+            'started_at' => now(),
+        ]);
+
+        return Consultation::create($payload);
+    }
+
+    private function ticketChiefComplaint(QueueTicket $ticket): ?string
+    {
+        $appointment = $ticket->appointment;
+
+        $value = trim((string) (
+            $appointment?->reason
+            ?? $appointment?->symptoms
+            ?? $appointment?->purpose
+            ?? $ticket->notes
+            ?? ''
+        ));
+
+        if ($value !== '') {
+            return $value;
+        }
+
+        return match ((string) $ticket->service_type) {
+            'opd_consultation' => 'OPD consultation',
+            'prenatal_checkup' => 'Prenatal checkup',
+            'immunization' => 'Immunization service',
+            'family_planning' => 'Family planning service',
+            'tb_dots' => 'TB DOTS service',
+            'laboratory' => 'Laboratory service',
+            'dental' => 'Dental service',
+            'emergency' => 'Emergency service',
+            'medicine_release' => 'Medicine release',
+            'bhw_assisted' => 'BHW-assisted service',
+            default => 'RHU service',
+        };
+    }
+
+    private function filterTablePayload(string $table, array $payload): array
+    {
+        return collect($payload)
+            ->filter(fn ($value, $key) => Schema::hasColumn($table, (string) $key))
+            ->all();
     }
 
     /**
@@ -680,7 +845,7 @@ class QueueService
      */
     public function getActiveTicketForResident(int $residentProfileId): ?QueueTicket
     {
-        return QueueTicket::query()
+        $active = QueueTicket::query()
             ->with(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy'])
             ->where('resident_profile_id', $residentProfileId)
             ->forToday()
@@ -694,6 +859,19 @@ class QueueService
                 END
             ")
             ->orderBy('queue_position')
+            ->first();
+
+        if ($active) {
+            return $active;
+        }
+
+        return QueueTicket::query()
+            ->with(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy'])
+            ->where('resident_profile_id', $residentProfileId)
+            ->forToday()
+            ->whereIn('status', ['completed', 'no_show', 'cancelled'])
+            ->latest('updated_at')
+            ->latest('id')
             ->first();
     }
 

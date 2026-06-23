@@ -403,36 +403,47 @@ class ConsultationController extends Controller
     {
         $appointmentId = (int) ($consultation->appointment_id ?? 0);
 
-        if ($appointmentId <= 0) {
-            return;
-        }
-
         $staffId = $this->currentUserId($request);
 
-        $appointmentUpdates = [
-            'status' => 'completed',
-        ];
+        if ($appointmentId > 0) {
+            $appointmentUpdates = [
+                'status' => 'completed',
+            ];
 
-        if (Schema::hasColumn('appointments', 'handled_by') && $staffId > 0) {
-            $appointmentUpdates['handled_by'] = DB::raw('COALESCE(handled_by, ' . $staffId . ')');
+            if (Schema::hasColumn('appointments', 'handled_by') && $staffId > 0) {
+                $appointmentUpdates['handled_by'] = DB::raw('COALESCE(handled_by, ' . $staffId . ')');
+            }
+
+            if (Schema::hasColumn('appointments', 'updated_at')) {
+                $appointmentUpdates['updated_at'] = now();
+            }
+
+            DB::table('appointments')
+                ->where('id', $appointmentId)
+                ->update($appointmentUpdates);
         }
-
-        if (Schema::hasColumn('appointments', 'updated_at')) {
-            $appointmentUpdates['updated_at'] = now();
-        }
-
-        DB::table('appointments')
-            ->where('id', $appointmentId)
-            ->update($appointmentUpdates);
 
         if (!Schema::hasTable('queue_tickets')) {
             return;
         }
 
-        $ticket = DB::table('queue_tickets')
-            ->where('appointment_id', $appointmentId)
-            ->latest('id')
-            ->first();
+        $ticketQuery = DB::table('queue_tickets');
+
+        if (Schema::hasColumn('queue_tickets', 'consultation_id')) {
+            $ticketQuery->where(function ($q) use ($consultation, $appointmentId) {
+                $q->where('consultation_id', $consultation->id);
+
+                if ($appointmentId > 0) {
+                    $q->orWhere('appointment_id', $appointmentId);
+                }
+            });
+        } elseif ($appointmentId > 0) {
+            $ticketQuery->where('appointment_id', $appointmentId);
+        } else {
+            return;
+        }
+
+        $ticket = $ticketQuery->latest('id')->first();
 
         if (!$ticket) {
             return;
@@ -444,6 +455,17 @@ class ConsultationController extends Controller
 
         if (Schema::hasColumn('queue_tickets', 'service_ended_at')) {
             $queueUpdates['service_ended_at'] = now();
+        }
+
+        if (Schema::hasColumn('queue_tickets', 'completed_at')) {
+            $queueUpdates['completed_at'] = now();
+        }
+
+        if (
+            Schema::hasColumn('queue_tickets', 'consultation_id')
+            && empty($ticket->consultation_id)
+        ) {
+            $queueUpdates['consultation_id'] = $consultation->id;
         }
 
         if (Schema::hasColumn('queue_tickets', 'served_by') && $staffId > 0) {
@@ -545,6 +567,7 @@ class ConsultationController extends Controller
             'resident.residentProfile.barangay',
             'attendant',
             'appointment.queueTicket',
+            'queueTicket',
         ];
 
         if (method_exists(Consultation::class, 'firstAttendant')) {

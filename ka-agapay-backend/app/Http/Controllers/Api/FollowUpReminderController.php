@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class FollowUpReminderController extends Controller
 {
@@ -67,7 +68,10 @@ class FollowUpReminderController extends Controller
             'consultation_id' => ['nullable', 'integer'],
             'appointment_id' => ['nullable', 'integer'],
             'needs_follow_up' => ['nullable', 'boolean'],
+            'follow_up_type' => ['nullable', Rule::in(['single', 'range'])],
             'follow_up_date' => ['nullable', 'date'],
+            'follow_up_start_date' => ['nullable', 'date'],
+            'follow_up_end_date' => ['nullable', 'date'],
             'follow_up_time' => ['nullable', 'string', 'max:10'],
             'reason' => ['nullable', 'string', 'max:2000'],
             'instructions' => ['nullable', 'string', 'max:2000'],
@@ -96,11 +100,6 @@ class FollowUpReminderController extends Controller
         $rhuId = ($consultation?->appointment?->rhu_id ?? null) ?: ($profile?->barangay_id ?? null);
         $appointmentId = $validated['appointment_id'] ?? $consultation?->appointment_id;
 
-        $followUpAt = $this->combineDateTime(
-            $validated['follow_up_date'] ?? null,
-            $validated['follow_up_time'] ?? null
-        );
-
         // "Follow-up needed = No" → cancel any existing reminder, do not create.
         if (array_key_exists('needs_follow_up', $validated) && $validated['needs_follow_up'] === false) {
             if ($consultation) {
@@ -115,6 +114,8 @@ class FollowUpReminderController extends Controller
             ]);
         }
 
+        $schedule = $this->normalizeFollowUpSchedule($validated);
+
         $payload = [
             'appointment_id' => $appointmentId,
             'user_id' => $consultation?->user_id,
@@ -123,13 +124,16 @@ class FollowUpReminderController extends Controller
             'created_by' => $this->userId($request),
             'patient_name' => $user?->full_name,
             'mobile_number' => $mobile,
-            'follow_up_at' => $followUpAt,
-            'follow_up_date' => $validated['follow_up_date'] ?? null,
-            'follow_up_time' => $validated['follow_up_time'] ?? null,
+            'follow_up_at' => $schedule['follow_up_at'],
+            'follow_up_type' => $schedule['follow_up_type'],
+            'follow_up_date' => $schedule['follow_up_date'],
+            'follow_up_start_date' => $schedule['follow_up_start_date'],
+            'follow_up_end_date' => $schedule['follow_up_end_date'],
+            'follow_up_time' => $schedule['follow_up_time'],
             'reason' => $validated['reason'] ?? null,
             'instructions' => $validated['instructions'] ?? null,
             'urgency' => $validated['urgency'] ?? 'routine',
-            'status' => $followUpAt ? 'scheduled' : 'pending',
+            'status' => $schedule['follow_up_at'] ? 'scheduled' : 'pending',
         ];
 
         // Capture the existing reminder BEFORE updating so we can tell whether the
@@ -176,7 +180,10 @@ class FollowUpReminderController extends Controller
         $reminder = FollowUpReminder::with('consultation.resident.residentProfile')->findOrFail($id);
 
         $validated = $request->validate([
+            'follow_up_type' => ['nullable', Rule::in(['single', 'range'])],
             'follow_up_date' => ['nullable', 'date'],
+            'follow_up_start_date' => ['nullable', 'date'],
+            'follow_up_end_date' => ['nullable', 'date'],
             'follow_up_time' => ['nullable', 'string', 'max:10'],
             'reason' => ['nullable', 'string', 'max:2000'],
             'instructions' => ['nullable', 'string', 'max:2000'],
@@ -199,18 +206,20 @@ class FollowUpReminderController extends Controller
             $profile?->emergency_contact_number,
         ]);
 
-        $followUpDate = $validated['follow_up_date'] ?? optional($reminder->follow_up_date)->toDateString();
-        $followUpTime = $validated['follow_up_time'] ?? $reminder->follow_up_time;
+        $schedule = $this->normalizeFollowUpSchedule($validated, $reminder);
 
         $payload = [
             'mobile_number' => $mobile,
-            'follow_up_at' => $this->combineDateTime($followUpDate, $followUpTime),
-            'follow_up_date' => $followUpDate,
-            'follow_up_time' => $followUpTime,
+            'follow_up_at' => $schedule['follow_up_at'],
+            'follow_up_type' => $schedule['follow_up_type'],
+            'follow_up_date' => $schedule['follow_up_date'],
+            'follow_up_start_date' => $schedule['follow_up_start_date'],
+            'follow_up_end_date' => $schedule['follow_up_end_date'],
+            'follow_up_time' => $schedule['follow_up_time'],
             'reason' => array_key_exists('reason', $validated) ? $validated['reason'] : $reminder->reason,
             'instructions' => array_key_exists('instructions', $validated) ? $validated['instructions'] : $reminder->instructions,
             'urgency' => $validated['urgency'] ?? $reminder->urgency ?? 'routine',
-            'status' => $followUpDate ? 'scheduled' : 'pending',
+            'status' => $schedule['follow_up_date'] ? 'scheduled' : 'pending',
         ];
 
         $contentChanged = $this->followUpContentChanged($reminder, $payload);
@@ -316,11 +325,20 @@ class FollowUpReminderController extends Controller
             return false; // brand-new reminder; the normal send path handles it
         }
 
-        foreach (['follow_up_date', 'follow_up_time', 'reason', 'instructions', 'mobile_number'] as $key) {
+        foreach ([
+            'follow_up_type',
+            'follow_up_date',
+            'follow_up_start_date',
+            'follow_up_end_date',
+            'follow_up_time',
+            'reason',
+            'instructions',
+            'mobile_number',
+        ] as $key) {
             $new = $payload[$key] ?? null;
             $old = $existing->{$key} ?? null;
 
-            if ($key === 'follow_up_date') {
+            if (in_array($key, ['follow_up_date', 'follow_up_start_date', 'follow_up_end_date'], true)) {
                 $new = $new ? Carbon::parse($new)->format('Y-m-d') : '';
                 $old = $old ? Carbon::parse($old)->format('Y-m-d') : '';
             } elseif ($key === 'follow_up_time') {
@@ -409,6 +427,21 @@ class FollowUpReminderController extends Controller
 
     private function buildSmsMessage(FollowUpReminder $reminder): string
     {
+        if ((string) ($reminder->follow_up_type ?? 'single') === 'range') {
+            $start = $reminder->follow_up_start_date
+                ? Carbon::parse($reminder->follow_up_start_date)->format('M d, Y')
+                : ($reminder->follow_up_date
+                    ? Carbon::parse($reminder->follow_up_date)->format('M d, Y')
+                    : 'the start date');
+
+            $end = $reminder->follow_up_end_date
+                ? Carbon::parse($reminder->follow_up_end_date)->format('M d, Y')
+                : $start;
+
+            return "Ka-Agapay RHU Reminder: Your follow-up consultation is scheduled from "
+                . "{$start} to {$end}. Please visit your assigned RHU.";
+        }
+
         $date = $reminder->follow_up_date
             ? Carbon::parse($reminder->follow_up_date)->format('M d, Y')
             : 'your scheduled date';
@@ -438,6 +471,77 @@ class FollowUpReminderController extends Controller
         }
 
         return null;
+    }
+
+    private function normalizeFollowUpSchedule(array $validated, ?FollowUpReminder $existing = null): array
+    {
+        $type = $validated['follow_up_type']
+            ?? $existing?->follow_up_type
+            ?? (!empty($validated['follow_up_start_date']) || !empty($validated['follow_up_end_date'])
+                ? 'range'
+                : 'single');
+
+        $type = $type === 'range' ? 'range' : 'single';
+
+        $time = array_key_exists('follow_up_time', $validated)
+            ? ($validated['follow_up_time'] ?? null)
+            : ($existing?->follow_up_time ?? null);
+
+        if ($type === 'range') {
+            $start = $validated['follow_up_start_date']
+                ?? $validated['follow_up_date']
+                ?? optional($existing?->follow_up_start_date)->toDateString()
+                ?? optional($existing?->follow_up_date)->toDateString();
+
+            $end = $validated['follow_up_end_date']
+                ?? optional($existing?->follow_up_end_date)->toDateString();
+
+            if (!$start || !$end) {
+                throw ValidationException::withMessages([
+                    'follow_up_start_date' => ['Start date and end date are required for a date range follow-up.'],
+                ]);
+            }
+
+            if (Carbon::parse($end)->lt(Carbon::parse($start))) {
+                throw ValidationException::withMessages([
+                    'follow_up_end_date' => ['End date must be the same day as or after the start date.'],
+                ]);
+            }
+
+            $startDate = Carbon::parse($start)->toDateString();
+            $endDate = Carbon::parse($end)->toDateString();
+
+            return [
+                'follow_up_type' => 'range',
+                'follow_up_date' => $startDate,
+                'follow_up_start_date' => $startDate,
+                'follow_up_end_date' => $endDate,
+                'follow_up_time' => $time,
+                'follow_up_at' => $this->combineDateTime($startDate, $time),
+            ];
+        }
+
+        $date = $validated['follow_up_date']
+            ?? $validated['follow_up_start_date']
+            ?? optional($existing?->follow_up_date)->toDateString()
+            ?? optional($existing?->follow_up_start_date)->toDateString();
+
+        if (!$date) {
+            throw ValidationException::withMessages([
+                'follow_up_date' => ['Follow-up date is required.'],
+            ]);
+        }
+
+        $date = Carbon::parse($date)->toDateString();
+
+        return [
+            'follow_up_type' => 'single',
+            'follow_up_date' => $date,
+            'follow_up_start_date' => $date,
+            'follow_up_end_date' => null,
+            'follow_up_time' => $time,
+            'follow_up_at' => $this->combineDateTime($date, $time),
+        ];
     }
 
     private function combineDateTime(?string $date, ?string $time): ?Carbon

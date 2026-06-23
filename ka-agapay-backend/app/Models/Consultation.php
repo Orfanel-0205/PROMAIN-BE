@@ -6,6 +6,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Consultation extends Model
 {
@@ -107,5 +108,10 @@ class Consultation extends Model
     public function medicalReports(): HasMany
     {
         return $this->hasMany(MedicalReport::class, 'consultation_id');
+    }
+
+    public function queueTicket(): HasOne
+    {
+        return $this->hasOne(QueueTicket::class, 'consultation_id');
     }
 }

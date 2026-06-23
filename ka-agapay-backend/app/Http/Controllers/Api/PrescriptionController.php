@@ -181,6 +181,126 @@ class PrescriptionController extends Controller
         ], 201);
     }
 
+    public function fromConsultation(Request $request, int $id): JsonResponse
+    {
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        abort_unless(Schema::hasTable('consultations'), 404, 'Consultations table not found.');
+
+        $consultation = DB::table('consultations')->where('id', $id)->first();
+        abort_unless($consultation, 404, 'Consultation not found.');
+
+        $residentProfile = Schema::hasTable('resident_profiles')
+            ? DB::table('resident_profiles')->where('user_id', $consultation->user_id)->first()
+            : null;
+
+        abort_unless($residentProfile, 422, 'Patient profile not found for this consultation.');
+
+        $validated = $request->validate([
+            'diagnosis' => ['nullable', 'string', 'max:1000'],
+            'diagnosis_code' => ['nullable', 'string', 'max:20'],
+            'medications' => ['nullable', 'array'],
+            'additional_instructions' => ['nullable', 'string', 'max:2000'],
+            'dispensing_notes' => ['nullable', 'string', 'max:2000'],
+            'rhu_id' => ['nullable', 'integer'],
+        ]);
+
+        $diagnosis = $this->firstNonEmpty([
+            $validated['diagnosis'] ?? null,
+            $consultation->diagnosis ?? null,
+            $consultation->assessment ?? null,
+        ]);
+
+        $medications = !empty($validated['medications'])
+            ? $validated['medications']
+            : $this->medicationsFromConsultation($consultation);
+
+        $additionalInstructions = $this->firstNonEmpty([
+            $validated['additional_instructions'] ?? null,
+            $consultation->plan ?? null,
+            $consultation->treatment ?? null,
+        ]);
+
+        $existing = DB::table('prescriptions')
+            ->where('consultation_id', $consultation->id)
+            ->where('status', 'active')
+            ->latest('id')
+            ->first();
+
+        if ($existing) {
+            DB::table('prescriptions')->where('id', $existing->id)->update([
+                'diagnosis' => $diagnosis,
+                'diagnosis_code' => $validated['diagnosis_code'] ?? $existing->diagnosis_code,
+                'medications' => json_encode($medications),
+                'has_controlled_substances' => collect($medications)
+                    ->contains(fn ($m) => (bool) ($m['is_controlled'] ?? false)),
+                'additional_instructions' => $additionalInstructions,
+                'dispensing_notes' => $validated['dispensing_notes'] ?? $existing->dispensing_notes,
+                'updated_at' => now(),
+            ]);
+
+            $row = DB::table('prescriptions')->where('id', $existing->id)->first();
+            $pdfPath = $this->generateAndStoreModernPdf($row);
+
+            DB::table('prescriptions')->where('id', $existing->id)->update([
+                'file_path' => $pdfPath,
+                'updated_at' => now(),
+            ]);
+
+            return response()->json([
+                'message' => 'Existing e-prescription opened and updated from SOAP.',
+                'data' => $this->formatPrescription(
+                    DB::table('prescriptions')->where('id', $existing->id)->first()
+                ),
+            ]);
+        }
+
+        $authUserId = $this->currentUserId($request);
+        $rhuId = (int) (
+            $validated['rhu_id']
+            ?? $request->user()?->effectiveRhuId()
+            ?? $residentProfile->barangay_id
+            ?? 1
+        );
+        $number = $this->nextPrescriptionNumber($rhuId);
+
+        $prescriptionId = DB::table('prescriptions')->insertGetId([
+            'resident_profile_id' => $residentProfile->id,
+            'prescribed_by' => $authUserId,
+            'consultation_id' => $consultation->id,
+            'telemedicine_session_id' => null,
+            'prescription_number' => $number,
+            'rhu_id' => $rhuId,
+            'prescription_date' => now()->toDateString(),
+            'valid_until' => now()->addDays(7)->toDateString(),
+            'diagnosis' => $diagnosis,
+            'diagnosis_code' => $validated['diagnosis_code'] ?? null,
+            'medications' => json_encode($medications),
+            'has_controlled_substances' => collect($medications)
+                ->contains(fn ($m) => (bool) ($m['is_controlled'] ?? false)),
+            'additional_instructions' => $additionalInstructions,
+            'dispensing_notes' => $validated['dispensing_notes'] ?? null,
+            'status' => 'active',
+            'file_path' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $row = DB::table('prescriptions')->where('id', $prescriptionId)->first();
+        $pdfPath = $this->generateAndStoreModernPdf($row);
+
+        DB::table('prescriptions')->where('id', $prescriptionId)->update([
+            'file_path' => $pdfPath,
+            'updated_at' => now(),
+        ]);
+
+        return response()->json([
+            'message' => 'E-prescription created from SOAP.',
+            'data' => $this->formatPrescription(
+                DB::table('prescriptions')->where('id', $prescriptionId)->first()
+            ),
+        ], 201);
+    }
+
     public function show(int $id): JsonResponse
     {
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
@@ -490,6 +610,45 @@ class PrescriptionController extends Controller
             })
             ->values()
             ->all();
+    }
+
+    private function medicationsFromConsultation(object $consultation): array
+    {
+        $text = $this->firstNonEmpty([
+            $consultation->prescribed_drugs ?? null,
+            $consultation->treatment ?? null,
+            $consultation->plan ?? null,
+        ]);
+
+        return [[
+            'name' => $text ? $this->firstLine($text) : 'Medication as prescribed',
+            'dosage' => '',
+            'quantity' => '',
+            'frequency' => '',
+            'duration' => '',
+            'route' => '',
+            'instructions' => $text ?: 'Take as directed by RHU staff.',
+        ]];
+    }
+
+    private function firstLine(string $value): string
+    {
+        $line = trim((string) preg_split('/\r\n|\r|\n/', $value)[0]);
+
+        return $line !== '' ? $line : 'Medication as prescribed';
+    }
+
+    private function firstNonEmpty(array $values): ?string
+    {
+        foreach ($values as $value) {
+            $text = trim((string) ($value ?? ''));
+
+            if ($text !== '') {
+                return $text;
+            }
+        }
+
+        return null;
     }
 
     private function generateAndStoreModernPdf(object $row): string

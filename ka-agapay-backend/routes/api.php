@@ -279,9 +279,11 @@ Route::prefix('v1')->group(function () {
         Route::post('/prescriptions/{id}/release',  [PrescriptionController::class, 'release']);
         Route::post('/prescriptions/{id}/dispense', [PrescriptionController::class, 'dispense']);
         Route::apiResource('prescriptions', PrescriptionController::class);
+        Route::post('/consultations/{id}/prescriptions', [PrescriptionController::class, 'fromConsultation']);
 
         Route::apiResource('referrals', ReferralController::class);
 
+        Route::get('/medicines/search',              [InventoryController::class, 'searchMedicines']);
         Route::get('/inventory/alerts',              [InventoryController::class, 'alerts']);
         Route::post('/inventory/{item}/stock-in',    [InventoryController::class, 'stockIn']);
         Route::post('/inventory/{item}/stock-out',   [InventoryController::class, 'stockOut']);
@@ -373,6 +375,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/call-priority-next', [QueueController::class, 'callPriorityNext']);
 
             // IMPORTANT: use {ticket}, not {id}
+            Route::post('/{ticket}/start-service', [QueueController::class, 'startService']);
             Route::patch('/{ticket}/status', [QueueController::class, 'updateStatus']);
             Route::put('/{ticket}/status',   [QueueController::class, 'updateStatus']);
 

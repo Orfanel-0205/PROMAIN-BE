@@ -16,6 +16,7 @@ class QueueTicket extends Model
         'ticket_number',
         'resident_profile_id',
         'appointment_id',
+        'consultation_id',
         'rhu_id',
         'issued_by',
         'served_by',
@@ -37,6 +38,7 @@ class QueueTicket extends Model
         'called_at',
         'service_started_at',
         'service_ended_at',
+        'completed_at',
         'cancelled_at',
         'wait_time_minutes',
         'service_time_minutes',
@@ -55,6 +57,7 @@ class QueueTicket extends Model
         'called_at'          => 'datetime',
         'service_started_at' => 'datetime',
         'service_ended_at'   => 'datetime',
+        'completed_at'       => 'datetime',
         'cancelled_at'       => 'datetime',
     ];
 
@@ -66,6 +69,11 @@ class QueueTicket extends Model
     public function appointment(): BelongsTo
     {
         return $this->belongsTo(Appointment::class);
+    }
+
+    public function consultation(): BelongsTo
+    {
+        return $this->belongsTo(Consultation::class, 'consultation_id');
     }
 
     public function rhu(): BelongsTo
