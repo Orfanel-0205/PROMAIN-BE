@@ -73,6 +73,7 @@ class FollowUpReminderController extends Controller
             'instructions' => ['nullable', 'string', 'max:2000'],
             'urgency' => ['nullable', Rule::in(FollowUpReminder::URGENCY_LEVELS)],
             'sms_enabled' => ['nullable', 'boolean'],
+            'force_sms' => ['nullable', 'boolean'],
         ]);
 
         $consultation = !empty($validated['consultation_id'])
@@ -125,6 +126,14 @@ class FollowUpReminderController extends Controller
             'status' => $followUpAt ? 'scheduled' : 'pending',
         ];
 
+        // Capture the existing reminder BEFORE updating so we can tell whether the
+        // patient-facing details changed (which should re-trigger the SMS).
+        $existing = $consultation
+            ? FollowUpReminder::where('consultation_id', $consultation->id)->first()
+            : null;
+
+        $contentChanged = $this->followUpContentChanged($existing, $payload);
+
         $reminder = $consultation
             ? FollowUpReminder::updateOrCreate(
                 ['consultation_id' => $consultation->id],
@@ -132,10 +141,14 @@ class FollowUpReminderController extends Controller
             )
             : FollowUpReminder::create([...$payload, 'consultation_id' => null]);
 
-        // SMS alert — non-fatal, deduped, only when enabled + a mobile exists.
+        // SMS alert — non-fatal, only when enabled + a mobile exists.
+        // Resend when the staff forces it OR when the follow-up details changed;
+        // otherwise the anti-spam guard prevents duplicate texts.
         $smsEnabled = $validated['sms_enabled'] ?? true;
+        $forceSms = (bool) ($validated['force_sms'] ?? false);
+
         if ($smsEnabled) {
-            $this->maybeSendSms($reminder, $mobile, $rhuId);
+            $this->maybeSendSms($reminder, $mobile, $rhuId, $forceSms || $contentChanged);
         }
 
         return response()->json([
@@ -176,8 +189,75 @@ class FollowUpReminderController extends Controller
         ]);
     }
 
-    private function maybeSendSms(FollowUpReminder $reminder, ?string $mobile, ?int $rhuId): void
+    /**
+     * POST /api/v1/follow-up-reminders/{id}/resend-sms
+     * Manual resend from the SOAP follow-up section — always bypasses the
+     * anti-spam guard and records a fresh send attempt.
+     */
+    public function resendSms(Request $request, int $id): JsonResponse
     {
+        $user = $request->user();
+
+        if (!$this->isStaff($user)) {
+            return response()->json(['message' => 'Only RHU staff can resend reminders.'], 403);
+        }
+
+        $reminder = FollowUpReminder::findOrFail($id);
+
+        if (
+            !$user->isGlobalRhuScope()
+            && (int) $reminder->rhu_id !== (int) ($user->effectiveRhuId() ?? 0)
+        ) {
+            return response()->json(['message' => 'You can only resend reminders for your assigned RHU.'], 403);
+        }
+
+        $this->maybeSendSms($reminder, $reminder->mobile_number, $reminder->rhu_id, true);
+
+        return response()->json([
+            'message' => 'SMS resend attempted.',
+            'data' => $reminder->fresh(['user', 'rhu', 'createdBy']),
+        ]);
+    }
+
+    /**
+     * True when any patient-facing follow-up detail changed versus the stored
+     * reminder. Used to decide whether a new SMS should go out on save.
+     */
+    private function followUpContentChanged(?FollowUpReminder $existing, array $payload): bool
+    {
+        if (!$existing) {
+            return false; // brand-new reminder; the normal send path handles it
+        }
+
+        foreach (['follow_up_date', 'follow_up_time', 'reason', 'instructions', 'mobile_number'] as $key) {
+            $new = $payload[$key] ?? null;
+            $old = $existing->{$key} ?? null;
+
+            if ($key === 'follow_up_date') {
+                $new = $new ? Carbon::parse($new)->format('Y-m-d') : '';
+                $old = $old ? Carbon::parse($old)->format('Y-m-d') : '';
+            } elseif ($key === 'follow_up_time') {
+                $new = substr((string) $new, 0, 5);
+                $old = substr((string) $old, 0, 5);
+            } else {
+                $new = trim((string) $new);
+                $old = trim((string) $old);
+            }
+
+            if ($new !== $old) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function maybeSendSms(
+        FollowUpReminder $reminder,
+        ?string $mobile,
+        ?int $rhuId,
+        bool $force = false
+    ): void {
         $normalized = $this->normalizePhone($mobile);
 
         if (!$normalized) {
@@ -185,8 +265,9 @@ class FollowUpReminderController extends Controller
             return;
         }
 
-        // Avoid duplicate spam: only send once unless it has not been sent yet.
-        if ($reminder->sms_sent_at) {
+        // Anti-spam: once an SMS has actually been sent, don't resend unless the
+        // caller forces it (manual resend or changed follow-up details).
+        if (!$force && $reminder->sms_sent_at) {
             return;
         }
 
