@@ -410,91 +410,143 @@ class ProfileController extends Controller
      * patients without PhilHealth), so it does NOT count toward can_book.
      */
     public function profileCompletionFor(User $user, ?ResidentProfile $profile = null): array
-    {
-        $profile = $profile ?? $this->residentProfileFor($user);
+{
+    $profile = $profile ?? $this->residentProfileFor($user);
 
-        // First non-empty value across candidate [source, attribute] pairs.
-        $val = function (array $candidates) use ($user, $profile): ?string {
-            foreach ($candidates as [$source, $attr]) {
-                $obj = $source === 'user' ? $user : $profile;
-                if (!$obj) {
-                    continue;
-                }
-                $raw = $obj->getAttribute($attr);
-                $value = trim((string) ($raw ?? ''));
-                if ($value !== '') {
-                    return $value;
-                }
+    // First non-empty value across candidate [source, attribute] pairs.
+    $val = function (array $candidates) use ($user, $profile): ?string {
+        foreach ($candidates as [$source, $attr]) {
+            $obj = $source === 'user' ? $user : $profile;
+
+            if (!$obj) {
+                continue;
             }
-            return null;
-        };
 
-        // key => [label, candidate [source, attribute] pairs]
-        $checks = [
-            'first_name' => ['First Name', [['user', 'first_name'], ['profile', 'first_name']]],
-            'last_name' => ['Last Name', [['user', 'last_name'], ['profile', 'last_name']]],
-            'birth_date' => ['Birth Date', [
-                ['user', 'birthday'], ['user', 'birth_date'],
-                ['profile', 'birth_date'], ['profile', 'birthdate'], ['profile', 'date_of_birth'],
-            ]],
-            'gender' => ['Gender / Sex', [['user', 'sex'], ['user', 'gender'], ['profile', 'sex'], ['profile', 'gender']]],
-            'civil_status' => ['Civil Status', [['profile', 'civil_status'], ['user', 'civil_status']]],
-            'mobile_number' => ['Mobile Number', [
-                ['user', 'mobile_number'],
-                ['profile', 'mobile_number'], ['profile', 'contact_number'], ['profile', 'phone_number'],
-            ]],
-            'barangay' => ['Barangay / Address', [
-                ['profile', 'barangay_id'], ['user', 'barangay_id'],
-                ['user', 'barangay'], ['profile', 'address'], ['user', 'address'],
-            ]],
-            'guardian_name' => ['Guardian / Emergency Contact Name', [
-                ['profile', 'guardian_name'], ['profile', 'emergency_contact_name'],
-            ]],
-            'guardian_contact' => ['Guardian Contact Number', [
-                ['profile', 'guardian_contact'], ['profile', 'emergency_contact_number'], ['profile', 'emergency_contact'],
-            ]],
-        ];
+            $raw = $obj->getAttribute($attr);
+            $value = trim((string) ($raw ?? ''));
 
-        $missingFields = [];
-        $missingLabels = [];
-        $filled = 0;
-
-        foreach ($checks as $key => [$label, $candidates]) {
-            if ($val($candidates) !== null) {
-                $filled++;
-            } else {
-                $missingFields[] = $key;
-                $missingLabels[] = $label;
+            if ($value !== '') {
+                return $value;
             }
         }
 
-        $total = count($checks);
-        $percent = $total > 0 ? (int) round(($filled / $total) * 100) : 100;
-        $isComplete = count($missingFields) === 0;
+        return null;
+    };
 
-        // PhilHealth — informational only (does not block booking).
-        $philhealthNumber = $val([
-            ['profile', 'philhealth_number'], ['profile', 'philhealth_no'], ['profile', 'philhealth_pin'],
-        ]);
-        $philhealthVerified = (bool) ($profile && $profile->getAttribute('philhealth_verified_at'));
+    /*
+     * Required fields for booking/ITR readiness.
+     *
+     * IMPORTANT:
+     * Guardian / Emergency Contact is OPTIONAL.
+     * PhilHealth is also OPTIONAL unless the user has OCR-verified it.
+     */
+    $checks = [
+        'first_name' => ['First Name', [
+            ['user', 'first_name'],
+            ['profile', 'first_name'],
+        ]],
 
-        return [
-            'is_complete' => $isComplete,
-            'can_book_consultation' => $isComplete,
-            'percent' => $percent,
-            'missing_fields' => $missingFields,
-            'missing_labels' => $missingLabels,
-            'philhealth_present' => $philhealthNumber !== null,
-            'philhealth_verified' => $philhealthVerified,
-            'philhealth_warning' => $philhealthVerified
-                ? null
-                : 'PhilHealth is not yet verified. You may continue only if PhilHealth is not available.',
-            'message' => $isComplete
-                ? 'Your health profile is complete. You can book a consultation.'
-                : 'Complete your health profile before booking a consultation. These details are required for your ITR.',
-        ];
+        'last_name' => ['Last Name', [
+            ['user', 'last_name'],
+            ['profile', 'last_name'],
+        ]],
+
+        'birth_date' => ['Birth Date', [
+            ['user', 'birthday'],
+            ['user', 'birth_date'],
+            ['profile', 'birth_date'],
+            ['profile', 'birthdate'],
+            ['profile', 'date_of_birth'],
+        ]],
+
+        'gender' => ['Gender / Sex', [
+            ['user', 'sex'],
+            ['user', 'gender'],
+            ['profile', 'sex'],
+            ['profile', 'gender'],
+        ]],
+
+        'civil_status' => ['Civil Status', [
+            ['profile', 'civil_status'],
+            ['user', 'civil_status'],
+        ]],
+
+        'mobile_number' => ['Mobile Number', [
+            ['user', 'mobile_number'],
+            ['profile', 'mobile_number'],
+            ['profile', 'contact_number'],
+            ['profile', 'phone_number'],
+        ]],
+
+        'barangay' => ['Barangay / Address', [
+            ['profile', 'barangay_id'],
+            ['user', 'barangay_id'],
+            ['user', 'barangay'],
+            ['profile', 'address'],
+            ['user', 'address'],
+        ]],
+    ];
+
+    $missingFields = [];
+    $missingLabels = [];
+    $filled = 0;
+
+    foreach ($checks as $key => [$label, $candidates]) {
+        if ($val($candidates) !== null) {
+            $filled++;
+        } else {
+            $missingFields[] = $key;
+            $missingLabels[] = $label;
+        }
     }
 
+    $total = count($checks);
+    $percent = $total > 0 ? (int) round(($filled / $total) * 100) : 100;
+    $isComplete = count($missingFields) === 0;
+
+    // Optional guardian/emergency contact.
+    $guardianName = $val([
+        ['profile', 'guardian_name'],
+        ['profile', 'emergency_contact_name'],
+    ]);
+
+    $guardianContact = $val([
+        ['profile', 'guardian_contact'],
+        ['profile', 'emergency_contact_number'],
+        ['profile', 'emergency_contact'],
+    ]);
+
+    // PhilHealth is informational only and should not block booking.
+    $philhealthNumber = $val([
+        ['profile', 'philhealth_number'],
+        ['profile', 'philhealth_no'],
+        ['profile', 'philhealth_pin'],
+    ]);
+
+    $philhealthVerified = (bool) ($profile && $profile->getAttribute('philhealth_verified_at'));
+
+    return [
+        'is_complete' => $isComplete,
+        'can_book_consultation' => $isComplete,
+        'percent' => $percent,
+
+        'missing_fields' => $missingFields,
+        'missing_labels' => $missingLabels,
+
+        'guardian_optional' => true,
+        'guardian_present' => $guardianName !== null || $guardianContact !== null,
+
+        'philhealth_present' => $philhealthNumber !== null,
+        'philhealth_verified' => $philhealthVerified,
+        'philhealth_warning' => $philhealthVerified
+            ? null
+            : 'PhilHealth is not yet verified. You may continue if PhilHealth is not available.',
+
+        'message' => $isComplete
+            ? 'Your health profile is complete. You can book a consultation.'
+            : 'Complete your required health profile details before booking a consultation.',
+    ];
+}
     private function normalizeRoleName(?string $role): string
     {
         return strtolower(str_replace([' ', '-'], '_', trim((string) $role)));
