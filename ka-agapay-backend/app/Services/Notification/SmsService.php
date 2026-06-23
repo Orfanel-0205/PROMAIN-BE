@@ -5,6 +5,7 @@ namespace App\Services\Notification;
 use App\Models\SmsLog;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class SmsService
 {
@@ -46,7 +47,7 @@ class SmsService
             $rawStatus = $first['status'] ?? null;
             $status    = $this->mapStatus($rawStatus);
 
-            $log->update([
+            $updates = [
                 'status'              => $status,
                 'provider_message_id' => $messageId,
                 // Only stamp sent_at once the message is actually sent/delivered.
@@ -54,7 +55,13 @@ class SmsService
                 'error_message'       => $status === 'failed'
                     ? ('Semaphore status: ' . ($rawStatus ?? 'unknown'))
                     : null,
-            ]);
+            ];
+
+            if (Schema::hasColumn('sms_logs', 'raw_response')) {
+                $updates['raw_response'] = $response;
+            }
+
+            $log->update($updates);
         } catch (\Throwable $e) {
             Log::error('SMS send failed', [
                 'mobile'  => $mobile,
@@ -119,6 +126,7 @@ class SmsService
         $value = strtolower(trim((string) $status));
 
         return match ($value) {
+            'pending', 'queued' => 'pending',
             'sent', 'delivered', 'success', 'successful' => 'sent',
             'failed', 'error', 'undelivered', 'refunded', 'rejected' => 'failed',
             default => 'pending', // pending, queued, processing, empty, or anything unexpected

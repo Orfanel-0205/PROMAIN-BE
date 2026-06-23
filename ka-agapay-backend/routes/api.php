@@ -370,6 +370,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/my-ticket', [QueueController::class, 'myTicket']);
 
             Route::post('/call-next', [QueueController::class, 'callNext']);
+            Route::post('/call-priority-next', [QueueController::class, 'callPriorityNext']);
 
             // IMPORTANT: use {ticket}, not {id}
             Route::patch('/{ticket}/status', [QueueController::class, 'updateStatus']);
@@ -403,6 +404,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('follow-up-reminders')->group(function () {
             Route::get('/',                 [FollowUpReminderController::class, 'index']);
             Route::post('/',                [FollowUpReminderController::class, 'store']);
+            Route::patch('/{id}',           [FollowUpReminderController::class, 'update']);
             Route::patch('/{id}/status',    [FollowUpReminderController::class, 'updateStatus']);
             Route::post('/{id}/resend-sms', [FollowUpReminderController::class, 'resendSms']);
         });

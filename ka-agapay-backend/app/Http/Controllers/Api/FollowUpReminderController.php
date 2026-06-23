@@ -84,14 +84,13 @@ class FollowUpReminderController extends Controller
         $user = $consultation?->resident;
         $profile = $user?->residentProfile;
 
-        // Mobile number priority:
-        // 1) editable form field, 2) user, 3) profile mobile/contact/phone.
-        $mobile = $this->firstFilled([
+        $mobile = $this->resolveMobileNumber([
             $validated['mobile_number'] ?? null,
             $user?->mobile_number,
             $profile?->mobile_number,
             $profile?->contact_number,
             $profile?->phone_number,
+            $profile?->emergency_contact_number,
         ]);
 
         $rhuId = ($consultation?->appointment?->rhu_id ?? null) ?: ($profile?->barangay_id ?? null);
@@ -153,15 +152,80 @@ class FollowUpReminderController extends Controller
         // otherwise the anti-spam guard prevents duplicate texts.
         $smsEnabled = $validated['sms_enabled'] ?? true;
         $forceSms = (bool) ($validated['force_sms'] ?? false);
+        $smsResult = null;
 
         if ($smsEnabled) {
-            $this->maybeSendSms($reminder, $mobile, $rhuId, $forceSms || $contentChanged);
+            $shouldAttemptSms = !$existing || $forceSms || $contentChanged;
+
+            if ($shouldAttemptSms) {
+                $smsResult = $this->attemptSms($reminder, $mobile);
+            }
         }
 
         return response()->json([
-            'message' => 'Follow-up reminder saved.',
+            'message' => $smsResult['message'] ?? 'Follow-up reminder saved.',
             'data' => $reminder->fresh(['user', 'rhu', 'createdBy']),
         ], 201);
+    }
+
+    /**
+     * PATCH /api/v1/follow-up-reminders/{id}
+     */
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $reminder = FollowUpReminder::with('consultation.resident.residentProfile')->findOrFail($id);
+
+        $validated = $request->validate([
+            'follow_up_date' => ['nullable', 'date'],
+            'follow_up_time' => ['nullable', 'string', 'max:10'],
+            'reason' => ['nullable', 'string', 'max:2000'],
+            'instructions' => ['nullable', 'string', 'max:2000'],
+            'urgency' => ['nullable', Rule::in(FollowUpReminder::URGENCY_LEVELS)],
+            'sms_enabled' => ['nullable', 'boolean'],
+            'force_sms' => ['nullable', 'boolean'],
+            'mobile_number' => ['nullable', 'string', 'max:40'],
+        ]);
+
+        $consultation = $reminder->consultation;
+        $user = $consultation?->resident ?: $reminder->user;
+        $profile = $user?->residentProfile;
+
+        $mobile = $this->resolveMobileNumber([
+            array_key_exists('mobile_number', $validated) ? $validated['mobile_number'] : $reminder->mobile_number,
+            $user?->mobile_number,
+            $profile?->mobile_number,
+            $profile?->contact_number,
+            $profile?->phone_number,
+            $profile?->emergency_contact_number,
+        ]);
+
+        $followUpDate = $validated['follow_up_date'] ?? optional($reminder->follow_up_date)->toDateString();
+        $followUpTime = $validated['follow_up_time'] ?? $reminder->follow_up_time;
+
+        $payload = [
+            'mobile_number' => $mobile,
+            'follow_up_at' => $this->combineDateTime($followUpDate, $followUpTime),
+            'follow_up_date' => $followUpDate,
+            'follow_up_time' => $followUpTime,
+            'reason' => array_key_exists('reason', $validated) ? $validated['reason'] : $reminder->reason,
+            'instructions' => array_key_exists('instructions', $validated) ? $validated['instructions'] : $reminder->instructions,
+            'urgency' => $validated['urgency'] ?? $reminder->urgency ?? 'routine',
+            'status' => $followUpDate ? 'scheduled' : 'pending',
+        ];
+
+        $contentChanged = $this->followUpContentChanged($reminder, $payload);
+
+        $reminder->update($payload);
+
+        $smsResult = null;
+        if (($validated['sms_enabled'] ?? true) && ($contentChanged || (bool) ($validated['force_sms'] ?? false))) {
+            $smsResult = $this->attemptSms($reminder->fresh(), $mobile);
+        }
+
+        return response()->json([
+            'message' => $smsResult['message'] ?? 'Follow-up reminder saved.',
+            'data' => $reminder->fresh(['user', 'rhu', 'createdBy']),
+        ]);
     }
 
     /**
@@ -175,7 +239,7 @@ class FollowUpReminderController extends Controller
             return response()->json(['message' => 'Only RHU staff can update reminders.'], 403);
         }
 
-        $reminder = FollowUpReminder::findOrFail($id);
+        $reminder = FollowUpReminder::with('consultation.resident.residentProfile')->findOrFail($id);
 
         if (
             !$user->isGlobalRhuScope()
@@ -209,7 +273,7 @@ class FollowUpReminderController extends Controller
             return response()->json(['message' => 'Only RHU staff can resend reminders.'], 403);
         }
 
-        $reminder = FollowUpReminder::findOrFail($id);
+        $reminder = FollowUpReminder::with('consultation.resident.residentProfile')->findOrFail($id);
 
         if (
             !$user->isGlobalRhuScope()
@@ -218,10 +282,26 @@ class FollowUpReminderController extends Controller
             return response()->json(['message' => 'You can only resend reminders for your assigned RHU.'], 403);
         }
 
-        $this->maybeSendSms($reminder, $reminder->mobile_number, $reminder->rhu_id, true);
+        $user = $reminder->consultation?->resident ?: $reminder->user;
+        $profile = $user?->residentProfile;
+
+        $mobile = $this->resolveMobileNumber([
+            $reminder->mobile_number,
+            $user?->mobile_number,
+            $profile?->mobile_number,
+            $profile?->contact_number,
+            $profile?->phone_number,
+            $profile?->emergency_contact_number,
+        ]);
+
+        if ($mobile !== $reminder->mobile_number) {
+            $reminder->update(['mobile_number' => $mobile]);
+        }
+
+        $smsResult = $this->attemptSms($reminder->fresh(), $mobile);
 
         return response()->json([
-            'message' => 'SMS resend attempted.',
+            'message' => $smsResult['message'] ?? 'SMS resend attempted.',
             'data' => $reminder->fresh(['user', 'rhu', 'createdBy']),
         ]);
     }
@@ -259,64 +339,75 @@ class FollowUpReminderController extends Controller
         return false;
     }
 
-    private function maybeSendSms(
-        FollowUpReminder $reminder,
-        ?string $mobile,
-        ?int $rhuId,
-        bool $force = false
-    ): void {
-        $normalized = $this->normalizePhone($mobile);
+    private function attemptSms(FollowUpReminder $reminder, ?string $mobile): array
+    {
+        if (!$mobile) {
+            $this->updateReminderSmsFields($reminder, [
+                'sms_status' => 'not_sent',
+                'sms_sent_at' => null,
+                'sms_error_message' => 'The patient has no valid mobile number.',
+            ]);
 
-        if (!$normalized) {
-            $reminder->update(['sms_status' => 'no_mobile']);
-            return;
-        }
-
-        // Anti-spam: once an SMS has actually been sent, don't resend unless the
-        // caller forces it (manual resend or changed follow-up details).
-        if (!$force && $reminder->sms_sent_at) {
-            return;
+            return [
+                'status' => 'not_sent',
+                'message' => 'Follow-up saved, but SMS was not sent because the patient has no valid mobile number.',
+            ];
         }
 
         try {
-            $message = $this->buildSmsMessage($reminder, $rhuId);
+            $message = $this->buildSmsMessage($reminder);
 
-            // SmsService always creates a fresh sms_logs row and never throws.
-            $log = $this->sms->send($normalized, $message, 'followup_reminder', $reminder->user_id);
+            // SmsService creates the sms_logs row before contacting Semaphore.
+            $log = $this->sms->send($mobile, $message, 'follow_up_reminder', $reminder->user_id);
 
-            $reminder->fill([
+            $this->updateReminderSmsFields($reminder, [
                 'sms_status' => $log->status,
                 'sms_sent_at' => $log->status === 'sent' ? now() : null,
-                'sms_error' => $log->status === 'failed'
+                'sms_last_attempt_at' => now(),
+                'sms_log_id' => $log->id,
+                'sms_error_message' => $log->status === 'failed'
                     ? ($log->error_message ?? 'SMS failed')
                     : null,
             ]);
 
-            // Optional tracking columns (only if the additive migration has run).
-            if (Schema::hasColumn('follow_up_reminders', 'sms_last_attempt_at')) {
-                $reminder->sms_last_attempt_at = now();
-            }
-            if (Schema::hasColumn('follow_up_reminders', 'sms_log_id')) {
-                $reminder->sms_log_id = $log->id;
-            }
-
-            $reminder->save();
+            return ['status' => $log->status, 'message' => 'Follow-up reminder saved.'];
         } catch (\Throwable $e) {
-            // Never break the SOAP save because of SMS.
-            $reminder->fill([
+            $this->updateReminderSmsFields($reminder, [
                 'sms_status' => 'failed',
-                'sms_error' => $e->getMessage(),
+                'sms_sent_at' => null,
+                'sms_last_attempt_at' => now(),
+                'sms_error_message' => $e->getMessage(),
             ]);
 
-            if (Schema::hasColumn('follow_up_reminders', 'sms_last_attempt_at')) {
-                $reminder->sms_last_attempt_at = now();
-            }
-
-            $reminder->save();
+            return ['status' => 'failed', 'message' => 'Follow-up reminder saved.'];
         }
     }
 
-    private function buildSmsMessage(FollowUpReminder $reminder, ?int $rhuId): string
+    private function updateReminderSmsFields(FollowUpReminder $reminder, array $fields): void
+    {
+        $status = in_array($fields['sms_status'] ?? '', FollowUpReminder::SMS_STATUSES, true)
+            ? $fields['sms_status']
+            : 'pending';
+
+        $updates = [
+            'sms_status' => $status,
+            'sms_sent_at' => $status === 'sent' ? ($fields['sms_sent_at'] ?? now()) : null,
+        ];
+
+        foreach (['sms_last_attempt_at', 'sms_log_id', 'sms_error_message'] as $column) {
+            if (array_key_exists($column, $fields) && Schema::hasColumn('follow_up_reminders', $column)) {
+                $updates[$column] = $fields[$column];
+            }
+        }
+
+        if (Schema::hasColumn('follow_up_reminders', 'sms_error')) {
+            $updates['sms_error'] = $fields['sms_error_message'] ?? null;
+        }
+
+        $reminder->update($updates);
+    }
+
+    private function buildSmsMessage(FollowUpReminder $reminder): string
     {
         $date = $reminder->follow_up_date
             ? Carbon::parse($reminder->follow_up_date)->format('M d, Y')
@@ -326,20 +417,23 @@ class FollowUpReminderController extends Controller
             ? substr((string) $reminder->follow_up_time, 0, 5)
             : 'the set time';
 
-        $reason = trim((string) ($reminder->reason ?: $reminder->instructions ?: 'follow-up consultation'));
+        $reason = trim((string) $reminder->reason);
 
-        // Keep it short for a single SMS segment where possible.
+        if ($reason !== '') {
+            return "Ka-Agapay RHU Reminder: You have a follow-up consultation scheduled on "
+                . "{$date} at {$time}. Reason: {$reason}. Please visit your assigned RHU.";
+        }
+
         return "Ka-Agapay RHU Reminder: You have a follow-up consultation scheduled on "
-            . "{$date} at {$time}. Reason: {$reason}. Please visit your assigned RHU. "
-            . "If you cannot attend, contact the RHU.";
+            . "{$date} at {$time}. Please visit your assigned RHU.";
     }
 
-    private function firstFilled(array $values): ?string
+    private function resolveMobileNumber(array $values): ?string
     {
         foreach ($values as $value) {
-            $string = trim((string) ($value ?? ''));
-            if ($string !== '') {
-                return $string;
+            $normalized = $this->normalizePhone($value);
+            if ($normalized !== null) {
+                return $normalized;
             }
         }
 

@@ -27,11 +27,13 @@ class SmsLog extends Model
         'provider_message_id',
         'status',
         'error_message',
+        'raw_response',
         'sent_at',
     ];
 
     protected $casts = [
         'target_filters' => 'array',
+        'raw_response' => 'array',
         'sent_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',

@@ -12,6 +12,7 @@ class FollowUpReminder extends Model
 
     public const URGENCY_LEVELS = ['routine', 'watch', 'urgent'];
     public const STATUSES = ['pending', 'scheduled', 'completed', 'missed', 'cancelled'];
+    public const SMS_STATUSES = ['not_sent', 'pending', 'sent', 'failed'];
 
     protected $fillable = [
         'consultation_id',
@@ -33,6 +34,7 @@ class FollowUpReminder extends Model
         'sms_status',
         'sms_sent_at',
         'sms_error',
+        'sms_error_message',
         'sms_log_id',
         'sms_last_attempt_at',
     ];

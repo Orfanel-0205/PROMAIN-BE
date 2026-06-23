@@ -182,9 +182,9 @@ class SemaphoreSmsService
 
         return match ($value) {
             'sent', 'success', 'successful', 'delivered', 'true' => 'sent',
-            'queued', 'pending', 'processing' => 'queued',
+            'queued', 'pending', 'processing' => 'pending',
             'failed', 'error', 'undelivered', 'refunded', 'false' => 'failed',
-            default => $value ?: 'queued',
+            default => $value ?: 'pending',
         };
     }
 
