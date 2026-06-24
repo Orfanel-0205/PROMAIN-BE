@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class PrescriptionController extends Controller
 {
@@ -116,17 +118,41 @@ class PrescriptionController extends Controller
     {
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
 
+        $formType = $request->input('form_type') === 'lab_request'
+            ? 'lab_request'
+            : 'medicine';
+
         $validated = $request->validate([
+            'form_type'                  => ['nullable', Rule::in(['medicine', 'lab_request'])],
             'resident_profile_id'        => ['required', 'integer'],
             'consultation_id'            => ['nullable', 'integer'],
             'telemedicine_session_id'    => ['nullable', 'integer'],
             'rhu_id'                     => ['nullable', 'integer'],
             'diagnosis'                  => ['nullable', 'string', 'max:1000'],
             'diagnosis_code'             => ['nullable', 'string', 'max:20'],
-            'medications'                => ['required', 'array', 'min:1'],
+            'clinical_impression'        => ['nullable', 'string', 'max:1000'],
+            'request_reason'             => ['nullable', 'string', 'max:2000'],
+            'priority'                   => ['nullable', Rule::in(['routine', 'urgent', 'stat'])],
+            'request_notes'              => ['nullable', 'string', 'max:2000'],
+            'lab_tests'                  => ['nullable', 'array'],
+            'medications'                => [$formType === 'medicine' ? 'required' : 'nullable', 'array'],
             'additional_instructions'    => ['nullable', 'string', 'max:2000'],
             'dispensing_notes'           => ['nullable', 'string', 'max:2000'],
         ]);
+
+        if ($formType === 'medicine' && count($validated['medications'] ?? []) < 1) {
+            throw ValidationException::withMessages([
+                'medications' => ['Add at least one medicine.'],
+            ]);
+        }
+
+        $labTests = $this->normalizeLabTests($validated['lab_tests'] ?? []);
+
+        if ($formType === 'lab_request' && !$this->hasLabRequestSelection($labTests)) {
+            throw ValidationException::withMessages([
+                'lab_tests' => ['Select at least one laboratory, X-ray, ultrasound test, or enter an Others field.'],
+            ]);
+        }
 
         $user = $request->user();
         $authUserId = $this->currentUserId($request);
@@ -148,14 +174,20 @@ class PrescriptionController extends Controller
             'prescribed_by' => $authUserId,
             'consultation_id' => $consultationId,
             'telemedicine_session_id' => $telemedicineSessionId,
+            'form_type' => $formType,
             'prescription_number' => $number,
             'rhu_id' => $rhuId,
             'prescription_date' => now()->toDateString(),
             'valid_until' => now()->addDays(7)->toDateString(),
             'diagnosis' => $validated['diagnosis'] ?? null,
             'diagnosis_code' => $validated['diagnosis_code'] ?? null,
-            'medications' => json_encode($validated['medications']),
-            'has_controlled_substances' => collect($validated['medications'])
+            'clinical_impression' => $validated['clinical_impression'] ?? $validated['diagnosis'] ?? null,
+            'request_reason' => $validated['request_reason'] ?? null,
+            'priority' => $validated['priority'] ?? 'routine',
+            'request_notes' => $validated['request_notes'] ?? null,
+            'lab_tests' => $formType === 'lab_request' ? json_encode($labTests) : null,
+            'medications' => json_encode($formType === 'medicine' ? $validated['medications'] : []),
+            'has_controlled_substances' => $formType === 'medicine' && collect($validated['medications'] ?? [])
                 ->contains(fn ($m) => (bool) ($m['is_controlled'] ?? false)),
             'additional_instructions' => $validated['additional_instructions'] ?? null,
             'dispensing_notes' => $validated['dispensing_notes'] ?? null,
@@ -174,7 +206,9 @@ class PrescriptionController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Prescription issued successfully.',
+            'message' => $formType === 'lab_request'
+                ? 'Lab request created successfully.'
+                : 'Prescription issued successfully.',
             'data' => $this->formatPrescription(
                 DB::table('prescriptions')->where('id', $id)->first()
             ),
@@ -228,6 +262,7 @@ class PrescriptionController extends Controller
 
         if ($existing) {
             DB::table('prescriptions')->where('id', $existing->id)->update([
+                'form_type' => 'medicine',
                 'diagnosis' => $diagnosis,
                 'diagnosis_code' => $validated['diagnosis_code'] ?? $existing->diagnosis_code,
                 'medications' => json_encode($medications),
@@ -268,6 +303,7 @@ class PrescriptionController extends Controller
             'prescribed_by' => $authUserId,
             'consultation_id' => $consultation->id,
             'telemedicine_session_id' => null,
+            'form_type' => 'medicine',
             'prescription_number' => $number,
             'rhu_id' => $rhuId,
             'prescription_date' => now()->toDateString(),
@@ -321,12 +357,17 @@ class PrescriptionController extends Controller
             'status'                  => ['nullable', 'string', 'max:30'],
             'diagnosis'               => ['nullable', 'string', 'max:1000'],
             'medications'             => ['nullable', 'array'],
+            'clinical_impression'     => ['nullable', 'string', 'max:1000'],
+            'request_reason'          => ['nullable', 'string', 'max:2000'],
+            'priority'                => ['nullable', Rule::in(['routine', 'urgent', 'stat'])],
+            'request_notes'           => ['nullable', 'string', 'max:2000'],
+            'lab_tests'               => ['nullable', 'array'],
             'additional_instructions' => ['nullable', 'string', 'max:2000'],
             'dispensing_notes'        => ['nullable', 'string', 'max:2000'],
         ]);
 
         $updates = collect($validated)
-            ->map(fn ($value, $key) => $key === 'medications' ? json_encode($value) : $value)
+            ->map(fn ($value, $key) => in_array($key, ['medications', 'lab_tests'], true) ? json_encode($value) : $value)
             ->all();
 
         $updates['updated_at'] = now();
@@ -375,7 +416,9 @@ class PrescriptionController extends Controller
             'updated_at' => now(),
         ]);
 
-        if ($request->boolean('dispense_from_rhu')) {
+        $isLabRequest = ($row->form_type ?? 'medicine') === 'lab_request';
+
+        if (!$isLabRequest && $request->boolean('dispense_from_rhu')) {
             $prescription = Prescription::findOrFail($id);
 
             $this->service->dispense($prescription->fresh(), [
@@ -390,9 +433,11 @@ class PrescriptionController extends Controller
         }
 
         return response()->json([
-            'message' => $request->boolean('dispense_from_rhu')
+            'message' => $isLabRequest
+                ? 'Lab request PDF released.'
+                : ($request->boolean('dispense_from_rhu')
                 ? 'Prescription PDF released and inventory deducted.'
-                : 'Prescription PDF released.',
+                : 'Prescription PDF released.'),
             'data' => $this->formatPrescription(
                 DB::table('prescriptions')->where('id', $id)->first()
             ),
@@ -404,6 +449,12 @@ class PrescriptionController extends Controller
         $prescriptionModel = $prescription instanceof Prescription
             ? $prescription
             : Prescription::findOrFail($prescription);
+
+        if (($prescriptionModel->form_type ?? 'medicine') === 'lab_request') {
+            return response()->json([
+                'message' => 'Lab requests cannot be dispensed from inventory.',
+            ], 422);
+        }
 
         $validated = method_exists($request, 'validated')
             ? $request->validated()
@@ -473,7 +524,13 @@ class PrescriptionController extends Controller
     {
         $data = (array) $row;
 
+        $data['form_type'] = $row->form_type ?? 'medicine';
         $data['medications'] = $this->decodeMedications($row->medications ?? '[]');
+        $data['lab_tests'] = $this->decodeJsonArray($row->lab_tests ?? null);
+        $data['clinical_impression'] = $row->clinical_impression ?? null;
+        $data['request_reason'] = $row->request_reason ?? null;
+        $data['priority'] = $row->priority ?? null;
+        $data['request_notes'] = $row->request_notes ?? null;
         $data['pdf_url'] = !empty($row->file_path)
             ? Storage::disk('public')->url($row->file_path)
             : null;
@@ -486,6 +543,21 @@ class PrescriptionController extends Controller
     {
         if (is_array($raw)) {
             return $raw;
+        }
+
+        $decoded = json_decode((string) $raw, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function decodeJsonArray(mixed $raw): array
+    {
+        if (is_array($raw)) {
+            return $raw;
+        }
+
+        if (!$raw) {
+            return [];
         }
 
         $decoded = json_decode((string) $raw, true);
@@ -654,7 +726,10 @@ class PrescriptionController extends Controller
     private function generateAndStoreModernPdf(object $row): string
     {
         $number = $row->prescription_number ?? ('RX-' . $row->id);
-        $path = 'prescriptions/manual/' . Str::slug($number) . '.pdf';
+        $folder = ($row->form_type ?? 'medicine') === 'lab_request'
+            ? 'prescriptions/lab-requests'
+            : 'prescriptions/manual';
+        $path = $folder . '/' . Str::slug($number) . '.pdf';
 
         Storage::disk('public')->put($path, $this->renderModernPdf($row));
 
@@ -663,6 +738,10 @@ class PrescriptionController extends Controller
 
     private function renderModernPdf(object $row): string
     {
+        if (($row->form_type ?? 'medicine') === 'lab_request') {
+            return $this->renderLabRequestPdf($row);
+        }
+
         $medications = $this->decodeMedications($row->medications ?? '[]');
 
         $data = [
@@ -685,6 +764,143 @@ class PrescriptionController extends Controller
         return Pdf::loadView('pdf.prescription-modern', $data)
             ->setPaper('a4', 'portrait')
             ->output();
+    }
+
+    private function renderLabRequestPdf(object $row): string
+    {
+        $data = [
+            'requestNo' => $row->prescription_number ?? ('LAB-' . $row->id),
+            'date' => $this->formatLongDate($row->prescription_date ?? now()->toDateString()),
+            'patientName' => $this->patientName((int) $row->resident_profile_id),
+            'ageSex' => $this->patientAgeSex((int) $row->resident_profile_id),
+            'clinicalImpression' => $row->clinical_impression ?: ($row->diagnosis ?: ''),
+            'consultationId' => $row->consultation_id ?? null,
+            'requestedBy' => $this->prescriberName((int) ($row->prescribed_by ?? 0)),
+            'licenseNumber' => $this->prescriberLicenseNumber((int) ($row->prescribed_by ?? 0)),
+            'priority' => $row->priority ?: 'routine',
+            'reason' => $row->request_reason ?? '',
+            'notes' => $row->request_notes ?? '',
+            'labTests' => $this->normalizeLabTests($this->decodeJsonArray($row->lab_tests ?? null)),
+            'laboratoryOptions' => $this->laboratoryOptions(),
+            'xrayOptions' => $this->xrayOptions(),
+            'ultrasoundOptions' => $this->ultrasoundOptions(),
+        ];
+
+        return Pdf::loadView('pdf.lab-request', $data)
+            ->setPaper('a4', 'portrait')
+            ->output();
+    }
+
+    private function laboratoryOptions(): array
+    {
+        return ['CBC', 'Urinalysis', 'Fecalysis', 'FBS', 'HBA1C', 'B.U.A', 'ALT', 'AST', 'Creatinine', 'B.U.N', 'Total Lipid Profile'];
+    }
+
+    private function xrayOptions(): array
+    {
+        return ['CXR - PA View', 'CXR - Apicolordotic View'];
+    }
+
+    private function ultrasoundOptions(): array
+    {
+        return ['Whole Abdomen', 'Lower Abdomen', 'Upper Abdomen', 'Prostate', 'HBT', 'KUB'];
+    }
+
+    private function normalizeLabTests(mixed $raw): array
+    {
+        $data = is_array($raw) ? $raw : [];
+        $others = is_array($data['others'] ?? null) ? $data['others'] : [];
+
+        return [
+            'laboratory' => array_values(array_filter(array_map('strval', $data['laboratory'] ?? []))),
+            'xray' => array_values(array_filter(array_map('strval', $data['xray'] ?? []))),
+            'ultrasound' => array_values(array_filter(array_map('strval', $data['ultrasound'] ?? []))),
+            'others' => [
+                'laboratory' => trim((string) ($others['laboratory'] ?? '')),
+                'xray' => trim((string) ($others['xray'] ?? '')),
+                'ultrasound' => trim((string) ($others['ultrasound'] ?? '')),
+            ],
+        ];
+    }
+
+    private function hasLabRequestSelection(array $labTests): bool
+    {
+        return count($labTests['laboratory'] ?? []) > 0
+            || count($labTests['xray'] ?? []) > 0
+            || count($labTests['ultrasound'] ?? []) > 0
+            || trim((string) ($labTests['others']['laboratory'] ?? '')) !== ''
+            || trim((string) ($labTests['others']['xray'] ?? '')) !== ''
+            || trim((string) ($labTests['others']['ultrasound'] ?? '')) !== '';
+    }
+
+    private function patientAgeSex(int $residentProfileId): string
+    {
+        if (!Schema::hasTable('resident_profiles') || !Schema::hasTable('users')) {
+            return '';
+        }
+
+        $row = DB::table('resident_profiles as rp')
+            ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
+            ->where('rp.id', $residentProfileId)
+            ->selectRaw('rp.*, u.birthday as user_birthday, u.sex as user_sex')
+            ->first();
+
+        if (!$row) {
+            return '';
+        }
+
+        $birth = $row->user_birthday ?? $row->birth_date ?? $row->birthdate ?? $row->date_of_birth ?? null;
+        $age = '';
+
+        if ($birth) {
+            try {
+                $age = (string) \Carbon\Carbon::parse($birth)->age;
+            } catch (\Throwable) {
+                $age = '';
+            }
+        }
+
+        $sex = trim((string) ($row->user_sex ?? $row->profile_sex ?? $row->gender ?? ''));
+
+        return trim($age . ($age && $sex ? ' / ' : '') . $sex);
+    }
+
+    private function prescriberLicenseNumber(?int $userId): ?string
+    {
+        $userId = (int) ($userId ?? 0);
+
+        if ($userId <= 0 || !Schema::hasTable('users')) {
+            return null;
+        }
+
+        $columns = Schema::getColumnListing('users');
+        $candidateColumns = [
+            'license_number',
+            'prc_license_number',
+            'prc_license_no',
+            'professional_license_number',
+            's2_license_number',
+        ];
+
+        $selected = array_values(array_filter($candidateColumns, fn ($column) => in_array($column, $columns, true)));
+
+        if (!$selected) {
+            return null;
+        }
+
+        $row = DB::table('users')
+            ->where('user_id', $userId)
+            ->first($selected);
+
+        foreach ($selected as $column) {
+            $value = trim((string) ($row->{$column} ?? ''));
+
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     private function formatLongDate(?string $value): string
