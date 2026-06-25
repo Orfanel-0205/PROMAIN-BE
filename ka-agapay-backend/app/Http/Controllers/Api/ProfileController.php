@@ -35,6 +35,7 @@ class ProfileController extends Controller
         'emergency_contact_number',
         'philhealth_number',
         'blood_type',
+        'address',
         'street',
         'purok',
         'household_number',
@@ -115,6 +116,7 @@ class ProfileController extends Controller
             'emergency_contact_name' => ['nullable', 'string', 'max:150'],
             'emergency_contact_number' => ['nullable', 'string', 'max:30'],
             'philhealth_number' => ['nullable', 'string', 'max:50'],
+            'address' => ['nullable', 'string', 'max:500'],
             'street' => ['nullable', 'string', 'max:150'],
             'purok' => ['nullable', 'string', 'max:100'],
             'household_number' => ['nullable', 'string', 'max:50'],
@@ -374,6 +376,7 @@ class ProfileController extends Controller
             'philhealth_verified_at' => optional($profile?->philhealth_verified_at)->toIso8601String(),
             'philhealth_name_matched' => $profile?->philhealth_name_matched,
             'blood_type' => $profile?->blood_type,
+            'address' => $profile?->address,
             'street' => $profile?->street,
             'purok' => $profile?->purok,
             'household_number' => $profile?->household_number,
@@ -478,10 +481,13 @@ class ProfileController extends Controller
             ['profile', 'phone_number'],
         ]],
 
-        'barangay' => ['Barangay / Address', [
+        'barangay' => ['Barangay', [
             ['profile', 'barangay_id'],
             ['user', 'barangay_id'],
             ['user', 'barangay'],
+        ]],
+
+        'address' => ['Address', [
             ['profile', 'address'],
             ['user', 'address'],
         ]],

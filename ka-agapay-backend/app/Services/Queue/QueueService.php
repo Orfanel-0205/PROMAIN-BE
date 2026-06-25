@@ -563,7 +563,17 @@ class QueueService
         $existing = $this->findConsultationForTicket($ticket);
 
         if ($existing) {
-            return $existing;
+            $existingStatus = strtolower((string) $existing->status);
+
+            if (!in_array($existingStatus, ['completed', 'cancelled', 'finalized', 'history', 'history_only'], true)) {
+                $existing->forceFill($this->filterTablePayload('consultations', [
+                    'status' => in_array($existingStatus, ['', 'open'], true) ? 'ongoing' : $existing->status,
+                    'started_at' => $existing->started_at ?: now(),
+                    'attended_by' => $existing->attended_by ?: Auth::id(),
+                ]))->save();
+
+                return $existing->fresh();
+            }
         }
 
         $ticket->loadMissing(['residentProfile', 'appointment']);
@@ -598,7 +608,8 @@ class QueueService
             'consultation_date' => today()->toDateString(),
             'chief_complaint' => $complaint,
             'subjective' => $complaint,
-            'status' => 'open',
+            'status' => 'ongoing',
+            'source' => $ticket->appointment_id ? 'appointment_queue' : 'queue',
             'started_at' => now(),
         ]);
 

@@ -4,6 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
 use Illuminate\Http\JsonResponse;
@@ -174,6 +175,18 @@ class AdminUserController extends Controller
 
             'password' => ['nullable', 'string', 'min:8', 'max:100'],
 
+            'sex' => ['nullable', 'string', 'max:30'],
+            'birthdate' => ['nullable', 'date'],
+            'birth_date' => ['nullable', 'date'],
+            'address' => ['nullable', 'string', 'max:500'],
+            'guardian_name' => ['nullable', 'string', 'max:150'],
+            'philhealth_number' => ['nullable', 'string', 'max:50'],
+            'allergies' => ['nullable', 'string', 'max:2000'],
+            'past_medical_history' => ['nullable', 'string', 'max:2000'],
+            'maintenance_medications' => ['nullable', 'string', 'max:2000'],
+            'family_history' => ['nullable', 'string', 'max:2000'],
+            'personal_social_history' => ['nullable', 'string', 'max:2000'],
+
             'account_status' => ['nullable', 'string', Rule::in($this->statusValues)],
             'status' => ['nullable', 'string', Rule::in($this->statusValues)],
         ]);
@@ -240,7 +253,7 @@ class AdminUserController extends Controller
             $mobile,
             $status
         ) {
-            return User::create([
+            $user = User::create([
                 'role_id' => $roleId,
                 'first_name' => $firstName,
                 'last_name' => $lastName,
@@ -264,6 +277,12 @@ class AdminUserController extends Controller
                     : null,
                 'rejection_reason' => null,
             ]);
+
+            if ($this->isResidentRole($roleName)) {
+                $this->persistResidentProfileFields($user, $validated, $firstName, $lastName, $mobile);
+            }
+
+            return $user;
         });
 
         return response()->json([
@@ -294,6 +313,18 @@ class AdminUserController extends Controller
             'role' => ['nullable', 'string', 'max:50'],
 
             'password' => ['nullable', 'string', 'min:8', 'max:100'],
+
+            'sex' => ['nullable', 'string', 'max:30'],
+            'birthdate' => ['nullable', 'date'],
+            'birth_date' => ['nullable', 'date'],
+            'address' => ['nullable', 'string', 'max:500'],
+            'guardian_name' => ['nullable', 'string', 'max:150'],
+            'philhealth_number' => ['nullable', 'string', 'max:50'],
+            'allergies' => ['nullable', 'string', 'max:2000'],
+            'past_medical_history' => ['nullable', 'string', 'max:2000'],
+            'maintenance_medications' => ['nullable', 'string', 'max:2000'],
+            'family_history' => ['nullable', 'string', 'max:2000'],
+            'personal_social_history' => ['nullable', 'string', 'max:2000'],
 
             'account_status' => ['nullable', 'string', Rule::in($this->statusValues)],
             'status' => ['nullable', 'string', Rule::in($this->statusValues)],
@@ -405,8 +436,18 @@ class AdminUserController extends Controller
             $updates['account_status'] = $newStatus;
         }
 
-        DB::transaction(function () use ($user, $updates) {
+        DB::transaction(function () use ($user, $updates, $validated, $newRole) {
             $user->update($updates);
+
+            if ($this->isResidentRole($newRole)) {
+                $this->persistResidentProfileFields(
+                    $user->fresh(),
+                    $validated,
+                    $updates['first_name'] ?? $user->first_name,
+                    $updates['last_name'] ?? $user->last_name,
+                    $updates['mobile_number'] ?? $user->mobile_number
+                );
+            }
         });
 
         return response()->json([
@@ -794,6 +835,65 @@ class AdminUserController extends Controller
     private function isResidentRole(string $role): bool
     {
         return in_array($this->normalizeRoleName($role), ['resident', 'patient'], true);
+    }
+
+    private function persistResidentProfileFields(
+        User $user,
+        array $validated,
+        string $firstName,
+        string $lastName,
+        string $mobile
+    ): void {
+        if (!Schema::hasTable('resident_profiles') || !Schema::hasColumn('resident_profiles', 'user_id')) {
+            return;
+        }
+
+        $columns = Schema::getColumnListing('resident_profiles');
+        $profileData = [
+            'first_name' => $firstName,
+            'last_name' => $lastName,
+            'mobile_number' => $mobile,
+            'phone_number' => $mobile,
+            'contact_number' => $mobile,
+            'sex' => $validated['sex'] ?? null,
+            'gender' => $validated['sex'] ?? null,
+            'birth_date' => $validated['birth_date'] ?? $validated['birthdate'] ?? null,
+            'birthdate' => $validated['birthdate'] ?? $validated['birth_date'] ?? null,
+            'date_of_birth' => $validated['birth_date'] ?? $validated['birthdate'] ?? null,
+            'address' => $validated['address'] ?? null,
+            'guardian_name' => $validated['guardian_name'] ?? null,
+            'philhealth_number' => $validated['philhealth_number'] ?? null,
+            'philhealth_no' => $validated['philhealth_number'] ?? null,
+            'allergies' => $validated['allergies'] ?? null,
+            'past_medical_history' => $validated['past_medical_history'] ?? null,
+            'medical_history' => $validated['past_medical_history'] ?? null,
+            'maintenance_medications' => $validated['maintenance_medications'] ?? null,
+            'family_history' => $validated['family_history'] ?? null,
+            'personal_social_history' => $validated['personal_social_history'] ?? null,
+        ];
+
+        $filtered = [];
+
+        foreach ($profileData as $field => $value) {
+            if (!in_array($field, $columns, true)) {
+                continue;
+            }
+
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $filtered[$field] = $value;
+        }
+
+        if (empty($filtered)) {
+            return;
+        }
+
+        ResidentProfile::query()->updateOrCreate(
+            ['user_id' => $user->user_id],
+            $filtered
+        );
     }
 
     private function isStaffRole(string $role): bool

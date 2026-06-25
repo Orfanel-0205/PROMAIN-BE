@@ -102,6 +102,8 @@ class AppointmentController extends Controller
             'appointment_date' => ['nullable', 'date'],
             'appointment_time' => ['nullable', 'date_format:H:i'],
             'purpose' => ['nullable', 'string', 'max:5000'],
+            'address' => ['nullable', 'string', 'max:500'],
+            'patient_address' => ['nullable', 'string', 'max:500'],
             'rhu_id' => ['nullable', 'integer'],
         ]);
 
@@ -117,6 +119,7 @@ class AppointmentController extends Controller
 
         $reason = trim((string) ($validated['reason'] ?? ''));
         $symptoms = trim((string) ($validated['symptoms'] ?? ''));
+        $address = trim((string) ($validated['address'] ?? $validated['patient_address'] ?? ''));
 
         $purpose = $validated['purpose'] ?? null;
 
@@ -162,6 +165,8 @@ class AppointmentController extends Controller
             'rejection_reason' => null,
             'approved_at' => null,
             'scheduled_at' => null,
+            'address' => $address ?: null,
+            'patient_address' => $address ?: null,
         ];
 
         if (Schema::hasColumn('appointments', 'rhu_id')) {
@@ -182,6 +187,17 @@ class AppointmentController extends Controller
             }
 
             $payload['rhu_id'] = $rhuId ?: null;
+        }
+
+        if (
+            $address !== ''
+            && Schema::hasTable('resident_profiles')
+            && Schema::hasColumn('resident_profiles', 'address')
+        ) {
+            ResidentProfile::query()->updateOrCreate(
+                ['user_id' => $request->user()->user_id],
+                ['address' => $address]
+            );
         }
 
         $appointment = new Appointment();
