@@ -279,6 +279,7 @@ class AdminUserController extends Controller
             ]);
 
             if ($this->isResidentRole($roleName)) {
+                $this->persistUserPatientFields($user, $validated);
                 $this->persistResidentProfileFields($user, $validated, $firstName, $lastName, $mobile);
             }
 
@@ -440,6 +441,7 @@ class AdminUserController extends Controller
             $user->update($updates);
 
             if ($this->isResidentRole($newRole)) {
+                $this->persistUserPatientFields($user->fresh(), $validated);
                 $this->persistResidentProfileFields(
                     $user->fresh(),
                     $validated,
@@ -835,6 +837,45 @@ class AdminUserController extends Controller
     private function isResidentRole(string $role): bool
     {
         return in_array($this->normalizeRoleName($role), ['resident', 'patient'], true);
+    }
+
+    private function persistUserPatientFields(User $user, array $validated): void
+    {
+        if (!Schema::hasTable('users')) {
+            return;
+        }
+
+        $columns = Schema::getColumnListing('users');
+        $birthDate = $validated['birth_date'] ?? $validated['birthdate'] ?? null;
+        $fieldMap = [
+            'birthday' => $birthDate,
+            'birthdate' => $birthDate,
+            'birth_date' => $birthDate,
+            'date_of_birth' => $birthDate,
+            'sex' => $validated['sex'] ?? null,
+            'gender' => $validated['sex'] ?? null,
+            'address' => $validated['address'] ?? null,
+        ];
+
+        $updates = [];
+
+        foreach ($fieldMap as $field => $value) {
+            if (!in_array($field, $columns, true)) {
+                continue;
+            }
+
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $updates[$field] = $value;
+        }
+
+        if (empty($updates)) {
+            return;
+        }
+
+        $user->forceFill($updates)->save();
     }
 
     private function persistResidentProfileFields(
