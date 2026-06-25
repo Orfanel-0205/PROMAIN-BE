@@ -13,6 +13,7 @@ use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use App\Services\Audit\AuditActions;
 use App\Services\Audit\AuditService;
+use App\Services\Notification\NotificationService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -38,10 +39,17 @@ class QueueService
         'bhw_assisted' => 'BHW',
     ];
 
+    private array $lastNotificationResult = [];
+
     public function __construct(
         private readonly AuditService $audit,
         private readonly QueuePrioritizationService $prioritizationService
     ) {
+    }
+
+    public function lastNotificationResult(): array
+    {
+        return $this->lastNotificationResult;
     }
 
     /**
@@ -372,6 +380,8 @@ class QueueService
      */
     public function transitionStatus(QueueTicket $ticket, string $newStatus, array $data = []): QueueTicket
     {
+        $this->lastNotificationResult = [];
+
         return DB::transaction(function () use ($ticket, $newStatus, $data) {
             $ticket = QueueTicket::query()
                 ->whereKey($ticket->getKey())
@@ -474,7 +484,14 @@ class QueueService
 
             $this->reflowQueuePositions((int) $ticket->rhu_id, (string) $ticket->service_type);
 
-            return $ticket->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
+            $freshTicket = $ticket->fresh(['residentProfile.barangay', 'residentProfile.user', 'rhu', 'issuedBy', 'servedBy']);
+
+            if ($newStatus === 'called') {
+                $this->lastNotificationResult = app(NotificationService::class)
+                    ->notifyQueueTicketCalled($freshTicket);
+            }
+
+            return $freshTicket;
         });
     }
 
@@ -638,6 +655,8 @@ class QueueService
      */
     public function callNext(int $rhuId, string $serviceType): ?QueueTicket
     {
+        $this->lastNotificationResult = [];
+
         return DB::transaction(function () use ($rhuId, $serviceType) {
             $this->applyAntiStarvationSafely($rhuId);
             $this->reflowQueuePositions($rhuId, $serviceType);
@@ -652,6 +671,15 @@ class QueueService
                 ->first();
 
             if ($alreadyCalled) {
+                $this->lastNotificationResult = [
+                    'database_created' => false,
+                    'push_configured' => Schema::hasTable('user_device_tokens'),
+                    'push_tokens' => 0,
+                    'push_sent' => false,
+                    'sound' => 'default',
+                    'message' => 'An active queue call already exists; no new notification was sent.',
+                ];
+
                 return $alreadyCalled->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
             }
 
@@ -692,6 +720,8 @@ class QueueService
      */
     public function callPriorityNext(int $rhuId, string $serviceType): ?QueueTicket
     {
+        $this->lastNotificationResult = [];
+
         return DB::transaction(function () use ($rhuId, $serviceType) {
             $this->applyAntiStarvationSafely($rhuId);
             $this->reflowQueuePositions($rhuId, $serviceType);
@@ -706,6 +736,15 @@ class QueueService
                 ->first();
 
             if ($alreadyCalled) {
+                $this->lastNotificationResult = [
+                    'database_created' => false,
+                    'push_configured' => Schema::hasTable('user_device_tokens'),
+                    'push_tokens' => 0,
+                    'push_sent' => false,
+                    'sound' => 'default',
+                    'message' => 'An active queue call already exists; no new notification was sent.',
+                ];
+
                 return $alreadyCalled->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
             }
 

@@ -15,7 +15,7 @@ class ExpoPushService
         string $body,
         array $data = [],
         string $channelId = 'queue-alerts'
-    ): void {
+    ): int {
         $tokens = UserDeviceToken::query()
             ->where('user_id', $userId)
             ->where('provider', 'expo')
@@ -25,15 +25,21 @@ class ExpoPushService
             ->unique()
             ->values();
 
+        $sent = 0;
+
         foreach ($tokens as $token) {
-            $this->sendToToken(
+            if ($this->sendToToken(
                 token: (string) $token,
                 title: $title,
                 body: $body,
                 data: $data,
                 channelId: $channelId
-            );
+            )) {
+                $sent++;
+            }
         }
+
+        return $sent;
     }
 
     public function sendToToken(
@@ -42,7 +48,7 @@ class ExpoPushService
         string $body,
         array $data = [],
         string $channelId = 'queue-alerts'
-    ): void {
+    ): bool {
         try {
             $response = Http::timeout(5)->post('https://exp.host/--/api/v2/push/send', [
                 'to' => $token,
@@ -59,11 +65,17 @@ class ExpoPushService
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+
+                return false;
             }
+
+            return true;
         } catch (\Throwable $e) {
             Log::warning('Expo push notification exception.', [
                 'message' => $e->getMessage(),
             ]);
+
+            return false;
         }
     }
 }

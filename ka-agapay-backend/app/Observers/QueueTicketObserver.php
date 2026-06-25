@@ -16,13 +16,7 @@ class QueueTicketObserver
 
     public function updated(QueueTicket $ticket): void
     {
-        if (!$ticket->wasChanged('status')) {
-            return;
-        }
-
-        if ($ticket->status === 'called') {
-            app(NotificationService::class)
-                ->notifyQueueTicketCalled($ticket);
-        }
+        // Queue "called" notifications are sent from QueueService::transitionStatus()
+        // so call-next endpoints can return database/push delivery metadata.
     }
 }

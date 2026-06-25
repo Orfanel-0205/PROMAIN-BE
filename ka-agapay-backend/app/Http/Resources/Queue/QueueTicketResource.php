@@ -22,9 +22,16 @@ class QueueTicketResource extends JsonResource
         return [
             'id' => $this->id,
             'ticket_number' => $this->ticket_number,
+            'queue_number' => $this->ticket_number,
 
             'patient_name' => $this->residentName($resident),
             'resident_name' => $this->residentName($resident),
+            'patient_mobile' => $this->residentMobile($resident),
+            'resident_mobile' => $this->residentMobile($resident),
+            'barangay' => $resident?->barangay?->barangay_name
+                ?? $resident?->barangay?->name
+                ?? null,
+            'barangay_id' => $resident?->barangay_id ?? null,
 
             'rhu_id' => $this->rhu_id,
             'rhu_name' => $rhu?->name ?? $rhu?->barangay_name ?? null,
@@ -82,6 +89,7 @@ class QueueTicketResource extends JsonResource
 
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
+            'notification_result' => $this->resource->getAttribute('notification_result'),
         ];
     }
 
@@ -110,6 +118,24 @@ class QueueTicketResource extends JsonResource
         $name = trim(implode(' ', $parts));
 
         return $name !== '' ? $name : null;
+    }
+
+    private function residentMobile($resident): ?string
+    {
+        if (!$resident) {
+            return null;
+        }
+
+        $mobile =
+            $resident->mobile_number
+            ?? $resident->contact_number
+            ?? $resident->phone_number
+            ?? $resident->user?->mobile_number
+            ?? null;
+
+        $mobile = trim((string) $mobile);
+
+        return $mobile !== '' ? $mobile : null;
     }
 
     private function serviceLabel(string $serviceType): string

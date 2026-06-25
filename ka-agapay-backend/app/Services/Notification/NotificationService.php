@@ -10,6 +10,7 @@ use App\Models\QueueTicket;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
 use App\Models\User;
+use App\Models\UserDeviceToken;
 use App\Notifications\NotificationTypes;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
@@ -466,30 +467,92 @@ class NotificationService
         );
     }
 
-    public function notifyQueueTicketCalled(QueueTicket $ticket): void
+    public function notifyQueueTicketCalled(QueueTicket $ticket): array
     {
-        $ticket->loadMissing('residentProfile.user');
+        $result = [
+            'database_created' => false,
+            'push_configured' => Schema::hasTable('user_device_tokens'),
+            'push_tokens' => 0,
+            'push_sent' => false,
+            'sound' => 'default',
+            'message' => 'Queue called, but mobile notification service is not configured.',
+        ];
 
-        $resident = $ticket->residentProfile?->user;
+        try {
+            $ticket->loadMissing('residentProfile.user');
 
-        if (!$resident) {
-            return;
-        }
+            $resident = $ticket->residentProfile?->user;
 
-        $ticketNumber = $ticket->ticket_number ?? $ticket->queue_number ?? $ticket->id;
+            if (!$resident) {
+                $result['message'] = 'Queue called, but no linked resident account was found.';
 
-        $this->notifyUser(
-            $resident,
-            NotificationTypes::QUEUE_TICKET_CALLED,
-            'Your queue number is being called',
-            "Ticket #{$ticketNumber} is now being called. Please proceed to the waiting area.",
-            [
+                return $result;
+            }
+
+            $ticketNumber = $ticket->ticket_number ?? $ticket->queue_number ?? $ticket->id;
+            $deskName = $this->serviceLabel((string) $ticket->service_type);
+            $message = "Your queue number {$ticketNumber} is now being called. Please proceed to {$deskName}.";
+            $payload = [
+                'type' => 'queue_called',
+                'queue_ticket_id' => $ticket->id,
+                'queue_number' => $ticketNumber,
+                'desk' => $deskName,
+                'rhu_id' => $ticket->rhu_id,
+                'status' => $ticket->status,
+                'screen' => 'queue',
                 'related_type' => 'queue',
                 'related_id' => $ticket->id,
                 'ticket_number' => $ticketNumber,
-            ],
-            '/queue'
-        );
+            ];
+
+            $notificationId = $this->notifyUser(
+                $resident,
+                NotificationTypes::QUEUE_TICKET_CALLED,
+                'Queue number called',
+                $message,
+                $payload,
+                '/queue'
+            );
+
+            $result['database_created'] = (bool) $notificationId;
+
+            $userId = $this->userKey($resident);
+
+            if ($userId && Schema::hasTable('user_device_tokens')) {
+                $result['push_tokens'] = (int) UserDeviceToken::query()
+                    ->where('user_id', $userId)
+                    ->where('provider', 'expo')
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($result['push_tokens'] > 0) {
+                    $sent = app(ExpoPushService::class)->sendToUser(
+                        userId: $userId,
+                        title: 'Queue number called',
+                        body: $message,
+                        data: $payload,
+                        channelId: 'queue-alerts'
+                    );
+
+                    $result['push_sent'] = $sent > 0;
+                }
+            }
+
+            $result['message'] = $result['push_sent']
+                ? 'Notification sent to patient.'
+                : ($result['database_created']
+                    ? 'Queue called; in-app notification was created, but no active mobile push token was available.'
+                    : 'Queue called, but the resident has disabled in-app notifications or notification storage failed.');
+
+            return $result;
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] Queue called notification failed.', [
+                'queue_ticket_id' => $ticket->id ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $result;
+        }
     }
 
     public function notifyEventPublished(Event $event): void
@@ -555,6 +618,23 @@ class NotificationService
             ?: ($user->full_name ?? null)
             ?: ($user->name ?? null)
             ?: 'A resident';
+    }
+
+    private function serviceLabel(string $serviceType): string
+    {
+        return match ($serviceType) {
+            'opd_consultation' => 'OPD Consultation',
+            'prenatal_checkup' => 'Prenatal Checkup',
+            'immunization' => 'Immunization',
+            'family_planning' => 'Family Planning',
+            'tb_dots' => 'TB DOTS',
+            'laboratory' => 'Laboratory',
+            'dental' => 'Dental',
+            'emergency' => 'Emergency',
+            'medicine_release' => 'Medicine Release',
+            'bhw_assisted' => 'BHW Assisted',
+            default => ucwords(str_replace(['_', '-'], ' ', $serviceType)),
+        };
     }
 
     private function allowsInApp(int $userId, string $notificationType): bool

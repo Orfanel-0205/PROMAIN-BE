@@ -130,7 +130,7 @@ class QueueTicket extends Model
     {
         $allowedTransitions = [
             'waiting'    => ['called', 'cancelled'],
-            'called'     => ['in_service', 'skipped', 'no_show', 'cancelled'],
+            'called'     => ['in_service', 'skipped', 'no_show', 'cancelled', 'waiting'],
             'in_service' => ['completed', 'cancelled'],
             'skipped'    => ['waiting', 'cancelled'],
             'completed'  => [],

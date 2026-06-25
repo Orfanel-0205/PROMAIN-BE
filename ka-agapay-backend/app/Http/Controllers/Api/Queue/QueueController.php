@@ -371,9 +371,16 @@ class QueueController extends Controller
             $request->validated()
         );
 
+        $notification = $this->queueService->lastNotificationResult();
+
+        if (!empty($notification)) {
+            $updatedTicket->setAttribute('notification_result', $notification);
+        }
+
         return response()->json([
             'message' => 'Ticket status updated successfully.',
             'data' => new QueueTicketResource($updatedTicket),
+            'notification' => $notification,
         ]);
     }
 
@@ -484,9 +491,13 @@ class QueueController extends Controller
             ]);
         }
 
+        $notification = $this->queueService->lastNotificationResult();
+        $ticket->setAttribute('notification_result', $notification);
+
         return response()->json([
             'message' => "Now calling: {$ticket->ticket_number}",
             'data' => new QueueTicketResource($ticket),
+            'notification' => $notification,
         ]);
     }
 
@@ -519,9 +530,13 @@ class QueueController extends Controller
             ]);
         }
 
+        $notification = $this->queueService->lastNotificationResult();
+        $ticket->setAttribute('notification_result', $notification);
+
         return response()->json([
             'message' => "Now calling priority patient: {$ticket->ticket_number}",
             'data' => new QueueTicketResource($ticket),
+            'notification' => $notification,
         ]);
     }
 
