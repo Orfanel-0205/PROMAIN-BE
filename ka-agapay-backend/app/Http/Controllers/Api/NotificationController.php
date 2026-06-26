@@ -158,6 +158,14 @@ class NotificationController extends Controller
 
     public function storeDeviceToken(Request $request): JsonResponse
     {
+        if (!Schema::hasTable('user_device_tokens')) {
+            Log::warning('[Push] device token endpoint hit but user_device_tokens table is missing.');
+
+            return response()->json([
+                'message' => 'Device token table is not ready.',
+            ], 500);
+        }
+
         $user = $request->user();
 
         if (!$user) {
@@ -171,8 +179,8 @@ class NotificationController extends Controller
         ]);
 
         $validated = $request->validate([
-            'token' => ['required', 'string', 'max:255'],
-            'expo_push_token' => ['nullable', 'string', 'max:255'],
+            'token' => ['required', 'string', 'max:500'],
+            'expo_push_token' => ['nullable', 'string', 'max:500'],
             'provider' => ['nullable', 'string', 'max:30'],
             'platform' => ['nullable', 'string', 'max:30'],
             'device_name' => ['nullable', 'string', 'max:150'],
@@ -180,10 +188,23 @@ class NotificationController extends Controller
             'channel_id' => ['nullable', 'string', 'max:80'],
         ]);
 
-        $token = $validated['token'];
-        $provider = $validated['provider'] ?? 'expo';
-        $platform = $validated['platform'] ?? null;
+        $token = trim((string) $validated['token']);
+        $provider = strtolower(trim((string) ($validated['provider'] ?? 'expo'))) ?: 'expo';
+        $platform = strtolower(trim((string) ($validated['platform'] ?? ''))) ?: null;
         $userId = $this->userKey($user);
+
+        if (!$this->looksLikeSupportedToken($token, $provider)) {
+            Log::warning('[Push] invalid device token rejected', [
+                'user_id' => $userId,
+                'provider' => $provider,
+                'platform' => $platform,
+                'token_prefix' => substr($token, 0, 18),
+            ]);
+
+            return response()->json([
+                'message' => 'Invalid device token.',
+            ], 422);
+        }
 
         Log::info('[Push] device token endpoint hit', [
             'user_id' => $userId,
@@ -200,35 +221,35 @@ class NotificationController extends Controller
                 'device_name' => $validated['device_name'] ?? null,
                 'is_active' => true,
                 'last_seen_at' => now(),
+                'updated_at' => now(),
             ];
+
+            if (Schema::hasColumn('user_device_tokens', 'app_version')) {
+                $values['app_version'] = $validated['app_version'] ?? null;
+            }
+
+            if (Schema::hasColumn('user_device_tokens', 'channel_id')) {
+                $values['channel_id'] = $validated['channel_id'] ?? null;
+            }
+
+            if (Schema::hasColumn('user_device_tokens', 'failed_at')) {
+                $values['failed_at'] = null;
+            }
+
+            if (Schema::hasColumn('user_device_tokens', 'failure_reason')) {
+                $values['failure_reason'] = null;
+            }
 
             $deviceToken = UserDeviceToken::updateOrCreate(
                 ['token' => $token],
                 $values
             );
 
-            $optionalValues = [];
-
-            if (Schema::hasColumn('user_device_tokens', 'app_version')) {
-                $optionalValues['app_version'] = $validated['app_version'] ?? null;
-            }
-
-            if (Schema::hasColumn('user_device_tokens', 'channel_id')) {
-                $optionalValues['channel_id'] = $validated['channel_id'] ?? null;
-            }
-
-            if (Schema::hasColumn('user_device_tokens', 'failed_at')) {
-                $optionalValues['failed_at'] = null;
-            }
-
-            if (Schema::hasColumn('user_device_tokens', 'failure_reason')) {
-                $optionalValues['failure_reason'] = null;
-            }
-
-            if ($optionalValues !== []) {
-                $deviceToken->forceFill($optionalValues)->save();
-                $deviceToken->refresh();
-            }
+            $activeTokensCount = UserDeviceToken::query()
+                ->where('user_id', $userId)
+                ->where('provider', $provider)
+                ->where('is_active', true)
+                ->count();
 
             Log::info('[Push] device token saved', [
                 'user_id' => $userId,
@@ -236,6 +257,23 @@ class NotificationController extends Controller
                 'platform' => $platform,
                 'token_prefix' => substr($token, 0, 18),
                 'device_token_id' => $deviceToken->id,
+                'active_tokens_count' => $activeTokensCount,
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Device token saved.',
+                'device_token' => [
+                    'id' => $deviceToken->id,
+                    'user_id' => $deviceToken->user_id,
+                    'provider' => $deviceToken->provider,
+                    'platform' => $deviceToken->platform,
+                    'device_name' => $deviceToken->device_name,
+                    'is_active' => (bool) $deviceToken->is_active,
+                    'last_seen_at' => optional($deviceToken->last_seen_at)->toIso8601String(),
+                    'token_prefix' => substr($token, 0, 18),
+                ],
+                'active_tokens_count' => $activeTokensCount,
             ]);
         } catch (\Throwable $e) {
             Log::warning('[Push] device token save failed', [
@@ -248,11 +286,6 @@ class NotificationController extends Controller
 
             throw $e;
         }
-
-        return response()->json([
-            'message' => 'Device token saved.',
-            'device_token' => $deviceToken,
-        ]);
     }
 
     private function notificationQuery(User $user)
@@ -330,5 +363,15 @@ class NotificationController extends Controller
         }
 
         return [];
+    }
+
+    private function looksLikeSupportedToken(string $token, string $provider): bool
+    {
+        if ($provider === 'expo') {
+            return str_starts_with($token, 'ExponentPushToken[')
+                || str_starts_with($token, 'ExpoPushToken[');
+        }
+
+        return trim($token) !== '';
     }
 }

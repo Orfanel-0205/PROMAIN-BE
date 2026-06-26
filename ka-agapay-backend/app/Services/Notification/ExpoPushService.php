@@ -19,6 +19,10 @@ class ExpoPushService
         array $data = [],
         string $channelId = 'queue-alerts'
     ): int {
+        if (!Schema::hasTable('user_device_tokens')) {
+            return 0;
+        }
+
         $tokens = UserDeviceToken::query()
             ->where('user_id', $userId)
             ->where('provider', 'expo')
@@ -138,6 +142,10 @@ class ExpoPushService
 
     private function markTokenFailed(string $token, string $reason): void
     {
+        if (!Schema::hasTable('user_device_tokens')) {
+            return;
+        }
+
         $values = [
             'is_active' => false,
         ];
