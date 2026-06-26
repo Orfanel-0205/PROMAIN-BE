@@ -306,44 +306,35 @@ class AppointmentController extends Controller
                 'scheduled_at' => null,
             ]);
 
-            $queueTicket = null;
+                       $queueTicket = null;
             $telemedicineRequest = null;
 
-            if ($consultationType === 'online') {
-                $queueTicket = $this->createOnlineQueueTicket(
-                    residentProfile: $residentProfile,
-                    appointment: $appointment,
-                    rhuId: (int) $rhuId,
-                    urgencyLevel: $urgencyLevel
-                );
+            if ($consultationType === 'online' && Schema::hasTable('telemedicine_requests')) {
+                $telemedicineRequest = TelemedicineRequest::create([
+                    'resident_profile_id' => $residentProfile->id,
+                    'requested_by' => $user->user_id,
+                    'queue_ticket_id' => null,
+                    'appointment_id' => $appointment->id,
+                    'rhu_id' => (int) $rhuId,
 
-                if (Schema::hasTable('telemedicine_requests')) {
-                    $telemedicineRequest = TelemedicineRequest::create([
-                        'resident_profile_id' => $residentProfile->id,
-                        'requested_by' => $user->user_id,
-                        'queue_ticket_id' => $queueTicket?->id,
-                        'appointment_id' => $appointment->id,
-                        'rhu_id' => (int) $rhuId,
+                    'endorsed_by_bhw' => null,
+                    'is_bhw_assisted' => false,
+                    'bhw_notes' => null,
 
-                        'endorsed_by_bhw' => null,
-                        'is_bhw_assisted' => false,
-                        'bhw_notes' => null,
+                    'chief_complaint' => $reason ?: $purpose,
+                    'urgency_level' => $urgencyLevel,
+                    'symptoms' => $this->parseSymptoms($symptoms),
+                    'additional_notes' => $symptoms ?: null,
 
-                        'chief_complaint' => $reason ?: $purpose,
-                        'urgency_level' => $urgencyLevel,
-                        'symptoms' => $this->parseSymptoms($symptoms),
-                        'additional_notes' => $symptoms ?: null,
+                    'screened_by' => null,
+                    'screening_notes' => null,
+                    'screened_at' => null,
 
-                        'screened_by' => null,
-                        'screening_notes' => null,
-                        'screened_at' => null,
-
-                        'status' => 'pending',
-                        'rejection_reason' => null,
-                        'cancellation_reason' => null,
-                        'cancelled_at' => null,
-                    ]);
-                }
+                    'status' => 'pending',
+                    'rejection_reason' => null,
+                    'cancellation_reason' => null,
+                    'cancelled_at' => null,
+                ]);
             }
 
             return [
