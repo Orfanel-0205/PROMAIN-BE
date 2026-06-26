@@ -314,15 +314,16 @@ Route::prefix('v1')->group(function () {
         });
 
         // =====================================================================
-        // ADMIN CONSULTATIONS — WEB ADMIN
+        // ADMIN CONSULTATIONS / APPOINTMENTS — WEB ADMIN
         // =====================================================================
 
         Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife')
             ->prefix('admin')
             ->group(function () {
-                Route::get('/appointments',                         [AppointmentController::class, 'adminIndex']);
-                Route::get('/appointments/{id}',                    [AppointmentController::class, 'adminShow']);
-                Route::patch('/appointments/{id}/status',           [AppointmentController::class, 'adminUpdateStatus']);
+                Route::get('/appointments',                          [AppointmentController::class, 'adminIndex']);
+                Route::get('/appointments/{id}',                     [AppointmentController::class, 'adminShow']);
+                Route::patch('/appointments/{id}/status',            [AppointmentController::class, 'adminUpdateStatus']);
+                Route::post('/appointments/{id}/add-to-queue',       [AppointmentController::class, 'addToQueueFromAppointment']);
                 Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
 
                 Route::get('/consultations',                 [ConsultationController::class, 'index']);
@@ -519,7 +520,7 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('ai')->group(function () {
-            Route::post('/triage',                  [AiController::class, 'triage']);
+            Route::post('/triage',                   [AiController::class, 'triage']);
             Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
             Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
             Route::get('/history',                   [AiController::class, 'history']);
@@ -563,15 +564,16 @@ Route::prefix('v1')->group(function () {
                 Route::get('/chatbot-usage',           [AnalyticsController::class, 'chatbotUsage']);
                 Route::get('/realtime',                [AnalyticsController::class, 'realtime']);
 
-               Route::get('/diagnosis-itr-summary', [
-    AnalyticsController::class,
-    'diagnosisItrSummary',
-]);
+                Route::get('/diagnosis-itr-summary', [
+                    AnalyticsController::class,
+                    'diagnosisItrSummary',
+                ]);
 
-Route::get('/heatmap/diagnosis-itr-signals', [
-    AnalyticsController::class,
-    'heatmapDiagnosisItrSignals',
-]);
+                Route::get('/heatmap/diagnosis-itr-signals', [
+                    AnalyticsController::class,
+                    'heatmapDiagnosisItrSignals',
+                ]);
+
                 Route::get('/queue-heatmap',    [AnalyticsController::class, 'queueHeatmap']);
                 Route::get('/barangay-risk',    [AnalyticsController::class, 'barangayRisk']);
                 Route::get('/queue-density',    [AnalyticsController::class, 'queueDensity']);

@@ -12,6 +12,7 @@ use App\Models\ResidentProfile;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
 use App\Models\User;
+use App\Services\Queue\QueueService;
 use App\Services\Telemedicine\WebRtcService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -624,6 +625,112 @@ class AppointmentController extends Controller
                 'telemedicineRequest.session',
             ]),
         ]);
+    }
+
+    /**
+     * POST /api/v1/admin/appointments/{id}/add-to-queue
+     *
+     * Adds an approved/scheduled onsite appointment into the RHU queue.
+     * This is intentionally separate from online telemedicine appointments.
+     */
+    public function addToQueueFromAppointment(Request $request, int $id): JsonResponse
+    {
+        $appointment = Appointment::query()
+            ->with([
+                'resident',
+                'handler',
+                'rhu',
+                'consultation',
+                'queueTicket',
+                'telemedicineRequest.session',
+            ])
+            ->find($id);
+
+        if (!$appointment) {
+            return response()->json([
+                'message' => 'Appointment not found.',
+            ], 404);
+        }
+
+        $status = strtolower(trim((string) $appointment->status));
+        $consultationType = $this->normalizeConsultationType(
+            $appointment->consultation_type ?? null
+        );
+
+        if ($consultationType === 'online') {
+            return response()->json([
+                'message' => 'Online appointments do not require onsite queue tickets. Open telemedicine instead.',
+            ], 422);
+        }
+
+        if ($status === 'pending') {
+            return response()->json([
+                'message' => 'Approve or schedule this appointment before adding it to the queue.',
+            ], 422);
+        }
+
+        if (in_array($status, ['cancelled', 'rejected', 'completed'], true)) {
+            return response()->json([
+                'message' => 'Closed appointments cannot be added to the queue.',
+            ], 422);
+        }
+
+        if (!in_array($status, ['confirmed', 'approved', 'scheduled', 'ongoing'], true)) {
+            return response()->json([
+                'message' => 'This appointment status cannot be added to the queue.',
+            ], 422);
+        }
+
+        try {
+            $ticket = DB::transaction(function () use ($appointment) {
+                $existingTicket = QueueTicket::query()
+                    ->where('appointment_id', $appointment->id)
+                    ->latest('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($existingTicket) {
+                    return $existingTicket->fresh([
+                        'residentProfile.barangay',
+                        'rhu',
+                        'issuedBy',
+                        'servedBy',
+                    ]);
+                }
+
+                return app(QueueService::class)->syncAppointmentToQueue($appointment);
+            });
+
+            if (!$ticket) {
+                return response()->json([
+                    'message' => 'Queue ticket could not be created. Please check the patient profile and RHU assignment.',
+                ], 422);
+            }
+
+            $freshAppointment = $appointment->fresh([
+                'resident',
+                'handler',
+                'rhu',
+                'consultation',
+                'queueTicket.residentProfile.barangay',
+                'queueTicket.rhu',
+                'queueTicket.issuedBy',
+                'queueTicket.servedBy',
+                'telemedicineRequest.session',
+            ]);
+
+            return response()->json([
+                'message' => 'Patient added to queue.',
+                'appointment' => $freshAppointment,
+                'queue_ticket' => $ticket,
+            ]);
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Unable to add patient to queue. Please try again or contact the system administrator.',
+            ], 500);
+        }
     }
 
     /**
