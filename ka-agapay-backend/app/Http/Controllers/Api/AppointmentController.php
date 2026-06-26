@@ -783,7 +783,7 @@ class AppointmentController extends Controller
 
             if ($appointment->status !== 'completed') {
                 $appointment->update([
-                    'status' => 'ongoing',
+                    'status' => 'completed',
                     'handled_by' => $this->currentUserId($request),
                     'notes' => $appointment->notes ?: 'Consultation started by staff.',
                 ]);
