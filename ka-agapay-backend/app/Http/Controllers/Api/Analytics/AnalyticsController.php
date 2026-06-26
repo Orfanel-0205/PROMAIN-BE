@@ -4,24 +4,18 @@
 namespace App\Http\Controllers\Api\Analytics;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\AiTriageService;
 use App\Services\Analytics\HeatmapAnalyticsService;
+use App\Services\Reports\DiagnosisItrReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use App\Services\Reports\DiagnosisItrReportService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class AnalyticsController extends Controller
-
 {
-    /**
-     * GET /api/v1/analytics/realtime
-     *
-     * One-request realtime analytics payload for the Analytics page.
-     * This replaces multiple frontend polling requests.
-     */
     public function realtime(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -112,9 +106,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/overview
-     */
     public function overview(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -140,47 +131,36 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/heatmap
-     *
-     * GIS-ready barangay health heatmap.
-     *
-     * Query params:
-     * - disease: optional disease/diagnosis filter
-     * - range: week | month
-     */
-   public function heatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
-{
-    $validated = $request->validate([
-        'disease' => ['nullable', 'string', 'max:100'],
-        'range' => ['nullable', 'in:week,month'],
-        'active_only' => ['nullable', 'boolean'],
-    ]);
+    public function heatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
+    {
+        $validated = $request->validate([
+            'disease' => ['nullable', 'string', 'max:100'],
+            'range' => ['nullable', 'in:week,month'],
+            'active_only' => ['nullable', 'boolean'],
+        ]);
 
-    $disease = trim((string) ($validated['disease'] ?? ''));
-    $range = $validated['range'] ?? 'week';
-    $activeOnly = $request->boolean('active_only', true);
+        $disease = trim((string) ($validated['disease'] ?? ''));
+        $range = $validated['range'] ?? 'week';
+        $activeOnly = $request->boolean('active_only', true);
 
-    $points = $service->generateHeatmapData(
-        $disease !== '' ? $disease : null,
-        $range,
-        $activeOnly
-    );
+        $points = $service->generateHeatmapData(
+            $disease !== '' ? $disease : null,
+            $range,
+            $activeOnly
+        );
 
-    return response()->json([
-        'status' => 'success',
-        'generated_at' => now()->toIso8601String(),
-        'filters' => [
-            'disease' => $disease !== '' ? $disease : null,
-            'range' => $range,
-            'active_only' => $activeOnly,
-        ],
-        'data' => $points,
-    ]);
-}
-    /**
-     * GET /api/v1/analytics/queue-performance
-     */
+        return response()->json([
+            'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => [
+                'disease' => $disease !== '' ? $disease : null,
+                'range' => $range,
+                'active_only' => $activeOnly,
+            ],
+            'data' => $points,
+        ]);
+    }
+
     public function queuePerformance(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -189,78 +169,42 @@ class AnalyticsController extends Controller
             return $this->empty('queue_performance');
         }
 
-        $dateColumn = Schema::hasColumn('queue_tickets', 'issued_at')
-            ? 'issued_at'
-            : 'created_at';
-
-        $byStatus = DB::table('queue_tickets')
-            ->selectRaw('status, COUNT(*) as total, AVG(wait_time_minutes) as avg_wait, AVG(service_time_minutes) as avg_service')
-            ->whereBetween($dateColumn, [$from, $to])
-            ->groupBy('status')
-            ->orderByDesc('total')
-            ->get();
-
-        $byService = DB::table('queue_tickets')
-            ->selectRaw("COALESCE(service_type, 'unspecified') as service_type, COUNT(*) as total, AVG(wait_time_minutes) as avg_wait")
-            ->whereBetween($dateColumn, [$from, $to])
-            ->groupByRaw("COALESCE(service_type, 'unspecified')")
-            ->orderByDesc('total')
-            ->get();
-
-        $averageWait = DB::table('queue_tickets')
-            ->whereBetween($dateColumn, [$from, $to])
-            ->avg('wait_time_minutes');
+        $queue = $this->queueOperations($from, $to);
 
         return response()->json([
             'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
             'data' => [
-                'by_status' => $byStatus,
-                'by_service' => $byService,
-                'average_wait_minutes' => round((float) $averageWait, 1),
+                'queue_performance' => $queue['queue_performance'] ?? [],
+                'queue_by_status' => $queue['queue_by_status'] ?? [],
+                'queue_by_hour' => $queue['queue_by_hour'] ?? [],
+                'priority_breakdown' => $queue['priority_breakdown'] ?? [],
+                'priority_patient_breakdown' => $queue['priority_breakdown'] ?? [],
+                'average_wait_minutes' => $queue['average_wait_minutes'] ?? 0,
+                'peak_queue_hour' => $queue['peak_queue_hour'] ?? null,
             ],
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/telemedicine-summary
-     */
     public function telemedicineSummary(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
 
-        if (!Schema::hasTable('telemedicine_requests')) {
-            return $this->empty('telemedicine_summary');
-        }
-
-        $requests = DB::table('telemedicine_requests')
-            ->selectRaw('status, urgency_level, COUNT(*) as total')
-            ->whereBetween('created_at', [$from, $to])
-            ->groupBy('status', 'urgency_level')
-            ->orderByDesc('total')
-            ->get();
-
-        $sessions = Schema::hasTable('telemedicine_sessions')
-            ? DB::table('telemedicine_sessions')
-                ->selectRaw('status, COUNT(*) as total')
-                ->whereBetween('created_at', [$from, $to])
-                ->groupBy('status')
-                ->orderByDesc('total')
-                ->get()
-            : collect();
+        $rows = $this->telemedicineStatusDistribution($from, $to);
 
         return response()->json([
             'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
             'data' => [
-                'requests' => $requests,
-                'sessions' => $sessions,
+                'telemedicine_status_distribution' => $rows,
+                'telemedicine_by_status' => $rows,
+                'requests' => $rows,
+                'sessions' => $rows,
                 'completion_rate' => $this->completionRate($from, $to),
             ],
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/barangay-health-profile
-     */
     public function barangayHealthProfile(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -271,9 +215,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/ai-accuracy
-     */
     public function aiAccuracy(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -294,9 +235,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/registration-stats
-     */
     public function registrationStats(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -305,21 +243,37 @@ class AnalyticsController extends Controller
             return $this->empty('registration_stats');
         }
 
+        $dateColumn = $this->dateColumnWithValues(
+            'event_registrations',
+            $from,
+            $to,
+            ['registered_at', 'created_at']
+        );
+
+        if (!$dateColumn) {
+            return $this->empty('registration_stats');
+        }
+
         $rows = DB::table('event_registrations')
-            ->selectRaw('status, COUNT(*) as total')
-            ->whereBetween('created_at', [$from, $to])
-            ->groupBy('status')
-            ->get();
+            ->selectRaw("COALESCE(status, 'registered') as status, COUNT(*) as count")
+            ->whereBetween($dateColumn, [$from, $to])
+            ->groupByRaw("COALESCE(status, 'registered')")
+            ->orderByDesc('count')
+            ->get()
+            ->map(fn ($row) => $this->chartRow(
+                $this->displayLabel((string) $row->status),
+                (int) $row->count,
+                ['status' => (string) $row->status]
+            ))
+            ->values();
 
         return response()->json([
             'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
             'data' => $rows,
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/chatbot-usage
-     */
     public function chatbotUsage(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -370,88 +324,85 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/queue-heatmap
-     */
-   public function queueHeatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
-{
-    $validated = $request->validate([
-        'disease' => ['nullable', 'string', 'max:100'],
-        'range' => ['nullable', 'in:week,month'],
-        'active_only' => ['nullable', 'boolean'],
-    ]);
+    public function queueHeatmap(Request $request, HeatmapAnalyticsService $service): JsonResponse
+    {
+        $validated = $request->validate([
+            'disease' => ['nullable', 'string', 'max:100'],
+            'range' => ['nullable', 'in:week,month'],
+            'active_only' => ['nullable', 'boolean'],
+        ]);
 
-    $disease = trim((string) ($validated['disease'] ?? ''));
-    $range = $validated['range'] ?? 'week';
-    $activeOnly = $request->boolean('active_only', true);
+        $disease = trim((string) ($validated['disease'] ?? ''));
+        $range = $validated['range'] ?? 'week';
+        $activeOnly = $request->boolean('active_only', true);
 
-    $points = $service->generateHeatmapData(
-        $disease !== '' ? $disease : null,
-        $range,
-        $activeOnly
-    );
-
-    return response()->json([
-        'status' => 'success',
-        'generated_at' => now()->toIso8601String(),
-        'filters' => [
-            'disease' => $disease !== '' ? $disease : null,
-            'range' => $range,
-            'active_only' => $activeOnly,
-        ],
-        'data' => $points,
-    ]);
-}
-    /**
-     * GET /api/v1/analytics/barangay-risk
-     */
-   public function barangayRisk(Request $request, HeatmapAnalyticsService $service): JsonResponse
-{
-    $validated = $request->validate([
-        'disease' => ['nullable', 'string', 'max:100'],
-        'range' => ['nullable', 'in:week,month'],
-        'active_only' => ['nullable', 'boolean'],
-    ]);
-
-    $disease = trim((string) ($validated['disease'] ?? ''));
-    $range = $validated['range'] ?? 'week';
-    $activeOnly = $request->boolean('active_only', true);
-
-    $items = collect(
-        $service->generateHeatmapData(
+        $points = $service->generateHeatmapData(
             $disease !== '' ? $disease : null,
             $range,
             $activeOnly
+        );
+
+        return response()->json([
+            'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => [
+                'disease' => $disease !== '' ? $disease : null,
+                'range' => $range,
+                'active_only' => $activeOnly,
+            ],
+            'data' => $points,
+        ]);
+    }
+
+    public function barangayRisk(Request $request, HeatmapAnalyticsService $service): JsonResponse
+    {
+        $validated = $request->validate([
+            'disease' => ['nullable', 'string', 'max:100'],
+            'range' => ['nullable', 'in:week,month'],
+            'active_only' => ['nullable', 'boolean'],
+        ]);
+
+        $disease = trim((string) ($validated['disease'] ?? ''));
+        $range = $validated['range'] ?? 'week';
+        $activeOnly = $request->boolean('active_only', true);
+
+        $items = collect(
+            $service->generateHeatmapData(
+                $disease !== '' ? $disease : null,
+                $range,
+                $activeOnly
+            )
         )
-    )
-        ->sortByDesc('risk_score')
-        ->values();
+            ->sortByDesc('risk_score')
+            ->values();
 
-    return response()->json([
-        'status' => 'success',
-        'generated_at' => now()->toIso8601String(),
-        'filters' => [
-            'disease' => $disease !== '' ? $disease : null,
-            'range' => $range,
-            'active_only' => $activeOnly,
-        ],
-        'summary' => $items->countBy('risk_level'),
-        'data' => $items,
-    ]);
-}
+        return response()->json([
+            'status' => 'success',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => [
+                'disease' => $disease !== '' ? $disease : null,
+                'range' => $range,
+                'active_only' => $activeOnly,
+            ],
+            'summary' => $items->countBy('risk_level'),
+            'data' => $items,
+        ]);
+    }
 
-    /**
-     * GET /api/v1/analytics/queue-density
-     */
     public function queueDensity(Request $request): JsonResponse
     {
         if (!Schema::hasTable('queue_tickets')) {
             return $this->empty('queue_density');
         }
 
-        $dateColumn = Schema::hasColumn('queue_tickets', 'issued_at')
-            ? 'issued_at'
-            : 'created_at';
+        [$from, $to] = $this->dateRange($request);
+
+        $dateColumn = $this->dateColumnWithValues(
+            'queue_tickets',
+            $from,
+            $to,
+            ['issued_at', 'created_at']
+        ) ?? 'created_at';
 
         $rows = DB::table('queue_tickets')
             ->selectRaw("COALESCE(service_type, 'unspecified') as service_type, status, COUNT(*) as total")
@@ -466,9 +417,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/disease-clusters
-     */
     public function diseaseClusters(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -479,9 +427,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/outbreak-alerts
-     */
     public function outbreakAlerts(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -506,9 +451,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * POST /api/v1/analytics/outbreak-alerts/{id}/resolve
-     */
     public function resolveAlert(Request $request, string $id): JsonResponse
     {
         return response()->json([
@@ -521,25 +463,18 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/priority-dashboard
-     */
     public function priorityDashboard(Request $request): JsonResponse
     {
+        [$from, $to] = $this->dateRange($request);
+
         if (!Schema::hasTable('queue_tickets')) {
             return $this->empty('priority_dashboard');
         }
 
-        $rows = DB::table('queue_tickets')
-            ->selectRaw("COALESCE(priority_category, 'regular') as priority_category, COUNT(*) as total, AVG(priority_score) as avg_score")
-            ->whereIn('status', ['waiting', 'called', 'in_service'])
-            ->groupByRaw("COALESCE(priority_category, 'regular')")
-            ->orderByDesc('avg_score')
-            ->get();
-
         return response()->json([
             'status' => 'success',
-            'data' => $rows,
+            'generated_at' => now()->toIso8601String(),
+            'data' => $this->queuePriorityBreakdown($from, $to),
         ]);
     }
 
@@ -555,11 +490,7 @@ class AnalyticsController extends Controller
 
         return [$from, $to];
     }
-        /**
-     * GET /api/v1/analytics/diagnosis-itr-summary
-     *
-     * Diagnosis + ITR summary for the Analytics dashboard.
-     */
+
     public function diagnosisItrSummary(
         Request $request,
         DiagnosisItrReportService $diagnosisItr
@@ -591,11 +522,6 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/v1/analytics/heatmap/diagnosis-itr-signals
-     *
-     * Completed consultation heatmap signals with Diagnosis + ITR fields.
-     */
     public function heatmapDiagnosisItrSignals(
         Request $request,
         DiagnosisItrReportService $diagnosisItr
@@ -631,27 +557,48 @@ class AnalyticsController extends Controller
     {
         $attendance = $this->attendanceOverview($from, $to);
         $queue = $this->queueOperations($from, $to);
-        $appointments = $this->statusBreakdown('appointments', $from, $to, 'appointment_date');
-        $telemedicine = $this->statusBreakdown('telemedicine_requests', $from, $to);
+        $appointments = $this->statusBreakdown(
+            'appointments',
+            $from,
+            $to,
+            ['appointment_date', 'scheduled_at', 'approved_at', 'created_at'],
+            'appointment'
+        );
+        $telemedicine = $this->telemedicineStatusDistribution($from, $to);
         $programs = $this->programParticipation($from, $to);
         $aiTriage = $this->aiTriageDistribution($from, $to);
 
         return [
             ...$attendance,
             ...$queue,
+
             'appointments_by_status' => $appointments,
             'appointment_status_distribution' => $appointments,
+            'appointmentStatusDistribution' => $appointments,
+
             'telemedicine_by_status' => $telemedicine,
             'telemedicine_status_distribution' => $telemedicine,
+            'telemedicineStatusDistribution' => $telemedicine,
+
+            'program_participation' => $programs,
+            'programParticipation' => $programs,
+            'program_participation_by_event' => $programs,
             'program_participation_by_barangay' => $programs,
+
             'ai_triage_distribution' => $aiTriage,
+            'aiTriageDistribution' => $aiTriage,
+            'ai_triage_staff_disclaimer' => AiTriageService::STAFF_DISCLAIMER,
+
             'priority_patient_breakdown' => $queue['priority_breakdown'] ?? [],
+            'priorityPatientBreakdown' => $queue['priority_breakdown'] ?? [],
+
             'pending_appointments' => $this->statusTotal($appointments, 'pending'),
             'approved_appointments' => $this->statusTotal($appointments, 'approved'),
             'completed_appointments' => $this->statusTotal($appointments, 'completed'),
             'cancelled_appointments' => $this->statusTotal($appointments, 'cancelled'),
             'rejected_appointments' => $this->statusTotal($appointments, 'rejected'),
             'no_show_appointments' => $this->statusTotal($appointments, 'no_show'),
+
             'pending_telemedicine_requests' => $this->statusTotal($telemedicine, 'pending'),
             'scheduled_telemedicine_sessions' => $this->statusTotal($telemedicine, 'scheduled'),
             'completed_telemedicine_sessions' => $this->statusTotal($telemedicine, 'completed'),
@@ -785,9 +732,12 @@ class AnalyticsController extends Controller
             return collect();
         }
 
-        $dateColumn = Schema::hasColumn($table, $preferredColumn)
-            ? $preferredColumn
-            : (Schema::hasColumn($table, 'created_at') ? 'created_at' : null);
+        $dateColumn = $this->dateColumnWithValues(
+            $table,
+            $from,
+            $to,
+            [$preferredColumn, 'created_at']
+        );
 
         if (!$dateColumn) {
             return collect();
@@ -802,25 +752,49 @@ class AnalyticsController extends Controller
 
     private function queueOperations(Carbon $from, Carbon $to): array
     {
+        $empty = [
+            'queue_by_hour' => [],
+            'queueByHour' => [],
+            'queue_by_status' => [],
+            'queue_performance' => [],
+            'queuePerformance' => [],
+            'priority_breakdown' => $this->emptyPriorityCategories(),
+            'priority_patient_breakdown' => $this->emptyPriorityCategories(),
+            'average_wait_minutes' => 0,
+            'peak_queue_hour' => null,
+            'waiting_queue' => 0,
+            'currently_serving' => 0,
+            'served_queue' => 0,
+            'skipped_queue' => 0,
+            'cancelled_queue' => 0,
+            'priority_queue' => 0,
+            'regular_queue' => 0,
+        ];
+
         if (!Schema::hasTable('queue_tickets')) {
-            return [
-                'queue_by_hour' => [],
-                'queue_by_status' => [],
-                'priority_breakdown' => [],
-                'average_wait_minutes' => 0,
-                'peak_queue_hour' => null,
-            ];
+            return $empty;
         }
 
-        $dateColumn = Schema::hasColumn('queue_tickets', 'issued_at')
-            ? 'issued_at'
-            : 'created_at';
+        $dateColumn = $this->dateColumnWithValues(
+            'queue_tickets',
+            $from,
+            $to,
+            ['issued_at', 'created_at']
+        );
+
+        if (!$dateColumn) {
+            return $empty;
+        }
 
         $base = DB::table('queue_tickets')
             ->whereBetween($dateColumn, [$from, $to])
-            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('rhu_id', 1));
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
+            ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('deleted_at'));
 
-        $timestamps = (clone $base)->pluck($dateColumn);
+        $timestamps = (clone $base)
+            ->whereNotNull($dateColumn)
+            ->pluck($dateColumn);
+
         $byHour = array_fill(0, 24, 0);
 
         foreach ($timestamps as $raw) {
@@ -833,85 +807,136 @@ class AnalyticsController extends Controller
         }
 
         $queueByHour = collect($byHour)
-            ->map(fn ($total, $hour) => [
-                'hour' => (int) $hour,
-                'label' => Carbon::createFromTime((int) $hour)->format('g A'),
-                'total' => (int) $total,
-            ])
-            ->filter(fn ($row) => $row['total'] > 0)
+            ->map(fn ($count, $hour) => $this->chartRow(
+                Carbon::createFromTime((int) $hour)->format('g A'),
+                (int) $count,
+                ['hour' => (int) $hour]
+            ))
+            ->filter(fn ($row) => $row['count'] > 0)
             ->values()
             ->all();
 
-        $queueByStatus = (clone $base)
-            ->selectRaw("COALESCE(status, 'unknown') as status, COUNT(*) as total")
-            ->groupByRaw("COALESCE(status, 'unknown')")
-            ->orderByDesc('total')
-            ->get()
-            ->map(fn ($row) => [
-                'status' => (string) $row->status,
-                'label' => $this->displayLabel((string) $row->status),
-                'total' => (int) $row->total,
-            ])
-            ->all();
+        $queueByStatus = $this->queuePerformanceFromCounters($from, $to);
 
-        $priorityBreakdown = [
-            ['label' => 'Senior Citizen', 'total' => (int) (clone $base)->where('is_senior', true)->count()],
-            ['label' => 'PWD', 'total' => (int) (clone $base)->where('is_pwd', true)->count()],
-            ['label' => 'Pregnant', 'total' => (int) (clone $base)->where('is_pregnant', true)->count()],
-            ['label' => 'Child', 'total' => (int) (clone $base)->where('is_pediatric', true)->count()],
-            ['label' => 'Urgent / Emergency', 'total' => (int) (clone $base)->where(function ($q) {
-                $q->where('is_emergency', true)->orWhere('priority_score', '>=', 80);
-            })->count()],
-            ['label' => 'Regular', 'total' => (int) (clone $base)->where(function ($q) {
-                $q->whereNull('priority_category')->orWhere('priority_category', 'regular');
-            })->where('priority_score', '<', 35)->count()],
-        ];
+        if (array_sum(array_column($queueByStatus, 'count')) <= 0) {
+            $queueByStatus = $this->queuePerformanceFromTickets($base);
+        }
 
-        $peak = collect($queueByHour)->sortByDesc('total')->first();
+        $priorityBreakdown = $this->queuePriorityBreakdown($from, $to);
+        $peak = collect($queueByHour)->sortByDesc('count')->first();
+
+        $waiting = $this->statusTotal($queueByStatus, 'waiting');
+        $serving = $this->statusTotal($queueByStatus, 'serving');
+        $served = $this->statusTotal($queueByStatus, 'served');
+        $skipped = $this->statusTotal($queueByStatus, 'skipped');
+        $cancelled = $this->statusTotal($queueByStatus, 'cancelled');
+        $priorityQueue = collect($priorityBreakdown)
+            ->reject(fn ($row) => ($row['status'] ?? '') === 'regular')
+            ->sum('count');
+        $regularQueue = $this->statusTotal($priorityBreakdown, 'regular');
 
         return [
             'queue_by_hour' => $queueByHour,
+            'queueByHour' => $queueByHour,
+
             'queue_by_status' => $queueByStatus,
-            'priority_breakdown' => array_values(array_filter($priorityBreakdown, fn ($row) => $row['total'] > 0)),
-            'average_wait_minutes' => round((float) (clone $base)->avg('wait_time_minutes'), 1),
+            'queue_performance' => $queueByStatus,
+            'queuePerformance' => $queueByStatus,
+
+            'priority_breakdown' => $priorityBreakdown,
+            'priority_patient_breakdown' => $priorityBreakdown,
+            'priorityPatientBreakdown' => $priorityBreakdown,
+
+            'average_wait_minutes' => Schema::hasColumn('queue_tickets', 'wait_time_minutes')
+                ? round((float) (clone $base)->avg('wait_time_minutes'), 1)
+                : 0,
             'peak_queue_hour' => $peak,
-            'waiting_queue' => $this->statusTotal($queueByStatus, 'waiting'),
-            'currently_serving' => $this->statusTotal($queueByStatus, 'in_service') + $this->statusTotal($queueByStatus, 'called'),
-            'served_queue' => $this->statusTotal($queueByStatus, 'completed'),
-            'skipped_queue' => $this->statusTotal($queueByStatus, 'skipped'),
-            'cancelled_queue' => $this->statusTotal($queueByStatus, 'cancelled'),
-            'priority_queue' => (int) (clone $base)->where('priority_score', '>=', 35)->count(),
-            'regular_queue' => (int) (clone $base)->where('priority_score', '<', 35)->count(),
+
+            'waiting_queue' => $waiting,
+            'currently_serving' => $serving,
+            'served_queue' => $served,
+            'skipped_queue' => $skipped,
+            'cancelled_queue' => $cancelled,
+            'priority_queue' => (int) $priorityQueue,
+            'regular_queue' => (int) $regularQueue,
         ];
     }
 
-    private function statusBreakdown(string $table, Carbon $from, Carbon $to, string $preferredColumn = 'created_at'): array
-    {
+    private function statusBreakdown(
+        string $table,
+        Carbon $from,
+        Carbon $to,
+        array|string $preferredColumns = 'created_at',
+        string $statusType = 'generic'
+    ): array {
         if (!Schema::hasTable($table) || !Schema::hasColumn($table, 'status')) {
             return [];
         }
 
-        $dateColumn = Schema::hasColumn($table, $preferredColumn)
-            ? $preferredColumn
-            : (Schema::hasColumn($table, 'created_at') ? 'created_at' : null);
+        $preferred = is_array($preferredColumns) ? $preferredColumns : [$preferredColumns, 'created_at'];
+        $dateColumn = $this->dateColumnWithValues($table, $from, $to, $preferred);
 
         if (!$dateColumn) {
             return [];
         }
 
-        return DB::table($table)
-            ->selectRaw("COALESCE(status, 'unknown') as status, COUNT(*) as total")
+        $rawRows = DB::table($table)
+            ->selectRaw("COALESCE(status, 'unknown') as raw_status, COUNT(*) as count")
             ->whereBetween($dateColumn, [$from, $to])
             ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
             ->groupByRaw("COALESCE(status, 'unknown')")
-            ->orderByDesc('total')
-            ->get()
-            ->map(fn ($row) => [
-                'status' => (string) $row->status,
-                'label' => $this->displayLabel((string) $row->status),
-                'total' => (int) $row->total,
-            ])
+            ->get();
+
+        $counts = [];
+
+        foreach ($rawRows as $row) {
+            [$status, $label] = $this->normalizeStatus((string) $row->raw_status, $statusType);
+            $counts[$status] = [
+                'status' => $status,
+                'label' => $label,
+                'count' => ($counts[$status]['count'] ?? 0) + (int) $row->count,
+                'raw_statuses' => array_values(array_unique([
+                    ...($counts[$status]['raw_statuses'] ?? []),
+                    (string) $row->raw_status,
+                ])),
+            ];
+        }
+
+        return collect($counts)
+            ->map(fn ($row) => $this->chartRow(
+                $row['label'],
+                $row['count'],
+                [
+                    'status' => $row['status'],
+                    'raw_statuses' => $row['raw_statuses'],
+                ]
+            ))
+            ->sortByDesc('count')
+            ->values()
             ->all();
+    }
+
+    private function telemedicineStatusDistribution(Carbon $from, Carbon $to): array
+    {
+        $requests = $this->statusBreakdown(
+            'telemedicine_requests',
+            $from,
+            $to,
+            ['created_at', 'screened_at', 'cancelled_at'],
+            'telemedicine'
+        );
+
+        if (array_sum(array_column($requests, 'count')) > 0) {
+            return $requests;
+        }
+
+        return $this->statusBreakdown(
+            'telemedicine_sessions',
+            $from,
+            $to,
+            ['scheduled_date', 'started_at', 'ended_at', 'created_at'],
+            'telemedicine'
+        );
     }
 
     private function programParticipation(Carbon $from, Carbon $to): array
@@ -920,121 +945,587 @@ class AnalyticsController extends Controller
             return [];
         }
 
+        $dateColumn = $this->dateColumnWithValues(
+            'event_registrations',
+            $from,
+            $to,
+            ['registered_at', 'created_at']
+        );
+
+        if (!$dateColumn) {
+            return [];
+        }
+
         $query = DB::table('event_registrations as er')
-            ->whereBetween('er.created_at', [$from, $to]);
+            ->whereBetween("er.{$dateColumn}", [$from, $to]);
+
+        $eventLabelExpr = "CONCAT('Event #', er.event_id)";
+        $eventTypeExpr = "'event'";
+        $categoryExpr = "'Program / Event'";
+        $hasEvents = Schema::hasTable('events');
+
+        if ($hasEvents) {
+            $query->leftJoin('events as e', 'e.id', '=', 'er.event_id');
+            $eventLabelExpr = "COALESCE(e.title, CONCAT('Event #', er.event_id))";
+            $eventTypeExpr = Schema::hasColumn('events', 'event_type')
+                ? "COALESCE(e.event_type, 'event')"
+                : "'event'";
+            $categoryExpr = Schema::hasColumn('events', 'category')
+                ? "COALESCE(e.category, 'Program / Event')"
+                : "'Program / Event'";
+        }
 
         $barangayExpr = "'Unspecified'";
 
         if (
             Schema::hasTable('resident_profiles') &&
-            Schema::hasColumn('event_registrations', 'resident_profile_id') &&
+            Schema::hasColumn('event_registrations', 'user_id') &&
+            Schema::hasColumn('resident_profiles', 'user_id') &&
             Schema::hasColumn('resident_profiles', 'barangay_id') &&
             Schema::hasTable('barangays')
         ) {
-            $query->leftJoin('resident_profiles as rp', 'rp.id', '=', 'er.resident_profile_id')
+            $query->leftJoin('resident_profiles as rp', 'rp.user_id', '=', 'er.user_id')
                 ->leftJoin('barangays as b', 'b.barangay_id', '=', 'rp.barangay_id');
+
             $barangayExpr = "COALESCE(b.name, 'Unspecified')";
         }
 
-        return $query
-            ->selectRaw("{$barangayExpr} as barangay, COUNT(*) as total")
-            ->groupByRaw($barangayExpr)
-            ->orderByDesc('total')
-            ->limit(10)
-            ->get()
-            ->map(fn ($row) => [
-                'barangay' => (string) $row->barangay,
-                'total' => (int) $row->total,
-            ])
+        $rows = $query
+            ->selectRaw("{$eventLabelExpr} as event_title")
+            ->selectRaw("{$eventTypeExpr} as event_type")
+            ->selectRaw("{$categoryExpr} as category")
+            ->selectRaw("{$barangayExpr} as barangay")
+            ->selectRaw("COUNT(*) as count")
+            ->when(Schema::hasColumn('event_registrations', 'status'), function ($q) {
+                $q->whereIn('er.status', ['registered', 'attended', 'completed']);
+            })
+            ->groupByRaw("{$eventLabelExpr}, {$eventTypeExpr}, {$categoryExpr}, {$barangayExpr}")
+            ->orderByDesc('count')
+            ->limit(200)
+            ->get();
+
+        return $rows
+            ->groupBy('event_title')
+            ->map(function ($group, $title) {
+                $count = (int) $group->sum('count');
+                $barangays = $group
+                    ->pluck('barangay')
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                $barangaySummary = count($barangays) > 0
+                    ? implode(', ', array_slice($barangays, 0, 5))
+                    : 'Unspecified';
+
+                if (count($barangays) > 5) {
+                    $barangaySummary .= ' +' . (count($barangays) - 5) . ' more';
+                }
+
+                $first = $group->first();
+
+                return $this->chartRow(
+                    (string) $title,
+                    $count,
+                    [
+                        'event' => (string) $title,
+                        'program' => (string) $title,
+                        'title' => (string) $title,
+                        'event_type' => (string) ($first->event_type ?? 'event'),
+                        'category' => (string) ($first->category ?? 'Program / Event'),
+                        'barangay' => $barangaySummary,
+                        'barangays' => $barangays,
+                        'helper' => 'Barangay: ' . $barangaySummary,
+                    ]
+                );
+            })
+            ->sortByDesc('count')
+            ->take(10)
+            ->values()
             ->all();
     }
 
     private function aiTriageDistribution(Carbon $from, Carbon $to): array
     {
+        $counts = $this->emptyTriageCounts();
+
         if (Schema::hasTable('ai_triage_scores')) {
-            $stored = DB::table('ai_triage_scores')
-                ->selectRaw("COALESCE(recommended_urgency, 'low') as triage_level, COUNT(*) as total, AVG(ai_score) as average_score")
-                ->whereBetween('created_at', [$from, $to])
-                ->groupByRaw("COALESCE(recommended_urgency, 'low')")
-                ->orderByDesc('total')
-                ->get()
-                ->map(function ($row) {
+            $levelColumn = Schema::hasColumn('ai_triage_scores', 'triage_level')
+                ? 'triage_level'
+                : (Schema::hasColumn('ai_triage_scores', 'recommended_urgency') ? 'recommended_urgency' : null);
+
+            if ($levelColumn) {
+                $stored = DB::table('ai_triage_scores')
+                    ->selectRaw("COALESCE({$levelColumn}, 'low') as triage_level, COUNT(*) as count")
+                    ->whereBetween('created_at', [$from, $to])
+                    ->groupByRaw("COALESCE({$levelColumn}, 'low')")
+                    ->get();
+
+                foreach ($stored as $row) {
                     $level = $this->triageLevel((string) $row->triage_level);
+                    $counts[$level] += (int) $row->count;
+                }
 
-                    return [
-                        'triage_level' => $level,
-                        'label' => $this->displayLabel($level),
-                        'total' => (int) $row->total,
-                        'average_score' => round((float) $row->average_score, 1),
-                    ];
-                })
-                ->all();
-
-            if (array_sum(array_column($stored, 'total')) > 0) {
-                return $stored;
+                if (array_sum($counts) > 0) {
+                    return $this->triageCountsToRows($counts);
+                }
             }
         }
 
         if (!Schema::hasTable('queue_tickets')) {
-            return [];
+            return $this->triageCountsToRows($counts);
         }
 
-        $dateColumn = Schema::hasColumn('queue_tickets', 'issued_at')
-            ? 'issued_at'
-            : 'created_at';
+        $dateColumn = $this->dateColumnWithValues(
+            'queue_tickets',
+            $from,
+            $to,
+            ['issued_at', 'created_at']
+        );
 
-        $rows = DB::table('queue_tickets')
-            ->whereBetween($dateColumn, [$from, $to])
-            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
-            ->get([
-                'priority_score',
-                'is_emergency',
+        if (!$dateColumn) {
+            return $this->triageCountsToRows($counts);
+        }
+
+        $query = DB::table('queue_tickets as q')
+            ->whereBetween("q.{$dateColumn}", [$from, $to])
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('q.rhu_id', 1))
+            ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('q.deleted_at'));
+
+        $hasProfileJoin = Schema::hasTable('resident_profiles')
+            && Schema::hasColumn('queue_tickets', 'resident_profile_id');
+
+        if ($hasProfileJoin) {
+            $query->leftJoin('resident_profiles as rp', 'rp.id', '=', 'q.resident_profile_id');
+        }
+
+        $select = [
+            'q.id',
+        ];
+
+        foreach ([
+            'priority_score',
+            'priority_category',
+            'is_emergency',
+            'is_senior',
+            'is_pwd',
+            'is_pregnant',
+            'is_pediatric',
+            'notes',
+            'service_type',
+        ] as $column) {
+            if (Schema::hasColumn('queue_tickets', $column)) {
+                $select[] = "q.{$column}";
+            }
+        }
+
+        if ($hasProfileJoin) {
+            foreach ([
+                'birth_date',
+                'birthdate',
+                'date_of_birth',
                 'is_senior',
                 'is_pwd',
                 'is_pregnant',
-                'is_pediatric',
-                'notes',
-            ]);
+            ] as $column) {
+                if (Schema::hasColumn('resident_profiles', $column)) {
+                    $select[] = "rp.{$column} as rp_{$column}";
+                }
+            }
+        }
+
+        $service = app(AiTriageService::class);
+
+        foreach ($query->get($select) as $row) {
+            $age = $this->ageFromRow($row);
+
+            $payload = [
+                'age' => $age,
+                'chief_complaint' => (string) ($row->notes ?? ''),
+                'complaint' => (string) ($row->notes ?? ''),
+                'service_type' => (string) ($row->service_type ?? ''),
+                'is_senior' => (bool) ($row->is_senior ?? $row->rp_is_senior ?? ($age !== null && $age >= 60)),
+                'is_pwd' => (bool) ($row->is_pwd ?? $row->rp_is_pwd ?? false),
+                'is_pregnant' => (bool) ($row->is_pregnant ?? $row->rp_is_pregnant ?? false),
+                'is_pediatric' => (bool) ($row->is_pediatric ?? ($age !== null && $age <= 12)),
+                'is_emergency' => (bool) ($row->is_emergency ?? false),
+            ];
+
+            $result = $service->scorePayload($payload);
+            $level = $this->triageLevel((string) ($result['triage_level'] ?? 'low'));
+            $counts[$level] += 1;
+        }
+
+        return $this->triageCountsToRows($counts);
+    }
+
+    private function queuePerformanceFromCounters(Carbon $from, Carbon $to): array
+    {
+        $empty = collect([
+            'waiting' => 'Waiting',
+            'serving' => 'Serving',
+            'served' => 'Served',
+            'skipped' => 'Skipped',
+            'cancelled' => 'Cancelled',
+        ])
+            ->map(fn ($label, $status) => $this->chartRow($label, 0, ['status' => $status]))
+            ->values()
+            ->all();
+
+        if (!Schema::hasTable('queue_counters')) {
+            return $empty;
+        }
+
+        $dateColumn = $this->dateColumnWithValues(
+            'queue_counters',
+            $from,
+            $to,
+            ['queue_date', 'created_at']
+        );
+
+        if (!$dateColumn) {
+            return $empty;
+        }
+
+        $rows = DB::table('queue_counters')
+            ->whereBetween($dateColumn, [$from, $to])
+            ->when(Schema::hasColumn('queue_counters', 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return $empty;
+        }
+
+        $totalIssued = (int) $rows->sum(fn ($row) => (int) ($row->last_issued_number ?? 0));
+        $currentServing = (int) $rows
+            ->filter(fn ($row) => !empty($row->current_serving_number) && (bool) ($row->is_active ?? true))
+            ->count();
+        $servedEstimate = (int) $rows->sum(fn ($row) => (int) ($row->current_serving_number ?? 0));
+        $waitingEstimate = max(0, $totalIssued - $servedEstimate - $currentServing);
+
+        return [
+            $this->chartRow('Waiting', $waitingEstimate, ['status' => 'waiting']),
+            $this->chartRow('Serving', $currentServing, ['status' => 'serving']),
+            $this->chartRow('Served', $servedEstimate, ['status' => 'served']),
+            $this->chartRow('Skipped', 0, ['status' => 'skipped']),
+            $this->chartRow('Cancelled', 0, ['status' => 'cancelled']),
+        ];
+    }
+
+    private function queuePerformanceFromTickets($baseQuery): array
+    {
+        $rawRows = (clone $baseQuery)
+            ->selectRaw("COALESCE(status, 'waiting') as raw_status, COUNT(*) as count")
+            ->groupByRaw("COALESCE(status, 'waiting')")
+            ->get();
 
         $counts = [
-            'urgent' => ['total' => 0, 'score' => 0],
-            'high' => ['total' => 0, 'score' => 0],
-            'moderate' => ['total' => 0, 'score' => 0],
-            'low' => ['total' => 0, 'score' => 0],
+            'waiting' => 0,
+            'serving' => 0,
+            'served' => 0,
+            'skipped' => 0,
+            'cancelled' => 0,
         ];
 
-        foreach ($rows as $row) {
-            $score = (int) ($row->priority_score ?? 0);
-            $notes = Str::lower((string) ($row->notes ?? ''));
-
-            if ((bool) $row->is_emergency || $score >= 80 || $this->containsUrgentComplaint($notes)) {
-                $level = 'urgent';
-                $score = max($score, 85);
-            } elseif ((bool) $row->is_pregnant || ((bool) $row->is_senior && $notes !== '') || ((bool) $row->is_pwd && $notes !== '') || $score >= 60) {
-                $level = 'high';
-                $score = max($score, 65);
-            } elseif ((bool) $row->is_pediatric || $score >= 35 || $this->containsModerateComplaint($notes)) {
-                $level = 'moderate';
-                $score = max($score, 35);
-            } else {
-                $level = 'low';
-                $score = max($score, 10);
+        foreach ($rawRows as $row) {
+            [$status] = $this->normalizeStatus((string) $row->raw_status, 'queue');
+            if (array_key_exists($status, $counts)) {
+                $counts[$status] += (int) $row->count;
             }
-
-            $counts[$level]['total']++;
-            $counts[$level]['score'] += $score;
         }
 
         return collect($counts)
-            ->map(fn ($row, $level) => [
-                'triage_level' => $level,
-                'label' => $this->displayLabel($level),
-                'total' => (int) $row['total'],
-                'average_score' => $row['total'] > 0 ? round($row['score'] / $row['total'], 1) : 0,
-            ])
-            ->filter(fn ($row) => $row['total'] > 0)
+            ->map(fn ($count, $status) => $this->chartRow(
+                $this->normalizeStatus($status, 'queue')[1],
+                (int) $count,
+                ['status' => $status]
+            ))
             ->values()
             ->all();
+    }
+
+    private function queuePriorityBreakdown(Carbon $from, Carbon $to): array
+    {
+        $counts = [
+            'senior_citizen' => 0,
+            'pwd' => 0,
+            'pregnant' => 0,
+            'child' => 0,
+            'urgent_complaint' => 0,
+            'regular' => 0,
+        ];
+
+        if (!Schema::hasTable('queue_tickets')) {
+            return $this->priorityCountsToRows($counts);
+        }
+
+        $dateColumn = $this->dateColumnWithValues(
+            'queue_tickets',
+            $from,
+            $to,
+            ['issued_at', 'created_at']
+        );
+
+        if (!$dateColumn) {
+            return $this->priorityCountsToRows($counts);
+        }
+
+        $query = DB::table('queue_tickets as q')
+            ->whereBetween("q.{$dateColumn}", [$from, $to])
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('q.rhu_id', 1))
+            ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('q.deleted_at'));
+
+        $hasProfileJoin = Schema::hasTable('resident_profiles')
+            && Schema::hasColumn('queue_tickets', 'resident_profile_id');
+
+        if ($hasProfileJoin) {
+            $query->leftJoin('resident_profiles as rp', 'rp.id', '=', 'q.resident_profile_id');
+        }
+
+        $select = ['q.id'];
+
+        foreach ([
+            'priority_score',
+            'priority_category',
+            'is_emergency',
+            'is_senior',
+            'is_pwd',
+            'is_pregnant',
+            'is_pediatric',
+            'notes',
+        ] as $column) {
+            if (Schema::hasColumn('queue_tickets', $column)) {
+                $select[] = "q.{$column}";
+            }
+        }
+
+        if ($hasProfileJoin) {
+            foreach ([
+                'birth_date',
+                'birthdate',
+                'date_of_birth',
+                'is_senior',
+                'is_pwd',
+                'is_pregnant',
+            ] as $column) {
+                if (Schema::hasColumn('resident_profiles', $column)) {
+                    $select[] = "rp.{$column} as rp_{$column}";
+                }
+            }
+        }
+
+        foreach ($query->get($select) as $row) {
+            $category = Str::lower((string) ($row->priority_category ?? ''));
+            $score = (int) ($row->priority_score ?? 0);
+            $notes = Str::lower((string) ($row->notes ?? ''));
+            $age = $this->ageFromRow($row);
+
+            $isSenior = (bool) ($row->is_senior ?? false)
+                || (bool) ($row->rp_is_senior ?? false)
+                || ($age !== null && $age >= 60)
+                || $category === 'senior_citizen';
+
+            $isPwd = (bool) ($row->is_pwd ?? false)
+                || (bool) ($row->rp_is_pwd ?? false)
+                || $category === 'pwd';
+
+            $isPregnant = (bool) ($row->is_pregnant ?? false)
+                || (bool) ($row->rp_is_pregnant ?? false)
+                || $category === 'pregnant';
+
+            $isChild = (bool) ($row->is_pediatric ?? false)
+                || ($age !== null && $age <= 12)
+                || in_array($category, ['pediatric', 'child'], true);
+
+            $isUrgent = (bool) ($row->is_emergency ?? false)
+                || $score >= 80
+                || in_array($category, ['emergency', 'urgent', 'critical'], true)
+                || $this->containsUrgentComplaint($notes);
+
+            if ($isUrgent) {
+                $counts['urgent_complaint']++;
+            } elseif ($isPregnant) {
+                $counts['pregnant']++;
+            } elseif ($isSenior) {
+                $counts['senior_citizen']++;
+            } elseif ($isPwd) {
+                $counts['pwd']++;
+            } elseif ($isChild) {
+                $counts['child']++;
+            } else {
+                $counts['regular']++;
+            }
+        }
+
+        return $this->priorityCountsToRows($counts);
+    }
+
+    private function priorityCountsToRows(array $counts): array
+    {
+        $labels = [
+            'senior_citizen' => 'Senior Citizen',
+            'pwd' => 'PWD',
+            'pregnant' => 'Pregnant',
+            'child' => 'Child',
+            'urgent_complaint' => 'Urgent Complaint',
+            'regular' => 'Regular',
+        ];
+
+        return collect($labels)
+            ->map(fn ($label, $status) => $this->chartRow(
+                $label,
+                (int) ($counts[$status] ?? 0),
+                ['status' => $status]
+            ))
+            ->values()
+            ->all();
+    }
+
+    private function emptyPriorityCategories(): array
+    {
+        return $this->priorityCountsToRows([
+            'senior_citizen' => 0,
+            'pwd' => 0,
+            'pregnant' => 0,
+            'child' => 0,
+            'urgent_complaint' => 0,
+            'regular' => 0,
+        ]);
+    }
+
+    private function emptyTriageCounts(): array
+    {
+        return [
+            'urgent' => 0,
+            'high' => 0,
+            'moderate' => 0,
+            'low' => 0,
+        ];
+    }
+
+    private function triageCountsToRows(array $counts): array
+    {
+        $total = array_sum($counts);
+
+        return collect(['urgent', 'high', 'moderate', 'low'])
+            ->map(fn ($level) => $this->chartRow(
+                $this->displayLabel($level),
+                (int) ($counts[$level] ?? 0),
+                [
+                    'triage_level' => $level,
+                    'status' => $level,
+                    'percentage' => $total > 0 ? round(((int) ($counts[$level] ?? 0) / $total) * 100, 1) : 0,
+                    'staff_disclaimer' => AiTriageService::STAFF_DISCLAIMER,
+                ]
+            ))
+            ->values()
+            ->all();
+    }
+
+    private function chartRow(string $label, int|float $count, array $extra = []): array
+    {
+        $safeCount = (int) $count;
+
+        return [
+            'label' => $label,
+            'count' => $safeCount,
+            'total' => $safeCount,
+            'value' => $safeCount,
+            ...$extra,
+        ];
+    }
+
+    private function normalizeStatus(string $value, string $type = 'generic'): array
+    {
+        $normalized = Str::lower(trim(str_replace('-', '_', $value)));
+
+        if ($type === 'queue') {
+            return match ($normalized) {
+                'pending', 'waiting' => ['waiting', 'Waiting'],
+                'called', 'serving', 'in_service', 'in service' => ['serving', 'Serving'],
+                'served', 'completed', 'complete', 'done' => ['served', 'Served'],
+                'skipped' => ['skipped', 'Skipped'],
+                'cancelled', 'canceled' => ['cancelled', 'Cancelled'],
+                default => ['waiting', 'Waiting'],
+            };
+        }
+
+        if ($type === 'appointment') {
+            return match ($normalized) {
+                'pending' => ['pending', 'Pending'],
+                'approved', 'confirmed', 'scheduled' => ['approved', 'Approved'],
+                'completed', 'complete', 'done', 'served' => ['completed', 'Completed'],
+                'cancelled', 'canceled' => ['cancelled', 'Cancelled'],
+                'rejected', 'declined' => ['rejected', 'Rejected'],
+                'no_show', 'noshow', 'missed' => ['no_show', 'No-show'],
+                default => [$normalized ?: 'pending', $this->displayLabel($normalized ?: 'pending')],
+            };
+        }
+
+        if ($type === 'telemedicine') {
+            return match ($normalized) {
+                'pending' => ['pending', 'Pending'],
+                'screened', 'scheduled', 'waiting', 'active', 'paused' => ['scheduled', 'Scheduled'],
+                'completed', 'complete', 'done', 'ended' => ['completed', 'Completed'],
+                'cancelled', 'canceled', 'no_show', 'noshow' => ['cancelled', 'Cancelled'],
+                'rejected', 'declined' => ['rejected', 'Rejected'],
+                default => [$normalized ?: 'pending', $this->displayLabel($normalized ?: 'pending')],
+            };
+        }
+
+        return [$normalized ?: 'unknown', $this->displayLabel($normalized ?: 'unknown')];
+    }
+
+    private function ageFromRow(object $row): ?int
+    {
+        foreach (['rp_birth_date', 'rp_birthdate', 'rp_date_of_birth', 'birth_date', 'birthdate', 'date_of_birth'] as $field) {
+            if (empty($row->{$field})) {
+                continue;
+            }
+
+            try {
+                return Carbon::parse($row->{$field})->age;
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private function dateColumnWithValues(
+        string $table,
+        Carbon $from,
+        Carbon $to,
+        array $preferredColumns
+    ): ?string {
+        if (!Schema::hasTable($table)) {
+            return null;
+        }
+
+        foreach (array_values(array_unique($preferredColumns)) as $column) {
+            if (!Schema::hasColumn($table, $column)) {
+                continue;
+            }
+
+            $count = (int) DB::table($table)
+                ->whereNotNull($column)
+                ->whereBetween($column, [$from, $to])
+                ->count();
+
+            if ($count > 0) {
+                return $column;
+            }
+        }
+
+        foreach (array_values(array_unique($preferredColumns)) as $column) {
+            if (Schema::hasColumn($table, $column)) {
+                return $column;
+            }
+        }
+
+        return Schema::hasColumn($table, 'created_at') ? 'created_at' : null;
     }
 
     private function containsUrgentComplaint(string $notes): bool
@@ -1076,11 +1567,22 @@ class AnalyticsController extends Controller
 
     private function statusTotal(array $rows, string $status): int
     {
-        $needle = Str::lower($status);
+        $needle = Str::lower(str_replace('-', '_', $status));
 
         return (int) collect($rows)
-            ->filter(fn ($row) => Str::lower((string) ($row['status'] ?? $row['triage_level'] ?? '')) === $needle)
-            ->sum('total');
+            ->filter(function ($row) use ($needle) {
+                $candidate = Str::lower((string) (
+                    $row['status']
+                    ?? $row['triage_level']
+                    ?? $row['label']
+                    ?? ''
+                ));
+
+                $candidate = str_replace('-', '_', $candidate);
+
+                return $candidate === $needle;
+            })
+            ->sum(fn ($row) => (int) ($row['count'] ?? $row['total'] ?? $row['value'] ?? 0));
     }
 
     private function triageLevel(string $value): string
@@ -1117,11 +1619,9 @@ class AnalyticsController extends Controller
             return 0;
         }
 
-        if (Schema::hasColumn($table, $preferredColumn)) {
-            $column = $preferredColumn;
-        } elseif (Schema::hasColumn($table, 'created_at')) {
-            $column = 'created_at';
-        } else {
+        $column = $this->dateColumnWithValues($table, $from, $to, [$preferredColumn, 'created_at']);
+
+        if (!$column) {
             return (int) DB::table($table)->count();
         }
 
@@ -1130,9 +1630,6 @@ class AnalyticsController extends Controller
             ->count();
     }
 
-    /**
-     * PostgreSQL-safe barangay case aggregation.
-     */
     private function barangayCases(Carbon $from, Carbon $to, string $disease = ''): array
     {
         if (!Schema::hasTable('consultations') || !Schema::hasTable('users')) {
@@ -1219,9 +1716,6 @@ class AnalyticsController extends Controller
             ->all();
     }
 
-    /**
-     * Real-time queue density grouped by barangay.
-     */
     private function queueByBarangay(): array
     {
         if (!Schema::hasTable('queue_tickets')) {
@@ -1257,9 +1751,6 @@ class AnalyticsController extends Controller
         return [];
     }
 
-    /**
-     * PostgreSQL-safe complaint distribution.
-     */
     private function complaintDistribution(Carbon $from, Carbon $to): array
     {
         if (!Schema::hasTable('consultations')) {

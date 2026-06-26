@@ -1,5 +1,5 @@
 <?php
-
+//database/migrations/2026_06_01_204010_add_queue_number_to_event_registrations_table.php
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
