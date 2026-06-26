@@ -323,7 +323,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/appointments',                         [AppointmentController::class, 'adminIndex']);
                 Route::get('/appointments/{id}',                    [AppointmentController::class, 'adminShow']);
                 Route::patch('/appointments/{id}/status',           [AppointmentController::class, 'adminUpdateStatus']);
-               Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultation']);
+                Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
 
                 Route::get('/consultations',                 [ConsultationController::class, 'index']);
                 Route::post('/consultations',                [ConsultationController::class, 'store']);

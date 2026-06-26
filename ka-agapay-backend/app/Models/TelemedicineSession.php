@@ -24,6 +24,11 @@ class TelemedicineSession extends Model
         'session_mode',
         'session_link',
         'session_token',
+
+        'room_id',
+        'room_token',
+        'ice_servers',
+
         'status',
         'started_at',
         'ended_at',
@@ -35,9 +40,10 @@ class TelemedicineSession extends Model
 
     protected $casts = [
         'scheduled_date' => 'date',
-        'started_at'     => 'datetime',
-        'ended_at'       => 'datetime',
-        'cancelled_at'   => 'datetime',
+        'started_at' => 'datetime',
+        'ended_at' => 'datetime',
+        'cancelled_at' => 'datetime',
+        'ice_servers' => 'array',
     ];
 
     public function request(): BelongsTo
@@ -79,11 +85,11 @@ class TelemedicineSession extends Model
     {
         $allowed = [
             'scheduled' => ['waiting', 'active', 'no_show', 'cancelled'],
-            'waiting'   => ['active', 'no_show', 'cancelled'],
-            'active'    => ['paused', 'ended'],
-            'paused'    => ['active', 'ended'],
-            'ended'     => [],
-            'no_show'   => [],
+            'waiting' => ['active', 'no_show', 'cancelled'],
+            'active' => ['paused', 'ended'],
+            'paused' => ['active', 'ended'],
+            'ended' => [],
+            'no_show' => [],
             'cancelled' => [],
         ];
 
