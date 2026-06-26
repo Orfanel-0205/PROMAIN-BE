@@ -12,6 +12,7 @@ use App\Models\TelemedicineSession;
 use App\Models\TelemedicineSessionNote;
 use App\Services\Audit\AuditActions;
 use App\Services\Audit\AuditService;
+use App\Services\Notification\NotificationService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +22,8 @@ use Illuminate\Support\Str;
 class TelemedicineService
 {
     public function __construct(
-        private readonly AuditService $audit
+        private readonly AuditService $audit,
+        private readonly NotificationService $notifications
     ) {
     }
 
@@ -356,7 +358,7 @@ class TelemedicineService
                 'new_values'    => ['status' => $newStatus],
             ]);
 
-            return $session->fresh([
+            $freshSession = $session->fresh([
                 'request.residentProfile.user',
                 'request.residentProfile.barangay',
                 'request.rhu',
@@ -366,6 +368,12 @@ class TelemedicineService
                 'referrals',
                 'consultation',
             ]);
+
+            DB::afterCommit(function () use ($freshSession) {
+                $this->notifications->notifyTelemedicineSessionStatus($freshSession);
+            });
+
+            return $freshSession;
         });
     }
 

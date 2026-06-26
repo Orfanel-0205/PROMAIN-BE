@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Log;
 
 class ExpoPushService
 {
+    private const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
+
     public function sendToUser(
         int $userId,
         string $title,
@@ -49,8 +51,17 @@ class ExpoPushService
         array $data = [],
         string $channelId = 'queue-alerts'
     ): bool {
+        if (!$this->isExpoToken($token)) {
+            Log::warning('[ExpoPush] Invalid Expo token skipped.', [
+                'token_prefix' => substr($token, 0, 18),
+                'channelId' => $channelId,
+            ]);
+
+            return false;
+        }
+
         try {
-            $response = Http::timeout(5)->post('https://exp.host/--/api/v2/push/send', [
+            $payload = [
                 'to' => $token,
                 'sound' => 'default',
                 'title' => $title,
@@ -58,24 +69,80 @@ class ExpoPushService
                 'priority' => 'high',
                 'channelId' => $channelId,
                 'data' => $data,
-            ]);
+            ];
+
+            $response = Http::timeout(8)
+                ->acceptJson()
+                ->post(self::EXPO_PUSH_ENDPOINT, $payload);
 
             if (!$response->successful()) {
-                Log::warning('Expo push notification failed.', [
+                Log::warning('[ExpoPush] Expo endpoint returned failure.', [
                     'status' => $response->status(),
                     'body' => $response->body(),
+                    'channelId' => $channelId,
+                    'type' => $data['type'] ?? null,
                 ]);
 
                 return false;
             }
 
+            $responseData = $response->json();
+            $ticket = $responseData['data'] ?? [];
+
+            if (is_array($ticket) && array_key_exists(0, $ticket)) {
+                $ticket = $ticket[0] ?? [];
+            }
+
+            if (($ticket['status'] ?? null) === 'error') {
+                $errorCode = data_get($ticket, 'details.error')
+                    ?? ($ticket['message'] ?? 'expo_error');
+
+                Log::warning('[ExpoPush] Expo ticket rejected notification.', [
+                    'error' => $errorCode,
+                    'message' => $ticket['message'] ?? null,
+                    'channelId' => $channelId,
+                    'type' => $data['type'] ?? null,
+                ]);
+
+                if ($errorCode === 'DeviceNotRegistered') {
+                    $this->markTokenFailed($token, $errorCode);
+                }
+
+                return false;
+            }
+
+            Log::info('[ExpoPush] Push notification accepted by Expo.', [
+                'channelId' => $channelId,
+                'type' => $data['type'] ?? null,
+                'ticket_id' => $ticket['id'] ?? null,
+            ]);
+
             return true;
         } catch (\Throwable $e) {
-            Log::warning('Expo push notification exception.', [
+            Log::warning('[ExpoPush] Push notification exception.', [
                 'message' => $e->getMessage(),
+                'channelId' => $channelId,
+                'type' => $data['type'] ?? null,
             ]);
 
             return false;
         }
+    }
+
+    private function isExpoToken(string $token): bool
+    {
+        return str_starts_with($token, 'ExponentPushToken[')
+            || str_starts_with($token, 'ExpoPushToken[');
+    }
+
+    private function markTokenFailed(string $token, string $reason): void
+    {
+        UserDeviceToken::query()
+            ->where('token', $token)
+            ->update([
+                'is_active' => false,
+                'failed_at' => now(),
+                'failure_reason' => $reason,
+            ]);
     }
 }

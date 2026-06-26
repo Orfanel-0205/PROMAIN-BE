@@ -162,6 +162,8 @@ class NotificationController extends Controller
             'provider' => ['nullable', 'string', 'max:30'],
             'platform' => ['nullable', 'string', 'max:30'],
             'device_name' => ['nullable', 'string', 'max:150'],
+            'app_version' => ['nullable', 'string', 'max:40'],
+            'channel_id' => ['nullable', 'string', 'max:80'],
         ]);
 
         $token = $validated['expo_push_token'] ?? $validated['token'] ?? null;
@@ -183,8 +185,12 @@ class NotificationController extends Controller
                 'provider' => $validated['provider'] ?? 'expo',
                 'platform' => $validated['platform'] ?? null,
                 'device_name' => $validated['device_name'] ?? null,
+                'app_version' => $validated['app_version'] ?? null,
+                'channel_id' => $validated['channel_id'] ?? null,
                 'is_active' => true,
                 'last_seen_at' => now(),
+                'failed_at' => null,
+                'failure_reason' => null,
             ]
         );
 

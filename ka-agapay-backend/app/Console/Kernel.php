@@ -22,6 +22,11 @@ class Kernel extends ConsoleKernel
             $count = app(\App\Services\Prescription\PrescriptionService::class)->expireStale();
             logger()->info("Expired {$count} stale prescriptions.");
         })->dailyAt('00:05')->description('Expire stale prescriptions');
+
+        $schedule->command('followups:send-reminders')
+            ->dailyAt('08:00')
+            ->withoutOverlapping()
+            ->description('Send follow-up reminder push notifications');
     }
 
     /**

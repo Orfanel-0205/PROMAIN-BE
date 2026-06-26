@@ -31,8 +31,12 @@ class NotificationTypes
     public const TELE_SESSION_SCHEDULED = 'telemedicine_session_scheduled';
     public const TELE_SESSION_REMINDER = 'telemedicine_session_reminder';
     public const TELE_SESSION_STARTED = 'telemedicine_session_started';
+    public const TELEMEDICINE_CALLING = 'telemedicine_calling';
     public const TELE_SESSION_ENDED = 'telemedicine_session_ended';
     public const TELE_REFERRAL_ISSUED = 'telemedicine_referral_issued';
+
+    // Follow-ups
+    public const FOLLOWUP_REMINDER = 'followup_reminder';
 
     // Prescriptions
     public const PRESCRIPTION_ISSUED = 'prescription_issued';

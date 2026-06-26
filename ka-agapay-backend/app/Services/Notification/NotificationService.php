@@ -6,6 +6,7 @@ namespace App\Services\Notification;
 use App\Models\Announcement;
 use App\Models\Appointment;
 use App\Models\Event;
+use App\Models\FollowUpReminder;
 use App\Models\QueueTicket;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
@@ -401,6 +402,7 @@ class NotificationService
         $doctor = $session->assignedDoctor;
 
         $status = (string) $session->status;
+        $isCallingStatus = in_array($status, ['waiting', 'calling', 'live', 'active', 'started'], true);
 
         $title = match ($status) {
             'waiting' => 'Telemedicine room is open',
@@ -420,7 +422,13 @@ class NotificationService
             default => "Telemedicine session status is now {$status}.",
         };
 
-        foreach ([$resident, $doctor] as $user) {
+        if ($isCallingStatus && $resident) {
+            $this->notifyTelemedicineCalling($session);
+        }
+
+        $recipients = $isCallingStatus ? [$doctor] : [$resident, $doctor];
+
+        foreach ($recipients as $user) {
             if ($user) {
                 $this->notifyUser(
                     $user,
@@ -438,6 +446,97 @@ class NotificationService
                     '/telemedicine'
                 );
             }
+        }
+    }
+
+    public function notifyTelemedicineCalling(TelemedicineSession $session): array
+    {
+        $result = [
+            'database_created' => false,
+            'push_configured' => Schema::hasTable('user_device_tokens'),
+            'push_tokens' => 0,
+            'push_sent' => false,
+            'sound' => 'default',
+            'message' => 'Telemedicine calling notification was not sent.',
+        ];
+
+        try {
+            $session->loadMissing([
+                'request.residentProfile.user',
+                'request.rhu',
+            ]);
+
+            $resident = $session->request?->residentProfile?->user;
+
+            if (!$resident) {
+                $result['message'] = 'Telemedicine session has no linked resident account.';
+
+                return $result;
+            }
+
+            $request = $session->request;
+            $title = 'Telemedicine consultation is calling';
+            $message = 'Your RHU telemedicine consultation is ready. Tap to join.';
+            $payload = [
+                'type' => 'telemedicine_calling',
+                'screen' => 'telemedicine',
+                'telemedicine_session_id' => $session->id,
+                'session_id' => $session->id,
+                'telemedicine_request_id' => $request?->id,
+                'request_id' => $request?->id,
+                'rhu_id' => $request?->rhu_id,
+                'status' => $session->status,
+                'related_type' => 'telemedicine',
+                'related_id' => $session->id,
+            ];
+
+            $notificationId = $this->notifyUser(
+                $resident,
+                NotificationTypes::TELEMEDICINE_CALLING,
+                $title,
+                $message,
+                $payload,
+                '/telemedicine'
+            );
+
+            $result['database_created'] = (bool) $notificationId;
+
+            $userId = $this->userKey($resident);
+
+            if ($userId && Schema::hasTable('user_device_tokens')) {
+                $result['push_tokens'] = (int) UserDeviceToken::query()
+                    ->where('user_id', $userId)
+                    ->where('provider', 'expo')
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($result['push_tokens'] > 0) {
+                    $sent = app(ExpoPushService::class)->sendToUser(
+                        userId: $userId,
+                        title: $title,
+                        body: $message,
+                        data: $payload,
+                        channelId: 'telemedicine-calls'
+                    );
+
+                    $result['push_sent'] = $sent > 0;
+                }
+            }
+
+            $result['message'] = $result['push_sent']
+                ? 'Telemedicine calling push sent to patient.'
+                : ($result['database_created']
+                    ? 'Telemedicine calling in-app notification was created, but no active mobile push token was available.'
+                    : 'Telemedicine calling notification could not be stored.');
+
+            return $result;
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] Telemedicine calling notification failed.', [
+                'telemedicine_session_id' => $session->id ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $result;
         }
     }
 
@@ -491,7 +590,8 @@ class NotificationService
 
             $ticketNumber = $ticket->ticket_number ?? $ticket->queue_number ?? $ticket->id;
             $deskName = $this->serviceLabel((string) $ticket->service_type);
-            $message = "Your queue number {$ticketNumber} is now being called. Please proceed to {$deskName}.";
+            $title = 'Your queue number is being called';
+            $message = "Queue {$ticketNumber} is now being called. Please proceed to {$deskName}.";
             $payload = [
                 'type' => 'queue_called',
                 'queue_ticket_id' => $ticket->id,
@@ -508,7 +608,7 @@ class NotificationService
             $notificationId = $this->notifyUser(
                 $resident,
                 NotificationTypes::QUEUE_TICKET_CALLED,
-                'Queue number called',
+                $title,
                 $message,
                 $payload,
                 '/queue'
@@ -528,7 +628,7 @@ class NotificationService
                 if ($result['push_tokens'] > 0) {
                     $sent = app(ExpoPushService::class)->sendToUser(
                         userId: $userId,
-                        title: 'Queue number called',
+                        title: $title,
                         body: $message,
                         data: $payload,
                         channelId: 'queue-alerts'
@@ -548,6 +648,131 @@ class NotificationService
         } catch (\Throwable $e) {
             logger()->warning('[NotificationService] Queue called notification failed.', [
                 'queue_ticket_id' => $ticket->id ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $result;
+        }
+    }
+
+    public function notifyFollowUpReminder(FollowUpReminder $reminder, string $stage): array
+    {
+        $result = [
+            'database_created' => false,
+            'duplicate' => false,
+            'push_configured' => Schema::hasTable('user_device_tokens'),
+            'push_tokens' => 0,
+            'push_sent' => false,
+            'sound' => 'default',
+            'message' => 'Follow-up reminder notification was not sent.',
+        ];
+
+        try {
+            $reminder->loadMissing(['user', 'consultation', 'appointment']);
+
+            $resident = $reminder->user;
+
+            if (!$resident) {
+                $result['message'] = 'Follow-up reminder has no linked resident account.';
+
+                return $result;
+            }
+
+            $userId = $this->userKey($resident);
+
+            if (!$userId) {
+                $result['message'] = 'Follow-up reminder resident account has no usable user id.';
+
+                return $result;
+            }
+
+            $followUpDate = $reminder->follow_up_date?->toDateString()
+                ?? $reminder->follow_up_at?->toDateString()
+                ?? now()->toDateString();
+            $stage = $stage === 'day_of' ? 'day_of' : 'three_days_before';
+            $dedupeKey = "followup_reminder:{$reminder->id}:{$stage}:{$followUpDate}";
+
+            if ($this->notificationDedupeExists($userId, $dedupeKey)) {
+                $result['duplicate'] = true;
+                $result['message'] = 'Follow-up reminder already sent for this stage.';
+
+                return $result;
+            }
+
+            $title = $stage === 'day_of'
+                ? 'RHU follow-up today'
+                : 'Upcoming RHU follow-up';
+            $message = $stage === 'day_of'
+                ? 'Your RHU follow-up is scheduled today. Please check your consultation details.'
+                : "Your RHU follow-up is scheduled on {$followUpDate}. Please check your consultation details.";
+            $payload = [
+                'type' => 'followup_reminder',
+                'screen' => 'consultations',
+                'consultation_id' => $reminder->consultation_id,
+                'follow_up_id' => $reminder->id,
+                'appointment_id' => $reminder->appointment_id,
+                'reminder_stage' => $stage,
+                'follow_up_date' => $followUpDate,
+                'dedupe_key' => $dedupeKey,
+                'related_type' => 'follow_up',
+                'related_id' => $reminder->id,
+            ];
+
+            $notificationId = $this->notifyUser(
+                $resident,
+                NotificationTypes::FOLLOWUP_REMINDER,
+                $title,
+                $message,
+                $payload,
+                '/consultations'
+            );
+
+            $result['database_created'] = (bool) $notificationId;
+
+            if (!$notificationId && !$this->notificationDedupeExists($userId, $dedupeKey)) {
+                $notificationId = $this->storeNotificationDedupeRow(
+                    $userId,
+                    NotificationTypes::FOLLOWUP_REMINDER,
+                    $title,
+                    $message,
+                    $payload,
+                    '/consultations'
+                );
+
+                $result['database_created'] = (bool) $notificationId;
+            }
+
+            if (Schema::hasTable('user_device_tokens')) {
+                $result['push_tokens'] = (int) UserDeviceToken::query()
+                    ->where('user_id', $userId)
+                    ->where('provider', 'expo')
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($result['push_tokens'] > 0) {
+                    $sent = app(ExpoPushService::class)->sendToUser(
+                        userId: $userId,
+                        title: $title,
+                        body: $message,
+                        data: $payload,
+                        channelId: 'follow-up-reminders'
+                    );
+
+                    $result['push_sent'] = $sent > 0;
+                }
+            }
+
+            $result['message'] = $result['push_sent']
+                ? 'Follow-up reminder push sent to patient.'
+                : ($result['database_created']
+                    ? 'Follow-up reminder row was created, but no active mobile push token was available.'
+                    : 'Follow-up reminder could not be stored.');
+
+            return $result;
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] Follow-up reminder notification failed.', [
+                'follow_up_id' => $reminder->id ?? null,
+                'stage' => $stage,
                 'error' => $e->getMessage(),
             ]);
 
@@ -635,6 +860,76 @@ class NotificationService
             'bhw_assisted' => 'BHW Assisted',
             default => ucwords(str_replace(['_', '-'], ' ', $serviceType)),
         };
+    }
+
+    private function notificationDedupeExists(int $userId, string $dedupeKey): bool
+    {
+        if (!Schema::hasTable('notifications')) {
+            return false;
+        }
+
+        $query = DB::table('notifications')
+            ->where('type', NotificationTypes::FOLLOWUP_REMINDER)
+            ->where('notifiable_type', User::class)
+            ->where('notifiable_id', $userId);
+
+        $this->whereNotificationDataContains($query, $dedupeKey);
+
+        return $query->exists();
+    }
+
+    private function storeNotificationDedupeRow(
+        int $userId,
+        string $notificationType,
+        string $title,
+        string $message,
+        array $meta,
+        ?string $actionUrl = null
+    ): ?string {
+        if (!Schema::hasTable('notifications')) {
+            return null;
+        }
+
+        $notificationId = (string) Str::uuid();
+
+        DB::table('notifications')->insert([
+            'id' => $notificationId,
+            'type' => $notificationType,
+            'notifiable_type' => User::class,
+            'notifiable_id' => $userId,
+            'data' => json_encode([
+                'title' => $title,
+                'message' => $message,
+                'action_url' => $actionUrl,
+                'notification_type' => $notificationType,
+                ...$meta,
+            ]),
+            'read_at' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $notificationId;
+    }
+
+    private function whereNotificationDataContains($query, string $needle): void
+    {
+        $like = '%' . $needle . '%';
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'pgsql') {
+            $query->whereRaw('data::text LIKE ?', [$like]);
+
+            return;
+        }
+
+        if (in_array($driver, ['mysql', 'mariadb'], true)) {
+            $query->whereRaw('CAST(data AS CHAR) LIKE ?', [$like]);
+
+            return;
+        }
+
+        $query->where('data', 'like', $like);
     }
 
     private function allowsInApp(int $userId, string $notificationType): bool
