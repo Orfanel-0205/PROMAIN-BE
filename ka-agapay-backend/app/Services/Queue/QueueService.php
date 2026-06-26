@@ -169,7 +169,7 @@ class QueueService
      * Sync an approved appointment into the RHU queue.
      *
      * Called when an admin approves/schedules/confirms an appointment.
-     * - Routes strictly to appointment.rhu_id (RHU 1 vs RHU 2).
+     * - Routes strictly to the RHU1 appointment queue.
      * - Prevents duplicate tickets for the same appointment_id.
      * - If a ticket already exists for this appointment, it is updated (RHU/source).
      * - Otherwise a new ticket is issued via issueTicket() (counter, number,

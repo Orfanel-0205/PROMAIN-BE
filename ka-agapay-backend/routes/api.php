@@ -519,6 +519,7 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('ai')->group(function () {
+            Route::post('/triage',                  [AiController::class, 'triage']);
             Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
             Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);
             Route::get('/history',                   [AiController::class, 'history']);

@@ -170,7 +170,7 @@ class AppointmentController extends Controller
         ];
 
         if (Schema::hasColumn('appointments', 'rhu_id')) {
-            // The patient selects RHU 1 / RHU 2 when booking. If the app did not
+            // The patient selects the RHU1 queue when booking. If the app did not
             // send one, fall back to the resident's barangay so the appointment
             // still routes to a queue on approval.
             $rhuId = $validated['rhu_id'] ?? null;

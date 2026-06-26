@@ -29,10 +29,16 @@ class AiController extends Controller
 
         $telRequest = TelemedicineRequest::findOrFail($id);
         $score = $this->aiService->scoreTelemedicineRequest($telRequest);
+        $display = $this->triageDisplay(
+            (int) $score->ai_score,
+            (string) $score->recommended_urgency,
+            (array) $score->contributing_factors
+        );
 
         return response()->json([
             'message' => 'Triage scoring complete.',
             'data' => [
+                ...$display,
                 'ai_score' => $score->ai_score,
                 'recommended_urgency' => $score->recommended_urgency,
                 'contributing_factors' => $score->contributing_factors,
@@ -50,10 +56,16 @@ class AiController extends Controller
 
         $ticket = QueueTicket::findOrFail($id);
         $score = $this->aiService->scoreQueueTicket($ticket);
+        $display = $this->triageDisplay(
+            (int) $score->ai_score,
+            (string) $score->recommended_urgency,
+            (array) $score->contributing_factors
+        );
 
         return response()->json([
             'message' => 'Queue triage scoring complete.',
             'data' => [
+                ...$display,
                 'ai_score' => $score->ai_score,
                 'recommended_urgency' => $score->recommended_urgency,
                 'contributing_factors' => $score->contributing_factors,
@@ -61,6 +73,41 @@ class AiController extends Controller
                 'current_priority' => $ticket->priority_score,
                 'ai_adjustment' => $score->ai_score - (int) $ticket->priority_score,
             ],
+        ]);
+    }
+
+    public function triage(Request $request): JsonResponse
+    {
+        $this->authorizeAi($request);
+
+        $validated = $request->validate([
+            'age' => ['nullable', 'integer', 'min:0', 'max:130'],
+            'birthdate' => ['nullable', 'date'],
+            'sex_gender' => ['nullable', 'string', 'max:50'],
+            'is_senior' => ['nullable', 'boolean'],
+            'is_pwd' => ['nullable', 'boolean'],
+            'is_pregnant' => ['nullable', 'boolean'],
+            'is_pediatric' => ['nullable', 'boolean'],
+            'is_emergency' => ['nullable', 'boolean'],
+            'chief_complaint' => ['nullable', 'string', 'max:1000'],
+            'complaint' => ['nullable', 'string', 'max:1000'],
+            'service_type' => ['nullable', 'string', 'max:100'],
+            'program_type' => ['nullable', 'string', 'max:100'],
+            'appointment_type' => ['nullable', 'string', 'max:100'],
+            'barangay' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        if (!isset($validated['age']) && !empty($validated['birthdate'])) {
+            try {
+                $validated['age'] = now()->diffInYears($validated['birthdate']);
+            } catch (\Throwable) {
+                unset($validated['age']);
+            }
+        }
+
+        return response()->json([
+            'message' => 'AI triage priority classified.',
+            'data' => $this->aiService->scorePayload($validated),
         ]);
     }
 
@@ -358,6 +405,30 @@ class AiController extends Controller
         return 'There are ' . $count . ' upcoming RHU events. Highlights include: '
             . $firstEvents->implode('; ')
             . '. Tap Events to view full details and register if needed.';
+    }
+
+    private function triageDisplay(int $score, string $urgency, array $factors): array
+    {
+        $level = match (Str::lower($urgency)) {
+            'emergency', 'critical', 'urgent' => 'urgent',
+            'high' => 'high',
+            'moderate' => 'moderate',
+            default => $score >= 65 ? 'high' : ($score >= 35 ? 'moderate' : 'low'),
+        };
+
+        return [
+            'triage_level' => $level,
+            'priority_score' => $score,
+            'priority_label' => Str::of($level)->replace('_', ' ')->title() . ' Priority',
+            'reasons' => array_values($factors ?: ['Regular queue order']),
+            'recommended_action' => match ($level) {
+                'urgent' => 'Assess immediately and prepare emergency escalation if confirmed by RHU staff.',
+                'high' => 'Review earlier than regular queue after RHU staff validation.',
+                'moderate' => 'Monitor symptoms and consider earlier review if queue pressure allows.',
+                default => 'Proceed through regular queue order unless staff assessment changes priority.',
+            },
+            'staff_disclaimer' => AiTriageService::STAFF_DISCLAIMER,
+        ];
     }
 
     private function authorizeAi(Request $request): void

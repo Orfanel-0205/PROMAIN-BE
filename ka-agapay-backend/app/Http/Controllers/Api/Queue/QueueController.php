@@ -102,8 +102,8 @@ class QueueController extends Controller
      * - super_admin / mho: may view/filter ANY RHU (uses the requested rhu_id,
      *   or their own as a default).
      * - everyone else (RHU admin/staff/BHW): is HARD-LOCKED to their assigned
-     *   RHU. Any rhu_id they pass is ignored so RHU 1 staff can never read or
-     *   act on the RHU 2 queue.
+     *   RHU. Any rhu_id they pass is ignored so RHU1 staff remain scoped to
+     *   the RHU1 queue.
      */
     private function scopedRhuId(Request $request, ?int $requested): int
     {

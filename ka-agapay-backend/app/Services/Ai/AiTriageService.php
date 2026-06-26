@@ -12,6 +12,128 @@ use Illuminate\Support\Facades\Log;
 
 class AiTriageService
 {
+    public const STAFF_DISCLAIMER = 'AI triage is a support tool only. RHU staff must validate urgency and priority before final action.';
+
+    /**
+     * Deterministic, no-external-key triage for web/admin quick checks.
+     */
+    public function scorePayload(array $input): array
+    {
+        $score = 10;
+        $reasons = [];
+
+        $complaint = strtolower(trim((string) (
+            $input['chief_complaint']
+            ?? $input['complaint']
+            ?? $input['notes']
+            ?? ''
+        )));
+
+        $age = is_numeric($input['age'] ?? null) ? (int) $input['age'] : null;
+        $isSenior = (bool) ($input['is_senior'] ?? ($age !== null && $age >= 60));
+        $isPwd = (bool) ($input['is_pwd'] ?? false);
+        $isPregnant = (bool) ($input['is_pregnant'] ?? false);
+        $isChild = (bool) ($input['is_pediatric'] ?? ($age !== null && $age <= 12));
+        $isEmergency = (bool) ($input['is_emergency'] ?? false);
+
+        $urgentKeywords = [
+            'chest pain', 'pananakit ng dibdib', 'difficulty breathing',
+            'hirap huminga', 'severe bleeding', 'seizure', 'fainting',
+            'loss of consciousness', 'nahimatay', 'pregnancy emergency',
+            'severe dehydration', 'very high fever',
+        ];
+
+        $highKeywords = [
+            'severe pain', 'asthma', 'persistent vomiting', 'dehydration',
+            'nanghihina', 'high fever',
+        ];
+
+        $moderateKeywords = [
+            'fever', 'lagnat', 'cough', 'ubo', 'vomiting', 'pagsusuka',
+            'diarrhea', 'pagtatae', 'dizziness', 'hilo', 'wound', 'sugat',
+            'follow-up',
+        ];
+
+        if ($isEmergency || $this->containsAny($complaint, $urgentKeywords)) {
+            $score = max($score, 90);
+            $reasons[] = $isEmergency ? 'Emergency queue flag' : 'Complaint contains urgent symptoms';
+        }
+
+        if ($this->containsAny($complaint, $highKeywords)) {
+            $score = max($score, 70);
+            $reasons[] = 'Complaint contains high-priority symptoms';
+        }
+
+        if ($isSenior && $complaint !== '') {
+            $score = max($score, 65);
+            $reasons[] = 'Senior citizen with complaint';
+        }
+
+        if ($isPwd && $complaint !== '') {
+            $score = max($score, 65);
+            $reasons[] = 'PWD with complaint';
+        }
+
+        if ($isPregnant && $complaint !== '') {
+            $score = max($score, 70);
+            $reasons[] = 'Pregnant patient with complaint';
+        }
+
+        if ($isChild && str_contains($complaint, 'fever')) {
+            $score = max($score, 70);
+            $reasons[] = 'Child with fever';
+        }
+
+        if (
+            (str_contains($complaint, 'fever') || str_contains($complaint, 'lagnat')) &&
+            (str_contains($complaint, 'breath') || str_contains($complaint, 'hirap huminga'))
+        ) {
+            $score = max($score, 85);
+            $reasons[] = 'Fever with breathing symptoms';
+        }
+
+        if ($this->containsAny($complaint, $moderateKeywords)) {
+            $score = max($score, 45);
+            $reasons[] = 'Complaint contains symptoms needing earlier review';
+        }
+
+        if ($complaint === '' || $this->containsAny($complaint, ['general inquiry', 'certificate', 'routine follow-up', 'program registration'])) {
+            $score = min($score, 25);
+            $reasons[] = $complaint === '' ? 'No urgent complaint provided' : 'Low-acuity administrative or routine concern';
+        }
+
+        $score = min(100, max(0, $score));
+        $level = match (true) {
+            $score >= 85 => 'urgent',
+            $score >= 65 => 'high',
+            $score >= 35 => 'moderate',
+            default => 'low',
+        };
+
+        $label = match ($level) {
+            'urgent' => 'Urgent priority',
+            'high' => 'High priority',
+            'moderate' => 'Moderate priority',
+            default => 'Low priority',
+        };
+
+        $action = match ($level) {
+            'urgent' => 'Assess immediately and prepare emergency escalation if confirmed by RHU staff.',
+            'high' => 'Review earlier than regular queue after RHU staff validation.',
+            'moderate' => 'Monitor symptoms and consider earlier review if queue pressure allows.',
+            default => 'Proceed through regular queue order unless staff assessment changes priority.',
+        };
+
+        return [
+            'triage_level' => $level,
+            'priority_score' => $score,
+            'priority_label' => $label,
+            'reasons' => array_values(array_unique($reasons ?: ['Regular queue order'])),
+            'recommended_action' => $action,
+            'staff_disclaimer' => self::STAFF_DISCLAIMER,
+        ];
+    }
+
     /**
      * Score a telemedicine request.
      * This is the "AI-integrated optimization" component of the thesis.
@@ -117,6 +239,7 @@ class AiTriageService
         return DB::transaction(function () use ($ticket) {
             $inputPayload = [
                 'service_type'    => $ticket->service_type,
+                'chief_complaint' => $ticket->notes,
                 'is_emergency'    => $ticket->is_emergency,
                 'is_senior'       => $ticket->is_senior,
                 'is_pregnant'     => $ticket->is_pregnant,
@@ -271,14 +394,30 @@ class AiTriageService
         if ($input['is_senior'])       { $score += 3;  $factors[] = 'senior_bonus'; }
         if ($input['is_bhw_endorsed']) { $score += 2;  $factors[] = 'bhw_endorsed_bonus'; }
 
+        $payload = $this->scorePayload($input);
+        $score = max($score, (int) $payload['priority_score']);
+        $factors = array_values(array_unique([...$factors, ...$payload['reasons']]));
+
         $score = min($score, 100);
 
         $urgency = match(true) {
-            $score >= 60 => 'emergency',
-            $score >= 30 => 'urgent',
-            default      => 'routine',
+            $score >= 85 => 'urgent',
+            $score >= 65 => 'high',
+            $score >= 35 => 'moderate',
+            default      => 'low',
         };
 
         return [$score, $urgency, $factors, 0.7500];
+    }
+
+    private function containsAny(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if ($needle !== '' && str_contains($haystack, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
