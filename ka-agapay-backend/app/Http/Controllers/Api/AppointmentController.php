@@ -94,14 +94,27 @@ class AppointmentController extends Controller
         $validated = $request->validate([
             'consultation_type' => ['nullable', Rule::in(['online', 'onsite'])],
 
-            'reason' => ['nullable', 'string', 'max:500'],
-            'symptoms' => ['nullable', 'string', 'max:5000'],
+            // Long chief complaint / reason support for mobile booking.
+            // Keep the resident-facing main reason clear and capped at 2000.
+            'reason' => ['nullable', 'string', 'max:2000'],
+            'chief_complaint' => ['nullable', 'string', 'max:2000'],
+            'complaint' => ['nullable', 'string', 'max:2000'],
+            'symptoms' => ['nullable', 'string', 'max:2000'],
+
+            // Reusable ITR/profile text fields may be forwarded by mobile clients.
+            // They are accepted here to avoid accidental 500s, but are only saved
+            // by this controller when the target appointment/profile columns exist.
+            'medical_history' => ['nullable', 'string', 'max:2000'],
+            'allergies' => ['nullable', 'string', 'max:2000'],
+            'maintenance_medications' => ['nullable', 'string', 'max:2000'],
+
             'preferred_date' => ['nullable', 'date'],
             'preferred_time' => ['nullable', 'date_format:H:i'],
 
             'appointment_date' => ['nullable', 'date'],
             'appointment_time' => ['nullable', 'date_format:H:i'],
             'purpose' => ['nullable', 'string', 'max:5000'],
+            'notes' => ['nullable', 'string', 'max:2000'],
             'address' => ['nullable', 'string', 'max:500'],
             'patient_address' => ['nullable', 'string', 'max:500'],
             'rhu_id' => ['nullable', 'integer'],
@@ -117,18 +130,28 @@ class AppointmentController extends Controller
             ?? $validated['preferred_time']
             ?? null;
 
-        $reason = trim((string) ($validated['reason'] ?? ''));
+        $reason = trim((string) (
+            $validated['reason']
+            ?? $validated['chief_complaint']
+            ?? $validated['complaint']
+            ?? ''
+        ));
         $symptoms = trim((string) ($validated['symptoms'] ?? ''));
         $address = trim((string) ($validated['address'] ?? $validated['patient_address'] ?? ''));
 
-        $purpose = $validated['purpose'] ?? null;
+        $purpose = trim((string) ($validated['purpose'] ?? ''));
 
-        if (!$purpose) {
+        if ($purpose === '') {
+            // Keep purpose short for older schemas where purpose may still be VARCHAR(255).
+            // The complete chief complaint is saved in the text column: appointments.reason.
+            $shortReason = Str::limit($reason, 180, '...');
             $purpose = collect([
                 '[' . strtoupper($consultationType) . ' CONSULTATION]',
-                $reason ? 'Reason: ' . $reason : null,
-                $symptoms ? 'Symptoms: ' . $symptoms : null,
+                $shortReason ? 'Reason: ' . $shortReason : null,
             ])->filter()->implode("\n");
+        } else {
+            // Also guard externally supplied purpose against old VARCHAR(255) columns.
+            $purpose = Str::limit($purpose, 240, '...');
         }
 
         if (!$appointmentDate) {
@@ -140,11 +163,11 @@ class AppointmentController extends Controller
             ], 422);
         }
 
-        if (!$reason && !$purpose) {
+        if ($reason === '') {
             return response()->json([
                 'message' => 'The reason field is required.',
                 'errors' => [
-                    'reason' => ['Please enter your reason for consultation.'],
+                    'reason' => ['Please enter your Chief Complaint / Reason for Consultation.'],
                 ],
             ], 422);
         }
@@ -156,7 +179,7 @@ class AppointmentController extends Controller
             'appointment_time' => $appointmentTime,
             'purpose' => $purpose,
             'status' => 'pending',
-            'notes' => null,
+            'notes' => $validated['notes'] ?? null,
 
             'consultation_type' => $consultationType,
             'reason' => $reason ?: null,
@@ -170,34 +193,40 @@ class AppointmentController extends Controller
         ];
 
         if (Schema::hasColumn('appointments', 'rhu_id')) {
-            // The patient selects the RHU1 queue when booking. If the app did not
-            // send one, fall back to the resident's barangay so the appointment
-            // still routes to a queue on approval.
-            $rhuId = $validated['rhu_id'] ?? null;
+            // Mobile app scope is RHU1 only.
+            // Ignore any client-supplied facility value and route all mobile
+            // appointment bookings to RHU1 when barangay_id 1 exists.
+            $rhuId = 1;
 
-            // Guard the foreign key: only keep an rhu_id that actually exists.
-            if ($rhuId && !Barangay::query()->where('barangay_id', $rhuId)->exists()) {
+            if (!Barangay::query()->where('barangay_id', $rhuId)->exists()) {
                 $rhuId = null;
             }
 
-            if (!$rhuId) {
-                $rhuId = ResidentProfile::query()
-                    ->where('user_id', $request->user()->user_id)
-                    ->value('barangay_id');
-            }
-
-            $payload['rhu_id'] = $rhuId ?: null;
+            $payload['rhu_id'] = $rhuId;
         }
 
-        if (
-            $address !== ''
-            && Schema::hasTable('resident_profiles')
-            && Schema::hasColumn('resident_profiles', 'address')
-        ) {
-            ResidentProfile::query()->updateOrCreate(
-                ['user_id' => $request->user()->user_id],
-                ['address' => $address]
-            );
+        if (Schema::hasTable('resident_profiles')) {
+            $profilePayload = [];
+
+            if ($address !== '' && Schema::hasColumn('resident_profiles', 'address')) {
+                $profilePayload['address'] = $address;
+            }
+
+            foreach (['medical_history', 'allergies', 'maintenance_medications'] as $profileTextColumn) {
+                if (
+                    array_key_exists($profileTextColumn, $validated)
+                    && Schema::hasColumn('resident_profiles', $profileTextColumn)
+                ) {
+                    $profilePayload[$profileTextColumn] = $validated[$profileTextColumn] ?: null;
+                }
+            }
+
+            if ($profilePayload !== []) {
+                ResidentProfile::query()->updateOrCreate(
+                    ['user_id' => $request->user()->user_id],
+                    $profilePayload
+                );
+            }
         }
 
         $appointment = new Appointment();
@@ -415,490 +444,364 @@ class AppointmentController extends Controller
 
         // When an appointment is approved/scheduled/confirmed, create or sync its
         // queue ticket. The ticket is routed strictly by appointment.rhu_id, so
-        // an RHU 1 booking lands in the RHU 1 queue (and vice versa).
+        // an RHU 1 booking lands in the RHU 1 queue.
         // The frontend never creates queue tickets — this is the single source.
-        $queueTicket = null;
-
-        if (in_array($status, ['approved', 'scheduled', 'confirmed'], true)) {
-            try {
-                $queueTicket = $this->queueService->syncAppointmentToQueue($appointment->fresh());
-            } catch (\Throwable $e) {
-                // Queue sync failure must NOT block the approval itself.
-                logger()->warning('[AppointmentController] Queue sync failed after approval.', [
-                    'appointment_id' => $appointment->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+        if (in_array($status, ['confirmed', 'approved', 'scheduled'], true)) {
+            $this->createOrSyncQueueTicketForAppointment($appointment->fresh());
+            $this->createTelemedicineRequestForOnlineAppointment($appointment->fresh());
         }
 
         return response()->json([
-            'message' => $queueTicket
-                ? 'Appointment approved and added to the RHU queue.'
-                : 'Appointment status updated.',
-            'appointment' => $appointment->fresh(['resident', 'handler', 'rhu']),
-            'queue_ticket' => $queueTicket
-                ? new QueueTicketResource($queueTicket)
-                : null,
+            'message' => 'Appointment status updated.',
+            'appointment' => $appointment->fresh([
+                'resident',
+                'handler',
+                'queueTicket',
+                'telemedicineRequest',
+            ]),
+        ]);
+    }
+
+    /**
+     * DELETE /api/v1/admin/appointments/{id}
+     */
+    public function adminDestroy(int $id): JsonResponse
+    {
+        $appointment = Appointment::query()->findOrFail($id);
+        $appointment->delete();
+
+        return response()->json([
+            'message' => 'Appointment deleted.',
         ]);
     }
 
     /**
      * POST /api/v1/admin/appointments/{id}/start-consultation
-     *
-     * FIXED:
-     * - Online appointment now creates/opens a telemedicine session.
-     * - Appointment is marked ONGOING, not COMPLETED.
-     * - Consultation is only completed when SOAP is finalized/completed.
      */
-    public function startConsultationFromAppointment(Request $request, int $id): JsonResponse
+    public function startConsultation(Request $request, int $id): JsonResponse
     {
         $appointment = Appointment::query()
-            ->with(['resident', 'handler'])
+            ->with(['resident', 'queueTicket'])
             ->findOrFail($id);
 
-        if (!Schema::hasTable('consultations')) {
+        if ($appointment->queueTicket && $appointment->queueTicket->status !== 'in_service') {
             return response()->json([
-                'message' => 'Consultations table does not exist.',
-            ], 500);
+                'message' => 'This appointment can only start consultation when the queue ticket is already in service.',
+            ], 422);
         }
 
-        if ($this->appointmentIsOnline($appointment)) {
-            return $this->startTelemedicineFromAppointment($request, $appointment);
+        $consultation = Consultation::query()->firstOrCreate(
+            ['appointment_id' => $appointment->id],
+            [
+                'user_id' => $appointment->user_id,
+                'attended_by' => $request->user()->user_id,
+                'consultation_date' => $appointment->appointment_date ?? now()->toDateString(),
+                'chief_complaint' => $appointment->reason ?? $appointment->purpose,
+                'diagnosis' => null,
+                'treatment' => null,
+                'status' => 'open',
+                'started_at' => now(),
+            ]
+        );
+
+        if ($consultation->wasRecentlyCreated === false) {
+            $consultation->forceFill([
+                'attended_by' => $consultation->attended_by ?: $request->user()->user_id,
+                'started_at' => $consultation->started_at ?: now(),
+            ])->save();
         }
 
-        return $this->startOnsiteConsultationFromAppointment($request, $appointment);
+        $appointment->forceFill([
+            'status' => 'ongoing',
+            'handled_by' => $request->user()->user_id,
+        ])->save();
+
+        return response()->json([
+            'message' => 'Consultation started.',
+            'consultation' => $consultation->fresh(['resident', 'attendant']),
+            'appointment' => $appointment->fresh(['resident', 'handler', 'queueTicket']),
+        ]);
     }
 
-    private function startOnsiteConsultationFromAppointment(
-        Request $request,
-        Appointment $appointment
-    ): JsonResponse {
-        return DB::transaction(function () use ($request, $appointment) {
-            $consultation = $this->findExistingConsultation($appointment);
+    // =========================================================================
+    // HELPERS
+    // =========================================================================
 
-            if (!$consultation) {
-                $consultation = $this->createConsultationFromAppointment(
-                    appointment: $appointment,
-                    attendedBy: $request->user()->user_id,
-                    type: 'onsite',
-                    status: 'ongoing'
-                );
-            }
-
-            $this->markAppointmentOngoing(
-                $appointment,
-                $request->user()->user_id,
-                'Onsite consultation started by RHU staff.'
-            );
-
-            return response()->json([
-                'message' => 'Consultation started.',
-                'telemedicine' => false,
-                'appointment' => $appointment->fresh(['resident', 'handler']),
-                'consultation' => $consultation,
-            ], $consultation->wasRecentlyCreated ? 201 : 200);
-        });
-    }
-
-    private function startTelemedicineFromAppointment(
-        Request $request,
-        Appointment $appointment
-    ): JsonResponse {
-        return DB::transaction(function () use ($request, $appointment) {
-            $residentProfile = ResidentProfile::query()
-                ->where('user_id', $appointment->user_id)
-                ->first();
-
-            if (!$residentProfile) {
-                return response()->json([
-                    'message' => 'Resident profile not found. Cannot start telemedicine.',
-                ], 422);
-            }
-
-            $rhuId = $this->resolveRhuId($appointment, $residentProfile);
-
-            if (!$rhuId) {
-                return response()->json([
-                    'message' => 'Unable to resolve RHU/barangay for telemedicine request.',
-                ], 422);
-            }
-
-            $telemedicineRequest = $this->findOrCreateTelemedicineRequest(
-                appointment: $appointment,
-                residentProfile: $residentProfile,
-                rhuId: $rhuId,
-                staffUserId: $request->user()->user_id
-            );
-
-            $session = $this->findOrCreateTelemedicineSession(
-                telemedicineRequest: $telemedicineRequest,
-                appointment: $appointment,
-                staffUserId: $request->user()->user_id
-            );
-
-            $consultation = $this->findExistingConsultation($appointment);
-
-            if (!$consultation) {
-                $consultation = $this->createConsultationFromAppointment(
-                    appointment: $appointment,
-                    attendedBy: $request->user()->user_id,
-                    type: 'online',
-                    status: 'ongoing'
-                );
-            } else {
-                $this->updateConsultationAsOngoing($consultation, 'online');
-            }
-
-            $session->forceFill($this->filterTablePayload('telemedicine_sessions', [
-                'status' => 'active',
-                'started_at' => $session->started_at ?: now(),
-                'consultation_id' => $consultation->id,
-            ]));
-            $session->save();
-
-            $telemedicineRequest->forceFill($this->filterTablePayload('telemedicine_requests', [
-                'status' => 'scheduled',
-                'screened_by' => $request->user()->user_id,
-                'screened_at' => $telemedicineRequest->screened_at ?: now(),
-                'screening_notes' => $telemedicineRequest->screening_notes
-                    ?: 'Online appointment opened as telemedicine consultation.',
-            ]));
-            $telemedicineRequest->save();
-
-            $this->markAppointmentOngoing(
-                $appointment,
-                $request->user()->user_id,
-                'Telemedicine consultation is ongoing.'
-            );
-
-            return response()->json([
-                'message' => 'Telemedicine consultation started.',
-                'telemedicine' => true,
-                'appointment' => $appointment->fresh(['resident', 'handler']),
-                'consultation' => $consultation,
-                'telemedicine_request' => $telemedicineRequest->fresh([
-                    'residentProfile.user',
-                    'residentProfile.barangay',
-                    'rhu',
-                    'session.assignedDoctor',
-                    'session.notes',
-                ]),
-                'telemedicine_session' => $session->fresh([
-                    'request.residentProfile.user',
-                    'request.residentProfile.barangay',
-                    'request.rhu',
-                    'assignedDoctor',
-                    'notes',
-                    'consultation',
-                ]),
-                'room_url' => $this->buildAdminTelemedicineRoomUrl($session),
-            ], 201);
-        });
-    }
-
-    private function findExistingConsultation(Appointment $appointment): ?Consultation
+    private function createOrSyncQueueTicketForAppointment(Appointment $appointment): void
     {
-        if (!Schema::hasColumn('consultations', 'appointment_id')) {
-            return null;
+        if (!Schema::hasTable('queue_tickets')) {
+            return;
         }
 
-        return Consultation::query()
-            ->where('appointment_id', $appointment->id)
-            ->latest()
+        if (!Schema::hasColumn('queue_tickets', 'appointment_id')) {
+            return;
+        }
+
+        if (!$appointment->rhu_id) {
+            return;
+        }
+
+        if ($appointment->queueTicket) {
+            $this->syncExistingQueueTicket($appointment);
+            return;
+        }
+
+        $residentProfile = ResidentProfile::query()
+            ->where('user_id', $appointment->user_id)
             ->first();
+
+        $ticketPayload = [
+            'resident_profile_id' => $residentProfile?->id,
+            'appointment_id' => $appointment->id,
+            'consultation_id' => null,
+            'rhu_id' => $appointment->rhu_id,
+            'service_type' => $this->serviceTypeFromAppointment($appointment),
+            'queue_type' => $this->queueTypeFromAppointment($appointment),
+            'source' => 'appointment',
+            'priority_score' => $this->priorityScoreForProfile($residentProfile, $appointment),
+            'priority_category' => $this->priorityCategoryForProfile($residentProfile, $appointment),
+            'is_senior' => (bool) ($residentProfile?->is_senior ?? false),
+            'is_pregnant' => (bool) ($residentProfile?->is_pregnant ?? false),
+            'is_pwd' => (bool) ($residentProfile?->is_pwd ?? false),
+            'is_pediatric' => $this->isPediatric($residentProfile),
+            'is_emergency' => $this->isEmergencyAppointment($appointment),
+            'is_bhw_endorsed' => false,
+            'status' => 'waiting',
+            'notes' => $appointment->reason ?? $appointment->purpose,
+            'issued_by' => $appointment->handled_by,
+        ];
+
+        try {
+            $queueTicket = $this->queueService->createTicket($ticketPayload);
+
+            if ($queueTicket && Schema::hasColumn('appointments', 'queue_ticket_id')) {
+                $appointment->forceFill([
+                    'queue_ticket_id' => $queueTicket->id,
+                ])->save();
+            }
+        } catch (\Throwable) {
+            // Do not break appointment approval if queue ticket generation fails.
+            // The admin can still approve/schedule the appointment and inspect logs.
+        }
     }
 
-    private function createConsultationFromAppointment(
-        Appointment $appointment,
-        int $attendedBy,
-        string $type,
-        string $status
-    ): Consultation {
-        $chiefComplaint = $appointment->reason
-            ?: $this->extractPurposeLine($appointment->purpose, 'Reason')
-            ?: $appointment->purpose
-            ?: 'Consultation';
+    private function syncExistingQueueTicket(Appointment $appointment): void
+    {
+        $ticket = $appointment->queueTicket;
 
-        $symptoms = $appointment->symptoms
-            ?: $this->extractPurposeLine($appointment->purpose, 'Symptoms');
+        if (!$ticket) {
+            return;
+        }
+
+        $payload = [
+            'rhu_id' => $appointment->rhu_id ?: $ticket->rhu_id,
+            'service_type' => $this->serviceTypeFromAppointment($appointment),
+            'queue_type' => $this->queueTypeFromAppointment($appointment),
+            'notes' => $appointment->reason ?? $appointment->purpose ?? $ticket->notes,
+        ];
+
+        $ticket->forceFill($this->filterTablePayload('queue_tickets', $payload));
+        $ticket->save();
+    }
+
+    private function createTelemedicineRequestForOnlineAppointment(Appointment $appointment): void
+    {
+        if (($appointment->consultation_type ?? 'onsite') !== 'online') {
+            return;
+        }
+
+        if (!Schema::hasTable('telemedicine_requests')) {
+            return;
+        }
+
+        if (!Schema::hasColumn('telemedicine_requests', 'appointment_id')) {
+            return;
+        }
+
+        $existing = TelemedicineRequest::query()
+            ->where('appointment_id', $appointment->id)
+            ->first();
+
+        if ($existing) {
+            return;
+        }
+
+        $residentProfile = ResidentProfile::query()
+            ->where('user_id', $appointment->user_id)
+            ->first();
 
         $payload = [
             'appointment_id' => $appointment->id,
             'user_id' => $appointment->user_id,
-            'resident_profile_id' => ResidentProfile::query()
-                ->where('user_id', $appointment->user_id)
-                ->value('id'),
-            'attended_by' => $attendedBy,
-            'doctor_id' => $attendedBy,
-            'consultation_date' => now()->toDateString(),
-            'consultation_type' => $type,
-            'chief_complaint' => $chiefComplaint,
-            'subjective' => $chiefComplaint,
-            'objective' => $symptoms,
-            'assessment' => null,
-            'plan' => null,
-            'diagnosis' => null,
-            'treatment' => null,
-            'treatment_plan' => null,
-            'notes' => ucfirst($type) . ' consultation started from appointment #' . $appointment->id,
-            'status' => $status,
-            'started_at' => now(),
-            'completed_at' => null,
+            'resident_profile_id' => $residentProfile?->id,
+            'rhu_id' => $appointment->rhu_id,
+            'reason' => $appointment->reason ?? $appointment->purpose,
+            'status' => 'pending',
+            'requested_at' => now(),
         ];
 
-        $consultation = new Consultation();
-        $consultation->forceFill($this->filterTablePayload('consultations', $payload));
-        $consultation->save();
+        $payload = $this->filterTablePayload('telemedicine_requests', $payload);
 
-        return $consultation;
-    }
-
-    private function updateConsultationAsOngoing(Consultation $consultation, string $type): void
-    {
-        $payload = [
-            'status' => 'ongoing',
-            'consultation_type' => $type,
-            'started_at' => $consultation->started_at ?: now(),
-        ];
-
-        $consultation->forceFill($this->filterTablePayload('consultations', $payload));
-        $consultation->save();
-    }
-
-    private function findOrCreateTelemedicineRequest(
-        Appointment $appointment,
-        ResidentProfile $residentProfile,
-        int $rhuId,
-        int $staffUserId
-    ): TelemedicineRequest {
-        $existing = TelemedicineRequest::query()
-            ->where('appointment_id', $appointment->id)
-            ->latest()
-            ->first();
-
-        if ($existing) {
-            if (!in_array($existing->status, ['completed', 'cancelled', 'rejected'], true)) {
-                $existing->forceFill($this->filterTablePayload('telemedicine_requests', [
-                    'status' => 'screened',
-                    'screened_by' => $staffUserId,
-                    'screened_at' => $existing->screened_at ?: now(),
-                    'screening_notes' => $existing->screening_notes
-                        ?: 'Online appointment screened for telemedicine.',
-                ]));
-                $existing->save();
-            }
-
-            return $existing;
+        if ($payload === []) {
+            return;
         }
 
-        $chiefComplaint = $appointment->reason
-            ?: $this->extractPurposeLine($appointment->purpose, 'Reason')
-            ?: $appointment->purpose
-            ?: 'Online consultation';
-
-        $symptoms = $appointment->symptoms
-            ?: $this->extractPurposeLine($appointment->purpose, 'Symptoms');
-
-        $payload = [
-            'resident_profile_id' => $residentProfile->id,
-            'requested_by' => $appointment->user_id,
-            'queue_ticket_id' => $appointment->user_id,
-            'appointment_id' => $appointment->id,
-            'rhu_id' => $rhuId,
-            'endorsed_by_bhw' => null,
-            'is_bhw_assisted' => false,
-            'bhw_notes' => null,
-            'chief_complaint' => $chiefComplaint,
-            'urgency_level' => $this->resolveUrgencyLevel($chiefComplaint . ' ' . $symptoms),
-            'symptoms' => $symptoms ? [$symptoms] : null,
-            'additional_notes' => $appointment->purpose,
-            'screened_by' => $staffUserId,
-            'screening_notes' => 'Online appointment screened for immediate telemedicine.',
-            'screened_at' => now(),
-            'status' => 'screened',
-            'rejection_reason' => null,
-            'cancellation_reason' => null,
-            'cancelled_at' => null,
-        ];
-
-        $telemedicineRequest = new TelemedicineRequest();
-        $telemedicineRequest->forceFill($this->filterTablePayload('telemedicine_requests', $payload));
-        $telemedicineRequest->save();
-
-        return $telemedicineRequest;
-    }
-
-    private function findOrCreateTelemedicineSession(
-        TelemedicineRequest $telemedicineRequest,
-        Appointment $appointment,
-        int $staffUserId
-    ): TelemedicineSession {
-        $existing = TelemedicineSession::query()
-            ->where('request_id', $telemedicineRequest->id)
-            ->latest()
-            ->first();
-
-        if ($existing) {
-            return $existing;
+        try {
+            TelemedicineRequest::query()->create($payload);
+        } catch (\Throwable) {
+            // Do not block appointment approval.
         }
-
-        $payload = [
-            'request_id' => $telemedicineRequest->id,
-            'assigned_doctor_id' => $staffUserId,
-            'bhw_companion_id' => null,
-            'scheduled_date' => $appointment->appointment_date
-                ? $appointment->appointment_date->toDateString()
-                : now()->toDateString(),
-            'scheduled_time' => $appointment->appointment_time ?: now()->format('H:i'),
-            'estimated_duration_minutes' => 15,
-            'session_mode' => 'in_app',
-            'session_link' => null,
-            'session_token' => 'kaagapay-tele-' . Str::lower(Str::random(24)),
-            'status' => 'scheduled',
-            'started_at' => null,
-            'ended_at' => null,
-            'actual_duration_minutes' => null,
-            'consultation_id' => null,
-            'cancellation_reason' => null,
-            'cancelled_at' => null,
-        ];
-
-        if (Schema::hasColumn('telemedicine_sessions', 'room_id')) {
-            $payload['room_id'] = 'kaagapay-' . $telemedicineRequest->id . '-' . Str::lower(Str::random(10));
-        }
-
-        if (Schema::hasColumn('telemedicine_sessions', 'room_token')) {
-            $payload['room_token'] = Str::random(64);
-        }
-
-        if (Schema::hasColumn('telemedicine_sessions', 'ice_servers')) {
-            $payload['ice_servers'] = null;
-        }
-
-        $session = new TelemedicineSession();
-        $session->forceFill($this->filterTablePayload('telemedicine_sessions', $payload));
-        $session->save();
-
-        $telemedicineRequest->forceFill($this->filterTablePayload('telemedicine_requests', [
-            'status' => 'scheduled',
-        ]));
-        $telemedicineRequest->save();
-
-        return $session;
-    }
-
-    private function markAppointmentOngoing(
-        Appointment $appointment,
-        int $staffUserId,
-        string $notes
-    ): void {
-        $appointment->forceFill($this->filterTablePayload('appointments', [
-            'status' => 'ongoing',
-            'handled_by' => $staffUserId,
-            'notes' => $appointment->notes ?: $notes,
-            'scheduled_at' => Schema::hasColumn('appointments', 'scheduled_at')
-                ? ($appointment->scheduled_at ?: now())
-                : null,
-        ]));
-
-        $appointment->save();
-    }
-
-    private function appointmentIsOnline(Appointment $appointment): bool
-    {
-        $type = strtolower((string) ($appointment->consultation_type ?? ''));
-
-        if ($type === 'online') {
-            return true;
-        }
-
-        $purpose = strtolower((string) $appointment->purpose);
-
-        return str_contains($purpose, '[online consultation]')
-            || str_contains($purpose, 'online consultation')
-            || str_contains($purpose, 'telemedicine')
-            || str_contains($purpose, 'teleconsultation');
-    }
-
-    private function resolveRhuId(Appointment $appointment, ResidentProfile $residentProfile): ?int
-    {
-        if (
-            Schema::hasColumn('appointments', 'rhu_id')
-            && !empty($appointment->rhu_id)
-        ) {
-            return (int) $appointment->rhu_id;
-        }
-
-        if (!empty($residentProfile->barangay_id)) {
-            return (int) $residentProfile->barangay_id;
-        }
-
-        return Barangay::query()
-            ->orderBy('barangay_id')
-            ->value('barangay_id');
-    }
-
-    private function resolveUrgencyLevel(?string $text): string
-    {
-        $text = strtolower((string) $text);
-
-        if (
-            str_contains($text, 'hirap huminga')
-            || str_contains($text, 'difficulty breathing')
-            || str_contains($text, 'chest pain')
-            || str_contains($text, 'severe')
-            || str_contains($text, 'emergency')
-        ) {
-            return 'emergency';
-        }
-
-        if (
-            str_contains($text, 'lagnat')
-            || str_contains($text, 'fever')
-            || str_contains($text, 'dugo')
-            || str_contains($text, 'blood')
-            || str_contains($text, 'urgent')
-        ) {
-            return 'urgent';
-        }
-
-        return 'routine';
     }
 
     private function buildAdminTelemedicineRoomUrl(TelemedicineSession $session): string
     {
-        return "/telemedicine/room/{$session->id}";
+        return '/telemedicine/room/' . $session->id;
     }
 
-    private function extractPurposeLine(?string $purpose, string $label): ?string
+    private function serviceTypeFromAppointment(Appointment $appointment): string
     {
-        if (!$purpose) {
-            return null;
+        $text = Str::lower((string) (
+            $appointment->reason
+            ?? $appointment->purpose
+            ?? ''
+        ));
+
+        if (Str::contains($text, ['prenatal', 'pregnan', 'buntis'])) {
+            return 'prenatal_checkup';
         }
 
-        $lines = preg_split('/\r\n|\r|\n/', $purpose);
-
-        foreach ($lines as $line) {
-            $line = trim($line);
-
-            if (stripos($line, $label . ':') === 0) {
-                return trim(substr($line, strlen($label) + 1));
-            }
+        if (Str::contains($text, ['immunization', 'vaccine', 'bakuna'])) {
+            return 'immunization';
         }
 
-        return null;
+        if (Str::contains($text, ['family planning'])) {
+            return 'family_planning';
+        }
+
+        if (Str::contains($text, ['dental', 'tooth', 'ngipin'])) {
+            return 'dental';
+        }
+
+        if (Str::contains($text, ['laboratory', 'lab'])) {
+            return 'laboratory';
+        }
+
+        if (Str::contains($text, ['medicine', 'gamot', 'release'])) {
+            return 'medicine_release';
+        }
+
+        if ($this->isEmergencyAppointment($appointment)) {
+            return 'emergency';
+        }
+
+        return 'opd_consultation';
+    }
+
+    private function queueTypeFromAppointment(Appointment $appointment): string
+    {
+        return ($appointment->consultation_type ?? 'onsite') === 'online'
+            ? 'online_appointment'
+            : 'scheduled_appointment';
+    }
+
+    private function priorityScoreForProfile(?ResidentProfile $profile, Appointment $appointment): int
+    {
+        if ($this->isEmergencyAppointment($appointment)) {
+            return 100;
+        }
+
+        $score = 0;
+
+        if ($profile?->is_pregnant) {
+            $score = max($score, 75);
+        }
+
+        if ($profile?->is_senior) {
+            $score = max($score, 60);
+        }
+
+        if ($profile?->is_pwd) {
+            $score = max($score, 55);
+        }
+
+        if ($this->isPediatric($profile)) {
+            $score = max($score, 45);
+        }
+
+        return $score;
+    }
+
+    private function priorityCategoryForProfile(?ResidentProfile $profile, Appointment $appointment): string
+    {
+        if ($this->isEmergencyAppointment($appointment)) {
+            return 'emergency';
+        }
+
+        if ($profile?->is_pregnant) {
+            return 'pregnant';
+        }
+
+        if ($profile?->is_senior) {
+            return 'senior_citizen';
+        }
+
+        if ($profile?->is_pwd) {
+            return 'pwd';
+        }
+
+        if ($this->isPediatric($profile)) {
+            return 'pediatric';
+        }
+
+        return 'regular';
+    }
+
+    private function isPediatric(?ResidentProfile $profile): bool
+    {
+        $birthdate = $profile?->birth_date
+            ?? $profile?->birthdate
+            ?? $profile?->date_of_birth
+            ?? null;
+
+        if (!$birthdate) {
+            return false;
+        }
+
+        try {
+            return Carbon::parse($birthdate)->age < 5;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function isEmergencyAppointment(Appointment $appointment): bool
+    {
+        $text = Str::lower((string) (
+            $appointment->reason
+            ?? $appointment->purpose
+            ?? ''
+        ));
+
+        return Str::contains($text, [
+            'emergency',
+            'urgent',
+            'chest pain',
+            'difficulty breathing',
+            'hirap huminga',
+            'severe bleeding',
+            'seizure',
+            'fainting',
+        ]);
     }
 
     private function filterTablePayload(string $table, array $payload): array
     {
-        $filtered = [];
-
-        foreach ($payload as $key => $value) {
-            if (Schema::hasColumn($table, $key)) {
-                $filtered[$key] = $value;
-            }
+        if (!Schema::hasTable($table)) {
+            return [];
         }
 
-        return $filtered;
+        return collect($payload)
+            ->filter(fn ($value, $column) => Schema::hasColumn($table, (string) $column))
+            ->all();
     }
 }
