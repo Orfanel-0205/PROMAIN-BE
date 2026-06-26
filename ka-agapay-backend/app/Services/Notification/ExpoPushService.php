@@ -6,6 +6,7 @@ namespace App\Services\Notification;
 use App\Models\UserDeviceToken;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class ExpoPushService
 {
@@ -137,12 +138,20 @@ class ExpoPushService
 
     private function markTokenFailed(string $token, string $reason): void
     {
+        $values = [
+            'is_active' => false,
+        ];
+
+        if (Schema::hasColumn('user_device_tokens', 'failed_at')) {
+            $values['failed_at'] = now();
+        }
+
+        if (Schema::hasColumn('user_device_tokens', 'failure_reason')) {
+            $values['failure_reason'] = $reason;
+        }
+
         UserDeviceToken::query()
             ->where('token', $token)
-            ->update([
-                'is_active' => false,
-                'failed_at' => now(),
-                'failure_reason' => $reason,
-            ]);
+            ->update($values);
     }
 }

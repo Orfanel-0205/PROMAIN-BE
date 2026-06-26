@@ -14,18 +14,13 @@ class UserDeviceToken extends Model
         'provider',
         'platform',
         'device_name',
-        'app_version',
-        'channel_id',
         'is_active',
         'last_seen_at',
-        'failed_at',
-        'failure_reason',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
         'last_seen_at' => 'datetime',
-        'failed_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

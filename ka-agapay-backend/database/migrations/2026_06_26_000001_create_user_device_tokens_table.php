@@ -20,12 +20,8 @@ return new class extends Migration
             $table->string('provider', 30)->default('expo');
             $table->string('platform', 30)->nullable();
             $table->string('device_name', 150)->nullable();
-            $table->string('app_version', 40)->nullable();
-            $table->string('channel_id', 80)->nullable();
             $table->boolean('is_active')->default(true);
             $table->timestamp('last_seen_at')->nullable();
-            $table->timestamp('failed_at')->nullable();
-            $table->string('failure_reason', 255)->nullable();
             $table->timestamps();
 
             $table->index(['user_id', 'provider', 'is_active']);

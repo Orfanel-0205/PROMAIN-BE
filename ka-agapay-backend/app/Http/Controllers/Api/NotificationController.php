@@ -10,6 +10,8 @@ use App\Models\UserDeviceToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class NotificationController extends Controller
 {
@@ -156,8 +158,20 @@ class NotificationController extends Controller
 
     public function storeDeviceToken(Request $request): JsonResponse
     {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        $request->merge([
+            'token' => $request->input('token') ?: $request->input('expo_push_token'),
+        ]);
+
         $validated = $request->validate([
-            'token' => ['nullable', 'string', 'max:255'],
+            'token' => ['required', 'string', 'max:255'],
             'expo_push_token' => ['nullable', 'string', 'max:255'],
             'provider' => ['nullable', 'string', 'max:30'],
             'platform' => ['nullable', 'string', 'max:30'],
@@ -166,37 +180,78 @@ class NotificationController extends Controller
             'channel_id' => ['nullable', 'string', 'max:80'],
         ]);
 
-        $token = $validated['expo_push_token'] ?? $validated['token'] ?? null;
+        $token = $validated['token'];
+        $provider = $validated['provider'] ?? 'expo';
+        $platform = $validated['platform'] ?? null;
+        $userId = $this->userKey($user);
 
-        if (!$token) {
-            return response()->json([
-                'message' => 'Device token is required.',
-            ], 422);
-        }
+        Log::info('[Push] device token endpoint hit', [
+            'user_id' => $userId,
+            'provider' => $provider,
+            'platform' => $platform,
+            'token_prefix' => substr($token, 0, 18),
+        ]);
 
-        $userId = $this->userKey($request->user());
-
-        $deviceToken = UserDeviceToken::updateOrCreate(
-            [
-                'token' => $token,
-            ],
-            [
+        try {
+            $values = [
                 'user_id' => $userId,
-                'provider' => $validated['provider'] ?? 'expo',
-                'platform' => $validated['platform'] ?? null,
+                'provider' => $provider,
+                'platform' => $platform,
                 'device_name' => $validated['device_name'] ?? null,
-                'app_version' => $validated['app_version'] ?? null,
-                'channel_id' => $validated['channel_id'] ?? null,
                 'is_active' => true,
                 'last_seen_at' => now(),
-                'failed_at' => null,
-                'failure_reason' => null,
-            ]
-        );
+            ];
+
+            $deviceToken = UserDeviceToken::updateOrCreate(
+                ['token' => $token],
+                $values
+            );
+
+            $optionalValues = [];
+
+            if (Schema::hasColumn('user_device_tokens', 'app_version')) {
+                $optionalValues['app_version'] = $validated['app_version'] ?? null;
+            }
+
+            if (Schema::hasColumn('user_device_tokens', 'channel_id')) {
+                $optionalValues['channel_id'] = $validated['channel_id'] ?? null;
+            }
+
+            if (Schema::hasColumn('user_device_tokens', 'failed_at')) {
+                $optionalValues['failed_at'] = null;
+            }
+
+            if (Schema::hasColumn('user_device_tokens', 'failure_reason')) {
+                $optionalValues['failure_reason'] = null;
+            }
+
+            if ($optionalValues !== []) {
+                $deviceToken->forceFill($optionalValues)->save();
+                $deviceToken->refresh();
+            }
+
+            Log::info('[Push] device token saved', [
+                'user_id' => $userId,
+                'provider' => $provider,
+                'platform' => $platform,
+                'token_prefix' => substr($token, 0, 18),
+                'device_token_id' => $deviceToken->id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[Push] device token save failed', [
+                'user_id' => $userId,
+                'provider' => $provider,
+                'platform' => $platform,
+                'token_prefix' => substr($token, 0, 18),
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
 
         return response()->json([
             'message' => 'Device token saved.',
-            'data' => $deviceToken,
+            'device_token' => $deviceToken,
         ]);
     }
 
