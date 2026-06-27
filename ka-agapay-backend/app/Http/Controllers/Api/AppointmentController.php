@@ -446,6 +446,7 @@ class AppointmentController extends Controller
                 'consultation',
                 'queueTicket',
                 'telemedicineRequest.session',
+                'latestFollowUp',
             ])
             ->orderByRaw("
                 CASE status
@@ -523,15 +524,19 @@ class AppointmentController extends Controller
     }
 
     /**
-     * Apply the completed-record board visibility policy to the admin list.
+     * Board routing for the admin appointment list. Nothing is ever deleted —
+     * this only controls which board a record shows on.
      *
-     * board=active (default): hides archived + completed records whose
-     *   board_visible_until has passed, UNLESS a pending follow-up keeps them.
-     * board=completed: recent completed records (within report retention window).
-     * board=history: completed/closed records, including archived.
-     * board=all: no visibility filtering (raw list).
-     *
-     * Never deletes anything — only changes what the ACTIVE board shows.
+     * board=active (default): ONLY records that still need action
+     *   (pending/confirmed/approved/scheduled/ongoing). Closed records
+     *   (completed/cancelled/rejected) leave the active board IMMEDIATELY — even
+     *   when they have a follow-up. The follow-up stays visible in the Health
+     *   Follow-up workflow, so the active board is never used to store closed
+     *   visits.
+     * board=completed: completed records within the report-retention window.
+     * board=cancelled: cancelled + rejected records.
+     * board=history: all closed records (completed/cancelled/rejected), incl. archived.
+     * board=all: no board filtering (raw list).
      */
     private function applyAppointmentBoardFilter(\Illuminate\Database\Eloquent\Builder $query, Request $request): void
     {
@@ -539,9 +544,7 @@ class AppointmentController extends Controller
         $includeArchived = filter_var($request->query('include_archived', false), FILTER_VALIDATE_BOOLEAN);
 
         $hasArchived = Schema::hasColumn('appointments', 'archived_at');
-        $hasBoardUntil = Schema::hasColumn('appointments', 'board_visible_until');
         $hasCompletedAt = Schema::hasColumn('appointments', 'completed_at');
-        $hasFollowUps = Schema::hasTable('follow_up_reminders');
 
         if ($hasCompletedAt && $request->filled('completed_from')) {
             $query->whereDate('completed_at', '>=', $request->query('completed_from'));
@@ -574,39 +577,25 @@ class AppointmentController extends Controller
             return;
         }
 
+        if ($board === 'cancelled' || $board === 'rejected' || $board === 'closed') {
+            $query->whereIn('status', ['cancelled', 'rejected']);
+
+            return;
+        }
+
         if ($board === 'history') {
             $query->whereIn('status', ['completed', 'cancelled', 'rejected']);
 
             return;
         }
 
-        // Default: ACTIVE board.
+        // Default: ACTIVE board — only actionable statuses. Closed records are
+        // excluded by status, immediately, regardless of follow-ups.
+        $query->whereIn('status', self::ACTIVE_STATUSES);
+
         if ($hasArchived && !$includeArchived) {
             $query->whereNull('archived_at');
         }
-
-        $query->where(function ($outer) use ($hasBoardUntil, $hasFollowUps) {
-            // Keep everything that is not a completed record...
-            $outer->where('status', '!=', 'completed');
-
-            // ...plus completed records still inside their board window...
-            if ($hasBoardUntil) {
-                $outer->orWhereNull('board_visible_until')
-                    ->orWhere('board_visible_until', '>=', now());
-            } else {
-                $outer->orWhere('status', 'completed');
-            }
-
-            // ...plus completed records that still have a pending follow-up.
-            if ($hasFollowUps) {
-                $outer->orWhereExists(function ($sub) {
-                    $sub->selectRaw('1')
-                        ->from('follow_up_reminders')
-                        ->whereColumn('follow_up_reminders.appointment_id', 'appointments.id')
-                        ->whereIn('follow_up_reminders.status', ['pending', 'scheduled']);
-                });
-            }
-        });
     }
 
     /**

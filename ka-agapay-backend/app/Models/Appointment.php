@@ -72,4 +72,14 @@ class Appointment extends Model
     {
         return $this->hasOne(QueueTicket::class, 'appointment_id');
     }
+
+    /**
+     * Most recent follow-up reminder linked to this appointment. Lets the board
+     * show a "Has follow-up" indicator without the closed appointment having to
+     * stay on the active board.
+     */
+    public function latestFollowUp(): HasOne
+    {
+        return $this->hasOne(FollowUpReminder::class, 'appointment_id')->latestOfMany();
+    }
 }
