@@ -3,7 +3,9 @@
 
 namespace App\Http\Requests\Queue;
 
+use App\Support\Rhu;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class IssueQueueTicketRequest extends FormRequest
 {
@@ -31,13 +33,13 @@ class IssueQueueTicketRequest extends FormRequest
                 'exists:resident_profiles,id',
             ],
 
-            // IMPORTANT:
-            // Your queue_tickets.rhu_id references barangays.barangay_id,
-            // not barangays.id.
+            // RHU is a FACILITY id (1 or 2). It is optional here because the
+            // controller forces it through the scoped resolver so staff cannot
+            // issue tickets to another RHU by spoofing the payload.
             'rhu_id' => [
-                'required',
+                'nullable',
                 'integer',
-                'exists:barangays,barangay_id',
+                Rule::in(Rhu::IDS),
             ],
 
             'service_type' => [
@@ -76,8 +78,7 @@ class IssueQueueTicketRequest extends FormRequest
             'resident_profile_id.required' => 'Please select a resident profile.',
             'resident_profile_id.exists'   => 'The specified resident profile does not exist.',
 
-            'rhu_id.required' => 'Please select an RHU.',
-            'rhu_id.exists'   => 'The specified RHU is not recognized.',
+            'rhu_id.in' => 'The specified RHU is not recognized.',
 
             'service_type.required' => 'Please select a service type.',
             'service_type.in'       => 'The selected service type is not available.',

@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\Queue\QueueService;
 use App\Services\Telemedicine\WebRtcService;
 use App\Support\BoardVisibility;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -171,7 +172,9 @@ class AppointmentController extends Controller
 
             'purpose' => ['nullable', 'string', 'max:5000'],
 
-            'rhu_id' => ['nullable', 'integer', 'exists:barangays,barangay_id'],
+            // RHU is a FACILITY id (1 or 2), not a barangay id. It is optional —
+            // the resident's RHU is derived from their barangay when omitted.
+            'rhu_id' => ['nullable', 'integer', Rule::in(Rhu::IDS)],
             'urgency_level' => ['nullable', Rule::in(['routine', 'urgent', 'emergency'])],
         ]);
 
@@ -234,17 +237,15 @@ class AppointmentController extends Controller
             ], 422);
         }
 
-        $rhuId = $validated['rhu_id'] ?? $this->resolveRhuIdFromUser($user);
+        // Resolve the resident's REAL barangay (kept on the profile) and derive
+        // the FACILITY RHU (1 or 2) from it. The appointment stores the facility
+        // rhu_id — never a barangay id.
+        $barangayId = $this->resolveResidentBarangayId($user);
 
-        if (!$rhuId || !Barangay::query()->where('barangay_id', $rhuId)->exists()) {
-            $rhuId = Barangay::query()->orderBy('barangay_id')->value('barangay_id');
-        }
-
-        if (!$rhuId) {
-            return response()->json([
-                'message' => 'RHU target could not be determined. Please seed barangays or update the user barangay.',
-            ], 422);
-        }
+        $rhuId = Rhu::deriveRhuIdFromBarangayId($barangayId)
+            ?? Rhu::normalizeRhuId($validated['rhu_id'] ?? null)
+            ?? Rhu::resolveRhuIdFromUser($user)
+            ?? Rhu::DEFAULT_ID;
 
         // Block a duplicate only for the SAME date + SAME consultation type while it
         // is still active. This lets a resident keep one online and one onsite
@@ -274,7 +275,8 @@ class AppointmentController extends Controller
             ], 409);
         }
 
-        if ($appointmentTime && !$this->slotHasCapacity($appointmentDate, $appointmentTime, null)) {
+        // Slot capacity is PER RHU — RHU 1 and RHU 2 have independent limits.
+        if ($appointmentTime && !$this->slotHasCapacity($appointmentDate, $appointmentTime, null, (int) $rhuId)) {
             return response()->json([
                 'message' => 'Selected appointment time is already full. Please choose another time.',
                 'errors' => [
@@ -292,9 +294,11 @@ class AppointmentController extends Controller
             $reason,
             $symptoms,
             $urgencyLevel,
-            $rhuId
+            $rhuId,
+            $barangayId
         ) {
-            $residentProfile = $this->ensureResidentProfile($user, (int) $rhuId);
+            // Store the REAL barangay on the profile (NOT the facility rhu).
+            $residentProfile = $this->ensureResidentProfile($user, (int) ($barangayId ?: 0));
 
             $appointment = Appointment::create([
                 'user_id' => $user->user_id,
@@ -471,6 +475,28 @@ class AppointmentController extends Controller
             $query->whereDate('appointment_date', $request->query('date'));
         }
 
+        // RHU scoping: global staff (super_admin/mho) may filter by rhu_id or see
+        // all; every other staff role is HARD-LOCKED to their assigned RHU.
+        $requestedRhu = $request->query('rhu_id');
+        $requestedRhu = ($requestedRhu === null || $requestedRhu === '' || $requestedRhu === 'all')
+            ? null
+            : (int) $requestedRhu;
+
+        $effectiveRhu = Rhu::filterRhuId($request->user(), $requestedRhu);
+
+        if ($effectiveRhu !== null) {
+            if ($effectiveRhu === Rhu::DEFAULT_ID) {
+                // RHU 1 also owns legacy/unmapped rows from the pre-RHU2 era.
+                $query->where(function ($q) {
+                    $q->where('rhu_id', Rhu::DEFAULT_ID)
+                        ->orWhereNull('rhu_id')
+                        ->orWhereNotIn('rhu_id', Rhu::IDS);
+                });
+            } else {
+                $query->where('rhu_id', $effectiveRhu);
+            }
+        }
+
         if ($request->filled('search')) {
             $search = trim((string) $request->query('search'));
 
@@ -584,9 +610,33 @@ class AppointmentController extends Controller
     }
 
     /**
+     * Block non-global staff from touching another RHU's appointment.
+     * Legacy rows (null / non-1-2 rhu_id) are treated as RHU 1.
+     */
+    private function guardAppointmentRhu(Request $request, Appointment $appointment): ?JsonResponse
+    {
+        $user = $request->user();
+
+        if (Rhu::isGlobalScope($user)) {
+            return null;
+        }
+
+        $userRhu = Rhu::resolveRhuIdFromUser($user) ?? Rhu::DEFAULT_ID;
+        $apptRhu = Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0)) ?? Rhu::DEFAULT_ID;
+
+        if ($apptRhu !== $userRhu) {
+            return response()->json([
+                'message' => 'This appointment belongs to a different RHU. You can only manage your assigned RHU.',
+            ], 403);
+        }
+
+        return null;
+    }
+
+    /**
      * GET /api/v1/admin/appointments/{id}
      */
-    public function adminShow(int $id): JsonResponse
+    public function adminShow(Request $request, int $id): JsonResponse
     {
         $appointment = Appointment::query()
             ->with([
@@ -598,6 +648,10 @@ class AppointmentController extends Controller
                 'telemedicineRequest.session',
             ])
             ->findOrFail($id);
+
+        if ($denied = $this->guardAppointmentRhu($request, $appointment)) {
+            return $denied;
+        }
 
         return response()->json([
             'appointment' => $appointment,
@@ -619,6 +673,10 @@ class AppointmentController extends Controller
                 'telemedicineRequest.session',
             ])
             ->findOrFail($id);
+
+        if ($denied = $this->guardAppointmentRhu($request, $appointment)) {
+            return $denied;
+        }
 
         $validated = $request->validate([
             'status' => ['required', Rule::in(self::ADMIN_ALLOWED_STATUSES)],
@@ -655,7 +713,7 @@ class AppointmentController extends Controller
                 ], 422);
             }
 
-            if ($targetTime && !$this->slotHasCapacity($targetDate, $targetTime, $appointment->id)) {
+            if ($targetTime && !$this->slotHasCapacity($targetDate, $targetTime, $appointment->id, Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0)))) {
                 return response()->json([
                     'message' => 'Selected appointment time is already full. Please choose another time.',
                     'errors' => [
@@ -739,6 +797,10 @@ class AppointmentController extends Controller
             return response()->json([
                 'message' => 'Appointment not found.',
             ], 404);
+        }
+
+        if ($denied = $this->guardAppointmentRhu($request, $appointment)) {
+            return $denied;
         }
 
         $status = strtolower(trim((string) $appointment->status));
@@ -841,6 +903,10 @@ class AppointmentController extends Controller
                 'telemedicineRequest.session',
             ])
             ->findOrFail($id);
+
+        if ($denied = $this->guardAppointmentRhu($request, $appointment)) {
+            return $denied;
+        }
 
         if (in_array($appointment->status, ['cancelled', 'rejected'], true)) {
             return response()->json([
@@ -984,7 +1050,9 @@ class AppointmentController extends Controller
                     'requested_by' => $appointment->user_id,
                     'queue_ticket_id' => $queueTicketId,
                     'appointment_id' => $appointment->id,
-                    'rhu_id' => (int) ($appointment->rhu_id ?: $residentProfile->barangay_id ?: 1),
+                    'rhu_id' => Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0))
+                        ?? Rhu::deriveRhuIdFromBarangayId((int) ($residentProfile->barangay_id ?? 0))
+                        ?? Rhu::DEFAULT_ID,
 
                     'endorsed_by_bhw' => null,
                     'is_bhw_assisted' => false,
@@ -1020,7 +1088,10 @@ class AppointmentController extends Controller
                     $telemedicineRequest->update([
                         'resident_profile_id' => $telemedicineRequest->resident_profile_id ?: $residentProfile->id,
                         'queue_ticket_id' => $telemedicineRequest->queue_ticket_id ?: $queueTicketId,
-                        'rhu_id' => $telemedicineRequest->rhu_id ?: (int) ($appointment->rhu_id ?: $residentProfile->barangay_id ?: 1),
+                        'rhu_id' => $telemedicineRequest->rhu_id
+                            ?: (Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0))
+                                ?? Rhu::deriveRhuIdFromBarangayId((int) ($residentProfile->barangay_id ?? 0))
+                                ?? Rhu::DEFAULT_ID),
                         'screened_by' => $telemedicineRequest->screened_by ?: $staffId,
                         'screening_notes' => $telemedicineRequest->screening_notes ?: 'Opened directly from approved online appointment.',
                         'screened_at' => $telemedicineRequest->screened_at ?: now(),
@@ -1369,7 +1440,7 @@ class AppointmentController extends Controller
         return null;
     }
 
-    private function slotHasCapacity(?string $date, ?string $time, ?int $ignoreAppointmentId): bool
+    private function slotHasCapacity(?string $date, ?string $time, ?int $ignoreAppointmentId, ?int $rhuId = null): bool
     {
         if (!$date || !$time) {
             return true;
@@ -1385,6 +1456,11 @@ class AppointmentController extends Controller
             ->whereDate('appointment_date', $date)
             ->where('appointment_time', $time)
             ->whereIn('status', ['confirmed', 'approved', 'scheduled']);
+
+        // Capacity is counted PER RHU so RHU 1 and RHU 2 never block each other.
+        if ($rhuId !== null && $rhuId > 0) {
+            $query->where('rhu_id', $rhuId);
+        }
 
         if ($ignoreAppointmentId) {
             $query->where('id', '!=', $ignoreAppointmentId);
@@ -1510,47 +1586,70 @@ class AppointmentController extends Controller
         }
     }
 
-    private function resolveRhuIdFromUser(User $user): ?int
+    /**
+     * The resident's REAL barangay id (from their profile, or by name lookup).
+     * Used to derive the facility RHU and to persist on the profile.
+     */
+    private function resolveResidentBarangayId(User $user): ?int
     {
-        $existingProfile = ResidentProfile::where('user_id', $user->user_id)->first();
+        $profile = ResidentProfile::where('user_id', $user->user_id)->first();
 
-        if ($existingProfile && $existingProfile->barangay_id) {
-            return (int) $existingProfile->barangay_id;
+        if ($profile && (int) $profile->barangay_id > 0) {
+            return (int) $profile->barangay_id;
         }
 
-        if (!empty($user->barangay) && is_numeric($user->barangay)) {
-            return (int) $user->barangay;
+        $barangayName = trim((string) ($user->barangay ?? ''));
+
+        if ($barangayName !== '') {
+            $barangayId = (int) Barangay::query()
+                ->whereRaw('LOWER(name) = ?', [mb_strtolower($barangayName)])
+                ->value('barangay_id');
+
+            if ($barangayId > 0) {
+                return $barangayId;
+            }
         }
 
-        $firstBarangayId = Barangay::query()
-            ->orderBy('barangay_id')
-            ->value('barangay_id');
-
-        return $firstBarangayId ? (int) $firstBarangayId : null;
+        return null;
     }
 
-    private function ensureResidentProfile(User $user, int $rhuId): ResidentProfile
+    /**
+     * The resident's FACILITY RHU id (1 or 2), derived from their barangay.
+     */
+    private function resolveRhuIdFromUser(User $user): ?int
+    {
+        return Rhu::resolveRhuIdFromUser($user);
+    }
+
+    /**
+     * Ensure a resident profile exists. $barangayId is the REAL barangay id and
+     * is only written when it is a valid (> 0) barangay — never a facility rhu.
+     */
+    private function ensureResidentProfile(User $user, int $barangayId): ResidentProfile
     {
         $profile = ResidentProfile::where('user_id', $user->user_id)->first();
 
         if ($profile) {
-            if (!$profile->barangay_id) {
-                $profile->update([
-                    'barangay_id' => $rhuId,
-                ]);
+            if (!$profile->barangay_id && $barangayId > 0) {
+                $profile->update(['barangay_id' => $barangayId]);
             }
 
             return $profile->refresh();
         }
 
-        return ResidentProfile::create([
+        $payload = [
             'user_id' => $user->user_id,
-            'barangay_id' => $rhuId,
             'birth_date' => $user->birthday ?? null,
             'sex' => $user->sex ?? null,
             'address' => $user->barangay ?? null,
             'philhealth_no' => null,
-        ]);
+        ];
+
+        if ($barangayId > 0) {
+            $payload['barangay_id'] = $barangayId;
+        }
+
+        return ResidentProfile::create($payload);
     }
 
     private function getResidentAge(ResidentProfile $residentProfile): ?int

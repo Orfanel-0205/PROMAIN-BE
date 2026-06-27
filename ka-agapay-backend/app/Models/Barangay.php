@@ -14,6 +14,7 @@ class Barangay extends Model
         'latitude',
         'longitude',
         'population',
+        'rhu_id',
     ];
 
     protected function casts(): array
@@ -22,6 +23,7 @@ class Barangay extends Model
             'latitude'   => 'decimal:8',
             'longitude'  => 'decimal:8',
             'population' => 'integer',
+            'rhu_id'     => 'integer',
         ];
     }
 

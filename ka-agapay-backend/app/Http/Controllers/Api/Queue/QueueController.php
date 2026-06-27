@@ -11,6 +11,7 @@ use App\Http\Resources\Queue\QueueTicketResource;
 use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use App\Services\Queue\QueueService;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -57,75 +58,35 @@ class QueueController extends Controller
         return (int) $userId;
     }
 
+    /**
+     * The FACILITY RHU id (1 or 2) for the current request. Never returns a
+     * barangay id — residents are mapped to their facility via barangays.rhu_id.
+     */
     private function defaultRhuId(Request $request): int
     {
-        $inputRhuId = $request->integer('rhu_id');
-
-        if ($inputRhuId > 0) {
-            return $inputRhuId;
-        }
-
-        $user = $request->user();
-
-        $userRhuId = (int) (
-            $user?->rhu_id
-            ?? $user?->barangay_id
-            ?? 0
-        );
-
-        if ($userRhuId > 0) {
-            return $userRhuId;
-        }
-
-        $userId = $this->getUserIdFromRequest($request);
-
-        if ($userId && Schema::hasTable('resident_profiles')) {
-            $residentBarangayId = DB::table('resident_profiles')
-                ->where('user_id', $userId)
-                ->value('barangay_id');
-
-            if ((int) $residentBarangayId > 0) {
-                return (int) $residentBarangayId;
-            }
-        }
-
-        $firstBarangayId = DB::table('barangays')
-            ->orderBy('barangay_id')
-            ->value('barangay_id');
-
-        return (int) ($firstBarangayId ?: 1);
+        return Rhu::normalizeRhuId($request->integer('rhu_id'))
+            ?? Rhu::resolveRhuIdFromUser($request->user())
+            ?? Rhu::DEFAULT_ID;
     }
 
     /**
-     * Resolve the RHU a request is actually allowed to touch.
+     * Resolve the RHU a request is actually allowed to touch (always 1 or 2).
      *
-     * - super_admin / mho: may view/filter ANY RHU (uses the requested rhu_id,
+     * - super_admin / mho: may operate on ANY RHU (uses the requested rhu_id,
      *   or their own as a default).
      * - everyone else (RHU admin/staff/BHW): is HARD-LOCKED to their assigned
-     *   RHU. Any rhu_id they pass is ignored so RHU1 staff remain scoped to
-     *   the RHU1 queue.
+     *   RHU. Any rhu_id they pass is ignored so RHU 1 staff stay on the RHU 1
+     *   queue and RHU 2 staff stay on the RHU 2 queue.
      */
     private function scopedRhuId(Request $request, ?int $requested): int
     {
-        $user = $request->user();
-        $requested = ($requested && $requested > 0) ? $requested : null;
-
-        if ($user && $user->isGlobalRhuScope()) {
-            return (int) ($requested ?? $this->defaultRhuId($request));
-        }
-
-        $assigned = $user ? (int) ($user->effectiveRhuId() ?? 0) : 0;
-
-        if ($assigned > 0) {
-            return $assigned;
-        }
-
-        return (int) ($requested ?? $this->defaultRhuId($request));
+        return Rhu::scopeRhuId($request->user(), $requested);
     }
 
     private function resolveBarangayIdFromUser(object $user): ?int
     {
-        $direct = $user->barangay_id ?? $user->rhu_id ?? null;
+        // Only a real barangay id — never a facility rhu_id.
+        $direct = $user->barangay_id ?? null;
 
         if ($direct) {
             return (int) $direct;
@@ -322,7 +283,16 @@ class QueueController extends Controller
 
     public function issue(IssueQueueTicketRequest $request): JsonResponse
     {
-        $ticket = $this->queueService->issueTicket($request->validated());
+        $data = $request->validated();
+
+        // SECURITY: force the RHU through the scoped resolver so non-global staff
+        // can never issue a ticket to another RHU by changing the payload.
+        $data['rhu_id'] = $this->scopedRhuId(
+            $request,
+            isset($data['rhu_id']) ? (int) $data['rhu_id'] : null
+        );
+
+        $ticket = $this->queueService->issueTicket($data);
 
         return response()->json([
             'message' => 'Queue ticket issued successfully.',
@@ -470,7 +440,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('barangays', 'barangay_id'),
+                Rule::in(Rhu::IDS),
             ],
             'service_type' => [
                 'nullable',
@@ -509,7 +479,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('barangays', 'barangay_id'),
+                Rule::in(Rhu::IDS),
             ],
             'service_type' => [
                 'nullable',
@@ -546,7 +516,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('barangays', 'barangay_id'),
+                Rule::in(Rhu::IDS),
             ],
             'service_type' => [
                 'nullable',
@@ -579,7 +549,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('barangays', 'barangay_id'),
+                Rule::in(Rhu::IDS),
             ],
             'date' => [
                 'nullable',

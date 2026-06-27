@@ -272,17 +272,23 @@ class QueueService
 
     private function resolveAppointmentRhuId(Appointment $appointment, ResidentProfile $resident): ?int
     {
+        // Prefer the appointment's facility RHU (1 or 2).
         if (Schema::hasColumn('appointments', 'rhu_id') && !empty($appointment->rhu_id)) {
-            return (int) $appointment->rhu_id;
+            $apptRhu = \App\Support\Rhu::normalizeRhuId((int) $appointment->rhu_id);
+
+            if ($apptRhu) {
+                return $apptRhu;
+            }
         }
 
-        if (!empty($resident->barangay_id)) {
-            return (int) $resident->barangay_id;
+        // Otherwise derive the facility RHU from the resident's barangay.
+        $derived = \App\Support\Rhu::deriveRhuIdFromBarangayId((int) ($resident->barangay_id ?? 0));
+
+        if ($derived) {
+            return $derived;
         }
 
-        $fallback = (int) (Barangay::query()->orderBy('barangay_id')->value('barangay_id') ?? 0);
-
-        return $fallback > 0 ? $fallback : null;
+        return \App\Support\Rhu::DEFAULT_ID;
     }
 
     private function resolveAppointmentServiceType(Appointment $appointment): string
