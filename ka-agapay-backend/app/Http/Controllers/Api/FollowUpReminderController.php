@@ -22,39 +22,191 @@ class FollowUpReminderController extends Controller
         'super_admin', 'doctor', 'nurse', 'midwife', 'bhw',
     ];
 
+    // Active (still-open) follow-up statuses used for overdue/today/upcoming.
+    private const ACTIVE_STATUSES = ['pending', 'scheduled'];
+
+    // An overdue active follow-up older than this many days is treated as missed.
+    private const MISSED_GRACE_DAYS = 7;
+
     public function __construct(private readonly SmsService $sms)
     {
     }
 
     /**
-     * GET /api/v1/follow-up-reminders
-     * RHU staff see only their RHU; super_admin/mho see all.
+     * GET /api/v1/follow-up-reminders  (and alias /follow-ups)
+     *
+     * Lists ALL follow-ups for the staff's RHU with rich filtering. Supports
+     * derived statuses (overdue/today/upcoming/missed) in addition to the raw
+     * stored statuses, plus search / barangay / assigned-staff / date range.
      */
     public function index(Request $request): JsonResponse
     {
-        $user = $request->user();
-
         $query = FollowUpReminder::query()
             ->with(['user', 'rhu', 'createdBy', 'consultation'])
+            ->orderByRaw('CASE WHEN status IN (\'pending\', \'scheduled\') THEN 0 ELSE 1 END')
+            ->orderByRaw('follow_up_at IS NULL')
+            ->orderBy('follow_up_at')
             ->latest('id');
+
+        $this->applyScope($query, $request);
+        $this->applyFilters($query, $request);
+
+        return response()->json(
+            $query->paginate($request->integer('per_page', 25))
+        );
+    }
+
+    /**
+     * GET /api/v1/follow-up-reminders/summary  (and alias /follow-ups/summary)
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        $base = FollowUpReminder::query();
+        $this->applyScope($base, $request);
+
+        $today = today();
+        $monthStart = now()->startOfMonth();
+        $missedCutoff = today()->subDays(self::MISSED_GRACE_DAYS);
+
+        $active = fn ($q) => $q->whereIn('status', self::ACTIVE_STATUSES);
+
+        return response()->json([
+            'data' => [
+                'total' => (int) (clone $base)->count(),
+                'overdue' => (int) (clone $base)
+                    ->where($active)
+                    ->whereNotNull('follow_up_at')
+                    ->whereDate('follow_up_at', '<', $today)
+                    ->count(),
+                'due_today' => (int) (clone $base)
+                    ->where($active)
+                    ->whereDate('follow_up_at', $today)
+                    ->count(),
+                'upcoming' => (int) (clone $base)
+                    ->where($active)
+                    ->whereDate('follow_up_at', '>', $today)
+                    ->count(),
+                'completed_this_month' => (int) (clone $base)
+                    ->where('status', 'completed')
+                    ->where('updated_at', '>=', $monthStart)
+                    ->count(),
+                'missed' => (int) (clone $base)
+                    ->where(function ($q) use ($missedCutoff) {
+                        $q->where('status', 'missed')
+                            ->orWhere(function ($q2) use ($missedCutoff) {
+                                $q2->whereIn('status', self::ACTIVE_STATUSES)
+                                    ->whereNotNull('follow_up_at')
+                                    ->whereDate('follow_up_at', '<', $missedCutoff);
+                            });
+                    })
+                    ->count(),
+            ],
+        ]);
+    }
+
+    /**
+     * Restrict to the staff's RHU (global-scope roles can pass rhu_id/barangay_id).
+     */
+    private function applyScope($query, Request $request): void
+    {
+        $user = $request->user();
 
         if ($user && !$user->isGlobalRhuScope()) {
             $query->where('rhu_id', (int) ($user->effectiveRhuId() ?? 0));
         } elseif ($request->filled('rhu_id')) {
             $query->where('rhu_id', $request->integer('rhu_id'));
+        } elseif ($request->filled('barangay_id')) {
+            $query->where('rhu_id', $request->integer('barangay_id'));
+        }
+    }
+
+    private function applyFilters($query, Request $request): void
+    {
+        if ($request->filled('barangay_id')) {
+            $query->where('rhu_id', $request->integer('barangay_id'));
         }
 
-        if ($request->filled('status') && $request->query('status') !== 'all') {
-            $query->where('status', (string) $request->query('status'));
+        if ($request->filled('assigned_to')) {
+            $query->where('created_by', $request->integer('assigned_to'));
         }
 
         if ($request->filled('urgency') && $request->query('urgency') !== 'all') {
             $query->where('urgency', (string) $request->query('urgency'));
         }
 
-        return response()->json(
-            $query->paginate($request->integer('per_page', 50))
-        );
+        if ($request->filled('search')) {
+            $search = trim((string) $request->query('search'));
+
+            $query->where(function ($q) use ($search) {
+                $q->where('patient_name', 'like', "%{$search}%")
+                    ->orWhere('mobile_number', 'like', "%{$search}%")
+                    ->orWhere('reason', 'like', "%{$search}%")
+                    ->orWhereHas('rhu', fn ($r) => $r->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('user', function ($u) use ($search) {
+                        $u->where('first_name', 'like', "%{$search}%")
+                            ->orWhere('last_name', 'like', "%{$search}%")
+                            ->orWhere('mobile_number', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        if ($request->filled('date_from')) {
+            $query->whereDate('follow_up_at', '>=', $request->query('date_from'));
+        }
+
+        if ($request->filled('date_to')) {
+            $query->whereDate('follow_up_at', '<=', $request->query('date_to'));
+        }
+
+        $this->applyStatusFilter($query, strtolower((string) $request->query('status', 'all')));
+    }
+
+    private function applyStatusFilter($query, string $status): void
+    {
+        $today = today();
+
+        switch ($status) {
+            case 'overdue':
+                $query->whereIn('status', self::ACTIVE_STATUSES)
+                    ->whereNotNull('follow_up_at')
+                    ->whereDate('follow_up_at', '<', $today);
+                break;
+
+            case 'today':
+            case 'due_today':
+                $query->whereIn('status', self::ACTIVE_STATUSES)
+                    ->whereDate('follow_up_at', $today);
+                break;
+
+            case 'upcoming':
+                $query->whereIn('status', self::ACTIVE_STATUSES)
+                    ->whereDate('follow_up_at', '>', $today);
+                break;
+
+            case 'missed':
+                $cutoff = today()->subDays(self::MISSED_GRACE_DAYS);
+                $query->where(function ($q) use ($cutoff) {
+                    $q->where('status', 'missed')
+                        ->orWhere(function ($q2) use ($cutoff) {
+                            $q2->whereIn('status', self::ACTIVE_STATUSES)
+                                ->whereNotNull('follow_up_at')
+                                ->whereDate('follow_up_at', '<', $cutoff);
+                        });
+                });
+                break;
+
+            case 'completed':
+            case 'cancelled':
+            case 'pending':
+            case 'scheduled':
+                $query->where('status', $status);
+                break;
+
+            case 'all':
+            default:
+                // No status constraint — the page lists everything.
+                break;
+        }
     }
 
     /**

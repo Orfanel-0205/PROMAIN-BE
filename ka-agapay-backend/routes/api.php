@@ -406,9 +406,19 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('follow-up-reminders')->group(function () {
+            Route::get('/summary',          [FollowUpReminderController::class, 'summary']);
             Route::get('/',                 [FollowUpReminderController::class, 'index']);
             Route::post('/',                [FollowUpReminderController::class, 'store']);
             Route::patch('/{id}',           [FollowUpReminderController::class, 'update']);
+            Route::patch('/{id}/status',    [FollowUpReminderController::class, 'updateStatus']);
+            Route::post('/{id}/resend-sms', [FollowUpReminderController::class, 'resendSms']);
+        });
+
+        // Cleaner alias used by the Health Follow-up board.
+        // GET /api/v1/follow-ups , GET /api/v1/follow-ups/summary
+        Route::prefix('follow-ups')->group(function () {
+            Route::get('/summary',          [FollowUpReminderController::class, 'summary']);
+            Route::get('/',                 [FollowUpReminderController::class, 'index']);
             Route::patch('/{id}/status',    [FollowUpReminderController::class, 'updateStatus']);
             Route::post('/{id}/resend-sms', [FollowUpReminderController::class, 'resendSms']);
         });
