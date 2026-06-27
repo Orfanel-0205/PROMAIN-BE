@@ -25,12 +25,22 @@ class Appointment extends Model
         'rejection_reason',
         'approved_at',
         'scheduled_at',
+
+        'completed_at',
+        'board_visible_until',
+        'archived_at',
+        'archive_reason',
+        'has_pending_follow_up',
     ];
 
     protected $casts = [
         'appointment_date' => 'date',
         'approved_at' => 'datetime',
         'scheduled_at' => 'datetime',
+        'completed_at' => 'datetime',
+        'board_visible_until' => 'datetime',
+        'archived_at' => 'datetime',
+        'has_pending_follow_up' => 'boolean',
     ];
 
     public function resident(): BelongsTo

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Consultation;
+use App\Support\BoardVisibility;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -421,6 +422,10 @@ class ConsultationController extends Controller
             DB::table('appointments')
                 ->where('id', $appointmentId)
                 ->update($appointmentUpdates);
+
+            // Stamp completed_at + board_visible_until so the appointment leaves
+            // the ACTIVE board after the grace period (kept in Completed/History).
+            BoardVisibility::stampAppointmentCompleted($appointmentId);
         }
 
         // Telemedicine cascade: when a consultation that came from an online
@@ -595,6 +600,8 @@ class ConsultationController extends Controller
                         'status' => 'completed',
                         'updated_at' => Schema::hasColumn('telemedicine_requests', 'updated_at') ? $now : null,
                     ], fn ($value) => $value !== null));
+
+                BoardVisibility::stampTelemedicineRequestCompleted((int) $requestId);
             }
         } catch (\Throwable $e) {
             logger()->warning('[ConsultationController] telemedicine completion sync failed.', [

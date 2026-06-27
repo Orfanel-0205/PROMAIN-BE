@@ -13,6 +13,7 @@ use App\Models\TelemedicineSessionNote;
 use App\Services\Audit\AuditActions;
 use App\Services\Audit\AuditService;
 use App\Services\Notification\NotificationService;
+use App\Support\BoardVisibility;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -601,6 +602,13 @@ class TelemedicineService
                     DB::table('appointments')
                         ->where('id', $appointmentId)
                         ->update($appointmentUpdates);
+
+                    BoardVisibility::stampAppointmentCompleted($appointmentId);
+                }
+
+                // Stamp the telemedicine request board visibility too.
+                if ($session->request) {
+                    BoardVisibility::stampTelemedicineRequestCompleted((int) $session->request->id);
                 }
             }
 

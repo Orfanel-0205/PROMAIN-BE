@@ -35,6 +35,11 @@ class TelemedicineRequest extends Model
         'rejection_reason',
         'cancellation_reason',
         'cancelled_at',
+
+        'completed_at',
+        'board_visible_until',
+        'archived_at',
+        'archive_reason',
     ];
 
     protected $casts = [
@@ -42,6 +47,9 @@ class TelemedicineRequest extends Model
         'is_bhw_assisted' => 'boolean',
         'screened_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'completed_at' => 'datetime',
+        'board_visible_until' => 'datetime',
+        'archived_at' => 'datetime',
     ];
 
     public function residentProfile(): BelongsTo

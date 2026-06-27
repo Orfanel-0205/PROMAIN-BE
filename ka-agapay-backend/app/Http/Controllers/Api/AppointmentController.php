@@ -14,6 +14,7 @@ use App\Models\TelemedicineSession;
 use App\Models\User;
 use App\Services\Queue\QueueService;
 use App\Services\Telemedicine\WebRtcService;
+use App\Support\BoardVisibility;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -257,16 +258,19 @@ class AppointmentController extends Controller
             ->first();
 
         if ($duplicate) {
+            $existing = $duplicate->fresh([
+                'resident',
+                'handler',
+                'rhu',
+                'consultation',
+                'queueTicket',
+                'telemedicineRequest.session',
+            ]);
+
             return response()->json([
-                'message' => 'You already have an active ' . $consultationType . ' appointment request for this date.',
-                'appointment' => $duplicate->fresh([
-                    'resident',
-                    'handler',
-                    'rhu',
-                    'consultation',
-                    'queueTicket',
-                    'telemedicineRequest.session',
-                ]),
+                'message' => 'You already have an active ' . $consultationType . ' appointment for this date.',
+                'existing_appointment' => $existing,
+                'appointment' => $existing,
             ], 409);
         }
 
@@ -483,11 +487,100 @@ class AppointmentController extends Controller
             });
         }
 
+        $this->applyAppointmentBoardFilter($query, $request);
+
         $appointments = $query->paginate(
             $request->integer('per_page', 50)
         );
 
         return response()->json($appointments);
+    }
+
+    /**
+     * Apply the completed-record board visibility policy to the admin list.
+     *
+     * board=active (default): hides archived + completed records whose
+     *   board_visible_until has passed, UNLESS a pending follow-up keeps them.
+     * board=completed: recent completed records (within report retention window).
+     * board=history: completed/closed records, including archived.
+     * board=all: no visibility filtering (raw list).
+     *
+     * Never deletes anything — only changes what the ACTIVE board shows.
+     */
+    private function applyAppointmentBoardFilter(\Illuminate\Database\Eloquent\Builder $query, Request $request): void
+    {
+        $board = strtolower(trim((string) $request->query('board', 'active')));
+        $includeArchived = filter_var($request->query('include_archived', false), FILTER_VALIDATE_BOOLEAN);
+
+        $hasArchived = Schema::hasColumn('appointments', 'archived_at');
+        $hasBoardUntil = Schema::hasColumn('appointments', 'board_visible_until');
+        $hasCompletedAt = Schema::hasColumn('appointments', 'completed_at');
+        $hasFollowUps = Schema::hasTable('follow_up_reminders');
+
+        if ($hasCompletedAt && $request->filled('completed_from')) {
+            $query->whereDate('completed_at', '>=', $request->query('completed_from'));
+        }
+
+        if ($hasCompletedAt && $request->filled('completed_to')) {
+            $query->whereDate('completed_at', '<=', $request->query('completed_to'));
+        }
+
+        if ($board === 'all') {
+            return;
+        }
+
+        if ($board === 'completed') {
+            $query->where('status', 'completed');
+
+            if ($hasArchived && !$includeArchived) {
+                $query->whereNull('archived_at');
+            }
+
+            if ($hasCompletedAt && !$request->filled('completed_from')) {
+                $retentionStart = now()->subDays(BoardVisibility::retentionDays());
+
+                $query->where(function ($q) use ($retentionStart) {
+                    $q->whereNull('completed_at')
+                        ->orWhere('completed_at', '>=', $retentionStart);
+                });
+            }
+
+            return;
+        }
+
+        if ($board === 'history') {
+            $query->whereIn('status', ['completed', 'cancelled', 'rejected']);
+
+            return;
+        }
+
+        // Default: ACTIVE board.
+        if ($hasArchived && !$includeArchived) {
+            $query->whereNull('archived_at');
+        }
+
+        $query->where(function ($outer) use ($hasBoardUntil, $hasFollowUps) {
+            // Keep everything that is not a completed record...
+            $outer->where('status', '!=', 'completed');
+
+            // ...plus completed records still inside their board window...
+            if ($hasBoardUntil) {
+                $outer->orWhereNull('board_visible_until')
+                    ->orWhere('board_visible_until', '>=', now());
+            } else {
+                $outer->orWhere('status', 'completed');
+            }
+
+            // ...plus completed records that still have a pending follow-up.
+            if ($hasFollowUps) {
+                $outer->orWhereExists(function ($sub) {
+                    $sub->selectRaw('1')
+                        ->from('follow_up_reminders')
+                        ->whereColumn('follow_up_reminders.appointment_id', 'appointments.id')
+                        ->whereIn('follow_up_reminders.status', ['pending', 'scheduled']);
+                });
+            }
+        });
     }
 
     /**
