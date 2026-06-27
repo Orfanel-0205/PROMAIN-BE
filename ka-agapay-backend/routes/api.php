@@ -467,6 +467,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/sessions',                    [SessionController::class, 'index']);
             Route::get('/sessions/{session}',          [SessionController::class, 'show']);
             Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
+            Route::patch('/sessions/{session}/end',    [SessionController::class, 'end']);
             Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
 
             Route::post('/requests/{telemedicineRequest}/session', [SessionController::class, 'store']);

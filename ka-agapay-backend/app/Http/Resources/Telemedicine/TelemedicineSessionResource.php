@@ -58,6 +58,12 @@ class TelemedicineSessionResource extends JsonResource
             ?: $this->session_token
             ?: 'kaagapay-rhu-session-' . $this->id;
 
+        // Configurable video provider (Jitsi/JaaS/self-hosted). The frontend uses
+        // this to initialize the embedded room with the correct domain + JWT and
+        // to avoid silently embedding the public meet.jit.si 5-minute demo.
+        $video = app(\App\Services\Telemedicine\WebRtcService::class)
+            ->buildRoomConfig($this->resource);
+
         return [
             'id' => $this->id,
             'request_id' => $this->request_id,
@@ -78,6 +84,8 @@ class TelemedicineSessionResource extends JsonResource
             'join_url' => $roomUrl,
             'roomUrl' => $roomUrl,
             'joinUrl' => $roomUrl,
+
+            'video' => $video,
 
             'consultation_id' => $this->consultation_id,
 

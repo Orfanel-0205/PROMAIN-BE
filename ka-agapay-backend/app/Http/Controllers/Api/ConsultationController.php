@@ -423,6 +423,12 @@ class ConsultationController extends Controller
                 ->update($appointmentUpdates);
         }
 
+        // Telemedicine cascade: when a consultation that came from an online
+        // appointment is completed, the linked telemedicine session and request
+        // must also close so the Appointments/Telemedicine pages never show a
+        // completed consultation as still "ongoing" / "Open Room".
+        $this->syncCompletedTelemedicine($consultation, $appointmentId);
+
         if (!Schema::hasTable('queue_tickets')) {
             return;
         }
@@ -493,6 +499,109 @@ class ConsultationController extends Controller
         DB::table('queue_tickets')
             ->where('id', $ticket->id)
             ->update($queueUpdates);
+    }
+
+    /**
+     * Close the telemedicine session + request linked to a completed
+     * consultation. Safe + non-fatal: only touches rows that exist, and never
+     * blocks the consultation completion if telemedicine tables are absent.
+     */
+    private function syncCompletedTelemedicine(Consultation $consultation, int $appointmentId): void
+    {
+        if (!Schema::hasTable('telemedicine_sessions')) {
+            return;
+        }
+
+        try {
+            $now = now();
+
+            // Find the session by direct consultation link first, then by the
+            // appointment via its telemedicine request.
+            $sessionQuery = DB::table('telemedicine_sessions');
+
+            if (Schema::hasColumn('telemedicine_sessions', 'consultation_id')) {
+                $sessionQuery->where('consultation_id', $consultation->id);
+            } else {
+                $sessionQuery->whereRaw('1 = 0');
+            }
+
+            $session = $sessionQuery->latest('id')->first();
+
+            $requestId = null;
+
+            if (!$session && $appointmentId > 0 && Schema::hasTable('telemedicine_requests')) {
+                $request = DB::table('telemedicine_requests')
+                    ->where('appointment_id', $appointmentId)
+                    ->latest('id')
+                    ->first();
+
+                if ($request) {
+                    $requestId = $request->id;
+
+                    $session = DB::table('telemedicine_sessions')
+                        ->where('request_id', $request->id)
+                        ->latest('id')
+                        ->first();
+                }
+            }
+
+            if ($session) {
+                $requestId = $requestId ?? ($session->request_id ?? null);
+
+                if (!in_array((string) $session->status, ['ended', 'no_show', 'cancelled'], true)) {
+                    $sessionUpdates = ['status' => 'ended'];
+
+                    if (Schema::hasColumn('telemedicine_sessions', 'ended_at') && empty($session->ended_at)) {
+                        $sessionUpdates['ended_at'] = $now;
+                    }
+
+                    if (
+                        Schema::hasColumn('telemedicine_sessions', 'consultation_id')
+                        && empty($session->consultation_id)
+                    ) {
+                        $sessionUpdates['consultation_id'] = $consultation->id;
+                    }
+
+                    if (
+                        Schema::hasColumn('telemedicine_sessions', 'actual_duration_minutes')
+                        && empty($session->actual_duration_minutes)
+                        && !empty($session->started_at)
+                    ) {
+                        $startedAt = strtotime((string) $session->started_at);
+
+                        if ($startedAt) {
+                            $sessionUpdates['actual_duration_minutes'] = max(
+                                1,
+                                (int) floor(($now->getTimestamp() - $startedAt) / 60)
+                            );
+                        }
+                    }
+
+                    if (Schema::hasColumn('telemedicine_sessions', 'updated_at')) {
+                        $sessionUpdates['updated_at'] = $now;
+                    }
+
+                    DB::table('telemedicine_sessions')
+                        ->where('id', $session->id)
+                        ->update($sessionUpdates);
+                }
+            }
+
+            if ($requestId && Schema::hasTable('telemedicine_requests')) {
+                DB::table('telemedicine_requests')
+                    ->where('id', $requestId)
+                    ->whereNotIn('status', ['completed', 'rejected', 'cancelled'])
+                    ->update(array_filter([
+                        'status' => 'completed',
+                        'updated_at' => Schema::hasColumn('telemedicine_requests', 'updated_at') ? $now : null,
+                    ], fn ($value) => $value !== null));
+            }
+        } catch (\Throwable $e) {
+            logger()->warning('[ConsultationController] telemedicine completion sync failed.', [
+                'consultation_id' => $consultation->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function syncCancelledConsultationFlow(Consultation $consultation, Request $request): void

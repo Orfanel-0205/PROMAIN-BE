@@ -245,15 +245,20 @@ class AppointmentController extends Controller
             ], 422);
         }
 
+        // Block a duplicate only for the SAME date + SAME consultation type while it
+        // is still active. This lets a resident keep one online and one onsite
+        // appointment on the same day, and re-book after a cancelled/rejected/
+        // completed visit.
         $duplicate = Appointment::query()
             ->where('user_id', $user->user_id)
             ->whereDate('appointment_date', $appointmentDate)
+            ->where('consultation_type', $consultationType)
             ->whereIn('status', self::ACTIVE_STATUSES)
             ->first();
 
         if ($duplicate) {
             return response()->json([
-                'message' => 'You already have an active appointment request for this date.',
+                'message' => 'You already have an active ' . $consultationType . ' appointment request for this date.',
                 'appointment' => $duplicate->fresh([
                     'resident',
                     'handler',

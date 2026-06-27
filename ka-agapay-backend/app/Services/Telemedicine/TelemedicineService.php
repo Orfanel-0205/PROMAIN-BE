@@ -455,6 +455,173 @@ class TelemedicineService
         });
     }
 
+    /**
+     * End a telemedicine session from the video room and make the linked
+     * consultation the single source of truth for the SOAP record.
+     *
+     * finalize = false -> save SOAP as an editable draft, end the video session.
+     * finalize = true  -> finalize SOAP and cascade-complete consultation,
+     *                     appointment, telemedicine request and session.
+     *
+     * This never throws raw SQL/state errors to the caller; the controller wraps
+     * it and returns a clean message.
+     */
+    public function endSessionWithSoap(
+        TelemedicineSession $session,
+        bool $finalize,
+        array $soap
+    ): TelemedicineSession {
+        return DB::transaction(function () use ($session, $finalize, $soap) {
+            $session->loadMissing(['request', 'consultation']);
+
+            $now = now();
+
+            $consultation = $session->consultation_id
+                ? Consultation::find($session->consultation_id)
+                : null;
+
+            if (!$consultation) {
+                $consultation = $this->createConsultationFromSession($session);
+            }
+
+            $subjective = $this->soapValue($soap, 'subjective');
+            $objective  = $this->soapValue($soap, 'objective');
+            $assessment = $this->soapValue($soap, 'assessment');
+            $plan       = $this->soapValue($soap, 'plan');
+            $diagnosis  = $this->soapValue($soap, 'diagnosis') ?: $assessment;
+            $treatment  = $this->soapValue($soap, 'treatment') ?: $plan;
+            $extraNotes = $this->soapValue($soap, 'notes');
+
+            // Persist into the telemedicine session note (mirror record).
+            TelemedicineSessionNote::updateOrCreate(
+                ['session_id' => $session->id],
+                [
+                    'recorded_by'             => $this->currentUserId(),
+                    'subjective'              => $subjective ?: null,
+                    'objective'               => $objective ?: null,
+                    'assessment'              => $assessment ?: null,
+                    'plan'                    => $plan ?: null,
+                    'primary_diagnosis_label' => $diagnosis ?: null,
+                    'is_finalized'            => $finalize,
+                    'finalized_at'            => $finalize ? $now : null,
+                ]
+            );
+
+            // Write SOAP into the consultation (the source of truth).
+            $consultationUpdates = [
+                'chief_complaint' => $consultation->chief_complaint
+                    ?: ($session->request?->chief_complaint),
+                'subjective' => $subjective ?: $consultation->subjective,
+                'objective'  => $objective ?: $consultation->objective,
+                'assessment' => $assessment ?: $consultation->assessment,
+                'plan'       => $plan ?: $consultation->plan,
+                'diagnosis'  => $diagnosis ?: $consultation->diagnosis,
+                'treatment'  => $treatment ?: $consultation->treatment,
+            ];
+
+            if ($extraNotes) {
+                $consultationUpdates['notes'] = $consultation->notes
+                    ? trim($consultation->notes . "\n" . $extraNotes)
+                    : $extraNotes;
+            }
+
+            if (!$consultation->started_at) {
+                $consultationUpdates['started_at'] = $session->started_at ?: $now;
+            }
+
+            if ($finalize) {
+                $consultationUpdates['status'] = 'completed';
+                $consultationUpdates['completed_at'] = $now;
+
+                if (Schema::hasColumn('consultations', 'heatmap_posted_at')) {
+                    $consultationUpdates['heatmap_posted_at'] = $now;
+                }
+
+                if (Schema::hasColumn('consultations', 'heatmap_signal_expires_at')) {
+                    $consultationUpdates['heatmap_signal_expires_at'] = $now->copy()->addHours(3);
+                }
+            } else {
+                if ((string) $consultation->status !== 'completed') {
+                    $consultationUpdates['status'] = 'ongoing';
+                }
+
+                if (Schema::hasColumn('consultations', 'draft_saved_at')) {
+                    $consultationUpdates['draft_saved_at'] = $now;
+                }
+            }
+
+            $consultation->update($this->filterConsultationPayload($consultationUpdates));
+
+            // End the video session (always — the room is closing either way).
+            if (!$session->isTerminal()) {
+                $sessionUpdates = [
+                    'status'          => 'ended',
+                    'ended_at'        => $session->ended_at ?: $now,
+                    'consultation_id' => $session->consultation_id ?: $consultation->id,
+                ];
+
+                if ($session->started_at) {
+                    $sessionUpdates['actual_duration_minutes'] = $session->actual_duration_minutes
+                        ?: max(1, (int) $now->diffInMinutes($session->started_at));
+                }
+
+                $fromStatus = (string) $session->status;
+                $session->update($sessionUpdates);
+
+                $this->writeLog($session, $fromStatus, 'ended', 'session_ended', [
+                    'finalize' => $finalize,
+                ]);
+            }
+
+            // Cascade the telemedicine request + appointment ONLY on finalize.
+            if ($finalize) {
+                if ($session->request && (string) $session->request->status !== 'completed') {
+                    $requestFrom = (string) $session->request->status;
+                    $session->request->update(['status' => 'completed']);
+
+                    $this->writeLog($session->request, $requestFrom, 'completed', 'request_completed', [
+                        'session_id'      => $session->id,
+                        'consultation_id' => $consultation->id,
+                    ]);
+                }
+
+                $appointmentId = (int) (
+                    $consultation->appointment_id
+                    ?? $session->request?->appointment_id
+                    ?? 0
+                );
+
+                if ($appointmentId > 0 && Schema::hasTable('appointments')) {
+                    $appointmentUpdates = ['status' => 'completed'];
+
+                    if (Schema::hasColumn('appointments', 'updated_at')) {
+                        $appointmentUpdates['updated_at'] = $now;
+                    }
+
+                    DB::table('appointments')
+                        ->where('id', $appointmentId)
+                        ->update($appointmentUpdates);
+                }
+            }
+
+            return $session->fresh([
+                'request.residentProfile.user',
+                'request.residentProfile.barangay',
+                'request.rhu',
+                'assignedDoctor',
+                'bhwCompanion',
+                'notes',
+                'referrals',
+                'consultation',
+            ]);
+        });
+    }
+
+    private function soapValue(array $soap, string $key): string
+    {
+        return trim((string) ($soap[$key] ?? ''));
+    }
+
     public function createReferral(TelemedicineSession $session, array $data): TelemedicineReferral
     {
         if ($session->isTerminal() && $session->status !== 'ended') {

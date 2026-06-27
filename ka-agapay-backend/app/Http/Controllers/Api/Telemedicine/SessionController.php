@@ -135,6 +135,68 @@ class SessionController extends Controller
     }
 
     /**
+     * PATCH /api/v1/telemedicine/sessions/{session}/end
+     *
+     * Single source of truth for ending a telemedicine call from the room.
+     *
+     * finalize = false -> save SOAP draft + end video, keep consultation editable.
+     * finalize = true  -> finalize SOAP and complete consultation, appointment,
+     *                     telemedicine request and session together.
+     */
+    public function end(
+        Request $request,
+        TelemedicineSession $session
+    ): JsonResponse {
+        $validated = $request->validate([
+            'finalize'         => ['nullable', 'boolean'],
+            'soap'             => ['nullable', 'array'],
+            'soap.subjective'  => ['nullable', 'string'],
+            'soap.objective'   => ['nullable', 'string'],
+            'soap.assessment'  => ['nullable', 'string'],
+            'soap.plan'        => ['nullable', 'string'],
+            'soap.diagnosis'   => ['nullable', 'string'],
+            'soap.treatment'   => ['nullable', 'string'],
+            'soap.notes'       => ['nullable', 'string'],
+        ]);
+
+        $finalize = (bool) ($validated['finalize'] ?? false);
+        $soap = $validated['soap'] ?? [];
+
+        try {
+            $session = $this->service->endSessionWithSoap($session, $finalize, $soap);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Unable to complete session. Please try again.',
+            ], 500);
+        }
+
+        $consultationId = $session->consultation_id
+            ?? $session->consultation?->id;
+
+        $appointment = $session->request?->appointment_id
+            ? \App\Models\Appointment::query()
+                ->with(['resident', 'handler', 'rhu', 'consultation', 'queueTicket', 'telemedicineRequest.session'])
+                ->find($session->request->appointment_id)
+            : null;
+
+        return response()->json([
+            'message' => $finalize
+                ? 'Telemedicine consultation completed.'
+                : 'Telemedicine session ended. Continue SOAP documentation.',
+            'telemedicine_session' => new TelemedicineSessionResource($session),
+            'telemedicine_request' => $session->request,
+            'consultation'         => $session->consultation,
+            'appointment'          => $appointment,
+            'redirect_to'          => 'consultation',
+            'consultation_id'      => $consultationId,
+            'can_finalize'         => !$finalize,
+            'data'                 => new TelemedicineSessionResource($session),
+        ]);
+    }
+
+    /**
      * PUT /api/v1/telemedicine/sessions/{session}/notes
      */
     public function saveNotes(

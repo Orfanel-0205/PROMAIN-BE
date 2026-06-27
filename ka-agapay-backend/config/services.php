@@ -40,6 +40,31 @@ return [
     |--------------------------------------------------------------------------
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Telemedicine Video Provider (Jitsi / JaaS / self-hosted)
+    |--------------------------------------------------------------------------
+    |
+    | provider:
+    |   - jaas            : 8x8 Jitsi-as-a-Service (production, JWT required)
+    |   - self_hosted     : your own Jitsi server (production)
+    |   - meet_public_demo: public meet.jit.si (DEMO ONLY — disconnects after 5 min)
+    |
+    | The default is intentionally NOT meet.jit.si so production never silently
+    | falls back to the 5-minute demo embed.
+    */
+
+    'jitsi' => [
+        'provider'     => env('JITSI_PROVIDER', 'self_hosted'),
+        'domain'       => env('JITSI_DOMAIN', 'meet.kaagapay.local'),
+        'app_id'       => env('JITSI_APP_ID'),
+        'app_secret'   => env('JITSI_APP_SECRET'),
+        'api_key'      => env('JITSI_API_KEY'),       // JaaS kid (key id)
+        'private_key'  => env('JITSI_PRIVATE_KEY'),   // JaaS RS256 PEM (optional)
+        'jwt_enabled'  => env('JITSI_JWT_ENABLED', false),
+        'room_prefix'  => env('JITSI_ROOM_PREFIX', 'kaagapay-rhu1'),
+    ],
+
     'sms_provider' => env('SMS_PROVIDER', 'semaphore'),
 
 'semaphore' => [
