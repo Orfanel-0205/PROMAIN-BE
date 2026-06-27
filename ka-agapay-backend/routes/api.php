@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use App\Http\Controllers\Api\Telemedicine\SessionController;
 use App\Http\Controllers\Api\AdminUserController;
+use App\Http\Controllers\Api\RegistrationApprovalController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
 use App\Http\Controllers\Api\AiSettingsController;
@@ -132,6 +133,25 @@ Route::prefix('v1')->group(function () {
         // PATCH  /api/v1/admin/users/{id}/approve
         // PATCH  /api/v1/admin/users/{id}/reject
         // =====================================================================
+
+        // =====================================================================
+        // SUPER ADMIN — RESIDENT REGISTRATION APPROVALS
+        // GET  /api/v1/admin/registrations/pending
+        // GET  /api/v1/admin/registrations/{id}/ocr
+        // GET  /api/v1/admin/registrations/{id}/ocr/file
+        // POST /api/v1/admin/registrations/{id}/approve
+        // POST /api/v1/admin/registrations/{id}/reject
+        // =====================================================================
+
+        Route::prefix('admin/registrations')
+            ->middleware('role:super_admin,superadmin')
+            ->group(function () {
+                Route::get('/pending',          [RegistrationApprovalController::class, 'pending']);
+                Route::get('/{id}/ocr',         [RegistrationApprovalController::class, 'ocr']);
+                Route::get('/{id}/ocr/file',    [RegistrationApprovalController::class, 'ocrFile']);
+                Route::post('/{id}/approve',    [RegistrationApprovalController::class, 'approve']);
+                Route::post('/{id}/reject',     [RegistrationApprovalController::class, 'reject']);
+            });
 
         Route::prefix('admin/users')
             ->middleware('role:admin,staff_admin,rhu_admin,mho,municipal_mayor,it_staff,super_admin,superadmin')

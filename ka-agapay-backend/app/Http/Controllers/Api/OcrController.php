@@ -116,17 +116,25 @@ class OcrController extends Controller
         if (Schema::hasTable('users')) {
             $updates = [];
 
+            // Mark that an ID was scanned + passed name-match. This is ONLY an ID
+            // verification flag — it does NOT activate the account.
             if (Schema::hasColumn('users', 'id_verified')) {
                 $updates['id_verified'] = $verified;
             }
 
+            // IMPORTANT: residents are NEVER auto-activated by OCR. Every resident
+            // stays "pending" until a Super Admin reviews the ID and approves the
+            // registration. (Previously OCR set account_status = 'active', which
+            // bypassed Super Admin approval — that is removed on purpose.)
             $roleName = $this->normalizeRoleName($user->role_name ?? $user->role?->name ?? 'resident');
 
-            if ($verified && !in_array($roleName, $this->staffRoles, true)) {
-                $updates['account_status'] = 'active';
-            }
-
-            if ($verified && in_array($roleName, $this->staffRoles, true) && ($user->account_status !== 'active')) {
+            if (
+                $verified
+                && in_array($roleName, $this->staffRoles, true)
+                && ($user->account_status !== 'active')
+            ) {
+                // Staff verification keeps its existing "pending staff approval"
+                // behaviour; staff are approved through the staff approver flow.
                 $updates['account_status'] = 'pending';
             }
 
@@ -153,8 +161,10 @@ class OcrController extends Controller
             'name_match_score' => round($nameScore, 2),
             'date_match_score' => $dateScore === null ? null : round($dateScore, 2),
             'overall_match' => round($overallMatch, 2),
-            'next_step' => $verified && in_array($this->normalizeRoleName($user->role_name ?? 'resident'), $this->staffRoles, true)
-                ? 'Your ID is verified. Please wait for MHO, Municipal Mayor, or IT Staff approval.'
+            'next_step' => $verified
+                ? (in_array($this->normalizeRoleName($user->role_name ?? 'resident'), $this->staffRoles, true)
+                    ? 'Your ID is verified. Please wait for MHO, Municipal Mayor, or IT Staff approval.'
+                    : 'Your ID was submitted. Your account is pending Super Admin approval.')
                 : null,
             'auto_fill' => [
                 'full_name' => $extractedName,

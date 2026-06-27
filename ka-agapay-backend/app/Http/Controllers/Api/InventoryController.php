@@ -6,8 +6,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
 use App\Services\Inventory\InventoryService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class InventoryController extends Controller
 {
@@ -131,6 +134,7 @@ class InventoryController extends Controller
 
         $validated = $request->validate([
             'rhu_id'                  => ['required', 'integer'],
+            'item_code'               => ['nullable', 'string', 'max:30'],
             'name'                    => ['required', 'string', 'max:200'],
             'generic_name'            => ['nullable', 'string', 'max:200'],
             'category'                => ['required', 'in:' . implode(',', InventoryItem::CATEGORIES)],
@@ -146,20 +150,144 @@ class InventoryController extends Controller
             'notes'                   => ['nullable', 'string'],
         ]);
 
-        $year = now()->year;
-        $count = InventoryItem::where('rhu_id', $validated['rhu_id'])
-            ->whereYear('created_at', $year)
-            ->count() + 1;
+        // If staff typed an item code, it must be globally unique (including
+        // soft-deleted rows, because the DB unique index still holds them).
+        $providedCode = isset($validated['item_code'])
+            ? strtoupper(trim((string) $validated['item_code']))
+            : null;
 
-        $item = InventoryItem::create(array_merge($validated, [
-            'item_code' => sprintf('MED-%d-%04d', $year, $count),
-            'is_active' => true,
-        ]));
+        unset($validated['item_code']);
+
+        if ($providedCode !== null && $providedCode !== '') {
+            $taken = InventoryItem::withTrashed()
+                ->where('item_code', $providedCode)
+                ->exists();
+
+            if ($taken) {
+                throw ValidationException::withMessages([
+                    'item_code' => ['This item code is already in use. Leave it blank to auto-generate a unique code.'],
+                ]);
+            }
+        } else {
+            $providedCode = null;
+        }
+
+        try {
+            $item = $this->createWithUniqueItemCode($validated, $providedCode);
+        } catch (QueryException $e) {
+            // 23505 = PostgreSQL unique_violation. Never leak SQL to the client.
+            if ($this->isUniqueViolation($e)) {
+                return response()->json([
+                    'message' => 'Could not save the inventory item because the item code is already in use. Please try again.',
+                    'errors'  => [
+                        'item_code' => ['Item code collision. Please retry or enter a different code.'],
+                    ],
+                ], 422);
+            }
+
+            report($e);
+
+            return response()->json([
+                'message' => 'Unable to save the inventory item. Please try again or contact the system administrator.',
+            ], 500);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Unable to save the inventory item. Please try again or contact the system administrator.',
+            ], 500);
+        }
 
         return response()->json([
             'message' => 'Inventory item created.',
             'data' => $item->fresh(),
         ], 201);
+    }
+
+    /**
+     * Create an inventory item with a guaranteed-unique item_code.
+     *
+     * Auto-generated codes are derived from the highest existing suffix ACROSS
+     * ALL rows (including soft-deleted ones, which still occupy the unique
+     * index). A short retry loop absorbs the rare race where two requests pick
+     * the same next number at the same instant.
+     */
+    private function createWithUniqueItemCode(array $validated, ?string $providedCode): InventoryItem
+    {
+        if ($providedCode !== null) {
+            return InventoryItem::create(array_merge($validated, [
+                'item_code' => $providedCode,
+                'is_active' => true,
+            ]));
+        }
+
+        $year = now()->year;
+
+        for ($attempt = 1; $attempt <= 5; $attempt++) {
+            $code = $this->nextItemCode($year);
+
+            try {
+                return InventoryItem::create(array_merge($validated, [
+                    'item_code' => $code,
+                    'is_active' => true,
+                ]));
+            } catch (QueryException $e) {
+                if (!$this->isUniqueViolation($e) || $attempt >= 5) {
+                    throw $e;
+                }
+
+                // Tiny jitter, then recompute the next code and retry.
+                usleep(random_int(1500, 6000));
+            }
+        }
+
+        // Unreachable (the loop returns or throws within 5 attempts), but PHP
+        // control-flow analysis still needs a terminal statement here.
+        throw new \RuntimeException('Could not allocate a unique inventory item code.');
+    }
+
+    /**
+     * Next available MED-{year}-#### code, based on the global maximum suffix
+     * (including soft-deleted rows) so a deleted/reused number is never picked.
+     */
+    private function nextItemCode(int $year): string
+    {
+        $prefix = 'MED-' . $year . '-';
+
+        $highest = InventoryItem::withTrashed()
+            ->where('item_code', 'like', $prefix . '%')
+            ->pluck('item_code')
+            ->map(function ($code) use ($prefix) {
+                $suffix = substr((string) $code, strlen($prefix));
+                return (int) preg_replace('/\D/', '', $suffix);
+            })
+            ->max();
+
+        $next = ((int) $highest) + 1;
+
+        // Defensive: skip any specific code still held by an existing/trashed row.
+        while (
+            InventoryItem::withTrashed()
+                ->where('item_code', $prefix . sprintf('%04d', $next))
+                ->exists()
+        ) {
+            $next++;
+        }
+
+        return $prefix . sprintf('%04d', $next);
+    }
+
+    private function isUniqueViolation(QueryException $e): bool
+    {
+        if ((string) $e->getCode() === '23505') {
+            return true;
+        }
+
+        $message = strtolower($e->getMessage());
+
+        return str_contains($message, 'unique')
+            || str_contains($message, 'duplicate')
+            || str_contains($message, 'item_code');
     }
 
     public function show(Request $request, InventoryItem $inventory): JsonResponse

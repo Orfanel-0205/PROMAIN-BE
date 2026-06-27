@@ -391,13 +391,19 @@ class AuthController extends Controller
         }
 
         if ($user->account_status !== 'active') {
+            $reason = trim((string) $user->rejection_reason);
+
             return response()->json([
                 'message' => match ($user->account_status) {
-                    'pending' => 'Your account is pending approval.',
+                    'pending' => 'Your account is pending Super Admin approval.',
                     'suspended' => 'Your account has been suspended. Contact the RHU.',
-                    'rejected' => 'Your registration was not approved.',
+                    'rejected' => $reason !== ''
+                        ? 'Your account was rejected. Reason: ' . $reason
+                        : 'Your registration was not approved.',
                     default => 'Account is not active.',
                 },
+                'account_status' => $user->account_status,
+                'rejection_reason' => $user->account_status === 'rejected' ? ($reason ?: null) : null,
             ], 403);
         }
 
@@ -465,6 +471,12 @@ class AuthController extends Controller
                 'after:1900-01-01',
             ],
             'sex' => ['nullable', Rule::in(['male', 'female', 'other'])],
+
+            // Residents MUST accept the Terms and Conditions to register.
+            'terms_accepted' => ['required', 'accepted'],
+        ], [
+            'terms_accepted.required' => 'You must accept the Terms and Conditions to register.',
+            'terms_accepted.accepted' => 'You must accept the Terms and Conditions to register.',
         ]);
 
         $barangay = $this->resolveBarangayFromRequest($validated);
@@ -504,6 +516,7 @@ class AuthController extends Controller
                 'account_status' => 'pending',
                 'id_verified' => false,
                 'biometric_enabled' => false,
+                'terms_accepted_at' => now(),
             ]);
 
             $profilePayload = [
@@ -554,9 +567,11 @@ class AuthController extends Controller
         ], $request);
 
         return response()->json([
-            'message' => 'Registration successful. Your account is pending approval.',
+            'message' => 'Registration submitted. Please upload a valid ID, then wait for Super Admin approval.',
             'user' => $this->formatUser($user),
             'token' => $token,
+            'next_step' => 'upload_id',
+            'requires_id_upload' => true,
         ], 201);
     }
 

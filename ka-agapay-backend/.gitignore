@@ -6,9 +6,22 @@
 /storage/*.key
 /vendor
 .env
+.env.*
+!.env.example
 .env.backup
 .env.production
 .phpunit.result.cache
+
+# Secret service-account / API credential files — never commit these.
+*service-account*.json
+fcm-service-account.json
+google-credentials.json
+firebase-credentials.json
+*-credentials.json
+*.pem
+*.p12
+*.key
+secrets/
 Homestead.json
 Homestead.yaml
 auth.json
