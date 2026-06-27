@@ -52,6 +52,11 @@ class RegisterRequest extends FormRequest
             ],
 
             'sex' => ['nullable', Rule::in(['male', 'female', 'other'])],
+
+            // FINAL RULE: residents must accept the Terms and Conditions before
+            // an account is created. The account is then created as 'pending'
+            // and requires ID/OCR submission + Super Admin approval.
+            'terms_accepted' => ['required', 'accepted'],
         ];
     }
 
@@ -85,6 +90,8 @@ class RegisterRequest extends FormRequest
             'barangay.exists'                => 'Please select a valid barangay from the list.',
             'birthday.before'                => 'You must be at least 18 years old to register.',
             'birthday.after'                 => 'Birthday must be after 1900.',
+            'terms_accepted.required'        => 'You must accept the Terms and Conditions to register.',
+            'terms_accepted.accepted'        => 'You must accept the Terms and Conditions to register.',
         ];
     }
 }

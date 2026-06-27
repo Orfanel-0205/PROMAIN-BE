@@ -66,6 +66,18 @@ class OcrController extends Controller
         $idNumber = $this->extractIdNumber($text);
         $philhealth = $this->extractPhilHealthNumber($text);
 
+        // EMPLOYEE ID SUPPORT (RHU staff/admin/personnel).
+        // When the submitted document is an Employee Identification Card, record
+        // the document category and pull the position/designation + RHU/LGU
+        // context so the Super Admin can verify the staff member at review time.
+        $roleForDoc = $this->normalizeRoleName($user->role_name ?? $user->role?->name ?? 'resident');
+        $isEmployeeDoc = in_array($roleForDoc, $this->staffRoles, true)
+            || $this->looksLikeEmployeeIdType($validated['id_type']);
+        $documentCategory = $isEmployeeDoc ? 'employee_id' : 'resident_id';
+        $designation = $isEmployeeDoc ? $this->extractDesignation($text) : null;
+        $rhuLabel = $isEmployeeDoc ? $this->extractRhuLabel($text) : null;
+        $lgu = $isEmployeeDoc ? $this->extractMunicipality($text) : null;
+
         $registeredName = trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''));
         $nameScore = $this->nameMatchScore($registeredName, $extractedName, $text);
         $dateScore = $this->dateMatchScore($user->birthday ?? $user->birth_date ?? null, $birthdate);
@@ -101,6 +113,11 @@ class OcrController extends Controller
                     'name_match_score' => $nameScore,
                     'date_match_score' => $dateScore,
                     'overall_match' => $overallMatch,
+                    'document_type' => $validated['id_type'],
+                    'document_category' => $documentCategory,
+                    'designation' => $designation,
+                    'rhu_label' => $rhuLabel,
+                    'municipality' => $lgu,
                 ]),
                 'confidence_score' => $confidence,
                 'name_match_score' => round($nameScore, 2),
@@ -117,15 +134,18 @@ class OcrController extends Controller
             $updates = [];
 
             // Mark that an ID was scanned + passed name-match. This is ONLY an ID
-            // verification flag — it does NOT activate the account.
+            // verification flag — it does NOT change account access.
             if (Schema::hasColumn('users', 'id_verified')) {
                 $updates['id_verified'] = $verified;
             }
 
-            // IMPORTANT: residents are NEVER auto-activated by OCR. Every resident
-            // stays "pending" until a Super Admin reviews the ID and approves the
-            // registration. (Previously OCR set account_status = 'active', which
-            // bypassed Super Admin approval — that is removed on purpose.)
+            // RESIDENT FLOW: residents are already active after registration, so
+            // OCR only updates id_verified. It never sets account_status and never
+            // requires Super Admin approval for basic app access.
+            //
+            // STAFF FLOW: staff/admin OCR is supporting evidence only. It must NOT
+            // auto-approve a staff account — they stay "pending" until a Super
+            // Admin approves them through the staff approval flow.
             $roleName = $this->normalizeRoleName($user->role_name ?? $user->role?->name ?? 'resident');
 
             if (
@@ -152,6 +172,11 @@ class OcrController extends Controller
             'ocr_id' => $ocrId,
             'status' => $verified ? 'approved' : 'failed',
             'verified' => $verified,
+            'document_type' => $validated['id_type'],
+            'document_category' => $documentCategory,
+            'designation' => $designation,
+            'rhu_label' => $rhuLabel,
+            'municipality' => $lgu,
             'confidence_score' => $confidence,
             'registered_name' => $registeredName,
             'extracted_text' => $text,
@@ -163,7 +188,7 @@ class OcrController extends Controller
             'overall_match' => round($overallMatch, 2),
             'next_step' => $verified
                 ? (in_array($this->normalizeRoleName($user->role_name ?? 'resident'), $this->staffRoles, true)
-                    ? 'Your ID is verified. Please wait for MHO, Municipal Mayor, or IT Staff approval.'
+                    ? 'Your Employee ID was submitted. Your account is pending Super Admin approval.'
                     : 'Your ID was submitted. Your account is pending Super Admin approval.')
                 : null,
             'auto_fill' => [
@@ -1138,5 +1163,78 @@ class OcrController extends Controller
     private function normalizeRoleName(string $role): string
     {
         return strtolower(str_replace([' ', '-'], '_', trim($role)));
+    }
+
+    // =========================================================================
+    // EMPLOYEE ID HELPERS (RHU staff/admin Employee Identification Card)
+    // =========================================================================
+
+    private function looksLikeEmployeeIdType(?string $idType): bool
+    {
+        $type = strtolower((string) $idType);
+
+        return str_contains($type, 'employee')
+            || str_contains($type, 'employment')
+            || str_contains($type, 'company id')
+            || str_contains($type, 'office id');
+    }
+
+    /**
+     * Best-effort position/designation from an Employee ID (e.g. "Nurse II",
+     * "Midwife", "RHU Admin"). Returns null when nothing recognisable is found.
+     */
+    private function extractDesignation(string $text): ?string
+    {
+        $patterns = [
+            '/(?:position|designation|title|rank|role)\s*[:\-]\s*([A-Za-z0-9 .,\/&\-]{2,60})/i',
+            '/\b(Municipal Health Officer|Rural Health Physician|Medical Officer[^\n]{0,12}|Public Health Nurse|Nurse\s+[IVX]+|Midwife\s*[IVX]*|Rural Health Midwife|Barangay Health Worker|Sanitary Inspector|Medical Technologist|RHU Admin(?:istrator)?|Administrative (?:Aide|Officer)[^\n]{0,8}|Pharmacist|Dentist|Doctor)\b/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanField($match[1]);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Detect the RHU facility printed on an Employee ID and return a normalised
+     * label ("RHU 1" / "RHU 2"). Handles "RHU-2", "RHU II", and the Don Pedro
+     * (RHU 2) satellite naming.
+     */
+    private function extractRhuLabel(string $text): ?string
+    {
+        if (preg_match('/\bRHU\s*[-#]?\s*0*([12])\b/i', $text, $m)) {
+            return 'RHU ' . $m[1];
+        }
+
+        if (preg_match('/\bRHU\s*[-#]?\s*(I{1,2})\b/i', $text, $m)) {
+            return strtoupper($m[1]) === 'II' ? 'RHU 2' : 'RHU 1';
+        }
+
+        if (preg_match('/\bdon\s*pedro\b/i', $text)) {
+            return 'RHU 2';
+        }
+
+        if (preg_match('/\brural\s+health\s+unit\s*[-#]?\s*0*([12])\b/i', $text, $m)) {
+            return 'RHU ' . $m[1];
+        }
+
+        return null;
+    }
+
+    private function extractMunicipality(string $text): ?string
+    {
+        if (preg_match('/(?:municipality|lgu|city|town)\s*(?:of)?\s*[:\-]?\s*([A-Za-z .\-]{3,40})/i', $text, $m)) {
+            return $this->cleanField($m[1]);
+        }
+
+        if (preg_match('/\b(Malasiqui)\b/i', $text, $m)) {
+            return $this->cleanField($m[1]);
+        }
+
+        return null;
     }
 }

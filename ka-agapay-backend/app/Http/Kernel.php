@@ -44,6 +44,10 @@ class Kernel extends HttpKernel
             // For Bearer token API auth, keep it commented.
             // \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
 
+            // Security response headers (nosniff, frame-deny, HSTS, CSP, etc.)
+            // applied to every API response. Previously defined but never wired.
+            \App\Http\Middleware\SecurityHeaders::class,
+
             \Illuminate\Routing\Middleware\ThrottleRequests::class . ':api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
         ],
@@ -79,5 +83,14 @@ class Kernel extends HttpKernel
         |
         */
         'role' => \App\Http\Middleware\RoleMiddleware::class,
+
+        /*
+        | Blocks non-active accounts from protected features. Pending users may
+        | only reach the registration/ID-verification endpoints; rejected and
+        | suspended users are blocked and shown the reason.
+        |
+        | ->middleware('check.status')
+        */
+        'check.status' => \App\Http\Middleware\CheckAccountStatus::class,
     ];
 }

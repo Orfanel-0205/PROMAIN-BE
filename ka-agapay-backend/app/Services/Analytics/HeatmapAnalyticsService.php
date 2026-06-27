@@ -3,6 +3,7 @@
 
 namespace App\Services\Analytics;
 
+use App\Support\Rhu;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -131,9 +132,13 @@ class HeatmapAnalyticsService
 
             $topCase = trim((string) ($data['top_case_type'] ?? 'Unspecified')) ?: 'Unspecified';
 
+            $rhuId = Rhu::normalizeRhuId((int) ($barangay->rhu_id ?? 0) ?: null);
+
             $point = [
                 'barangay_id' => $barangayId,
                 'barangay' => $barangay->barangay,
+                'rhu_id' => $rhuId,
+                'rhu_label' => Rhu::rhuLabel($rhuId),
                 'latitude' => (float) $barangay->latitude,
                 'longitude' => (float) $barangay->longitude,
                 'coordinate_source' => 'database',
@@ -175,6 +180,9 @@ class HeatmapAnalyticsService
         $lat = Schema::hasColumn('barangays', 'latitude') ? 'latitude' : DB::raw(self::DEFAULT_LAT . ' as latitude');
         $lng = Schema::hasColumn('barangays', 'longitude') ? 'longitude' : DB::raw(self::DEFAULT_LNG . ' as longitude');
         $pop = Schema::hasColumn('barangays', 'population') ? 'population' : DB::raw(self::DEFAULT_POPULATION . ' as population');
+        // RHU facility mapping (1 = RHU 1, 2 = RHU 2 / Don Pedro). Preserves the
+        // existing barangays.rhu_id work; degrades to NULL if not migrated yet.
+        $rhu = Schema::hasColumn('barangays', 'rhu_id') ? 'rhu_id' : DB::raw('NULL as rhu_id');
 
         return DB::table('barangays')
             ->select('barangay_id')
@@ -182,6 +190,7 @@ class HeatmapAnalyticsService
             ->addSelect($lat)
             ->addSelect($lng)
             ->addSelect($pop)
+            ->addSelect($rhu)
             ->orderBy('name')
             ->get();
     }

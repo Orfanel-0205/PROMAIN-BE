@@ -94,7 +94,7 @@ Route::prefix('v1')->group(function () {
     // AUTHENTICATED ROUTES
     // =========================================================================
 
-    Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
+    Route::middleware(['auth:sanctum', 'check.status', 'throttle:60,1'])->group(function () {
 
         // =====================================================================
         // AUTH
@@ -520,7 +520,9 @@ Route::prefix('v1')->group(function () {
         // GET  /api/v1/ocr/result/{id}
         // =====================================================================
 
-        Route::prefix('ocr')->group(function () {
+        // OCR endpoints accept file uploads + call an external OCR provider, so
+        // they get a tighter per-minute limit on top of the group throttle.
+        Route::prefix('ocr')->middleware('throttle:20,1')->group(function () {
             Route::post('/upload',      [OcrController::class, 'upload']);
             Route::post('/philhealth',  [OcrController::class, 'scanPhilHealth']);
             Route::get('/results/{id}', [OcrController::class, 'result']);

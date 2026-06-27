@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\User;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,18 +15,40 @@ use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
- * Super Admin resident registration approval workflow.
+ * Super Admin REGISTRATION APPROVAL workflow.
+ *
+ * FINAL RULE: every registrant (resident AND staff/admin) stays "pending" until
+ * a Super Admin approves them here. Residents submit a valid resident/government
+ * ID; RHU staff/admin submit an Employee Identification Card. OCR never
+ * auto-approves — only the Super Admin's approval flips account_status to
+ * 'active'. Approval is blocked until an ID/Employee-ID document is on file.
  *
  * Routes are already gated to super_admin by the route middleware; this
  * controller adds a defense-in-depth role check and never relies on the
- * frontend to hide actions. Residents stay "pending" until a Super Admin
- * approves them here.
+ * frontend to hide actions. super_admin / superadmin accounts are never listed
+ * here (they manage the queue and are not themselves approved).
  */
 class RegistrationApprovalController extends Controller
 {
     private const SUPER_ROLES = ['super_admin', 'superadmin'];
 
     private const RESIDENT_ROLES = ['resident', 'patient'];
+
+    /** Roles whose required document is an Employee Identification Card. */
+    private const STAFF_ROLES = [
+        'doctor',
+        'nurse',
+        'midwife',
+        'bhw',
+        'staff',
+        'staff_admin',
+        'admin',
+        'rhu_admin',
+        'mho',
+        'mho_admin',
+        'municipal_mayor',
+        'it_staff',
+    ];
 
     // OCR rows that are NOT identity-verification documents.
     private const NON_ID_OCR_TYPES = ['philhealth', 'prescription'];
@@ -42,6 +65,9 @@ class RegistrationApprovalController extends Controller
     /**
      * GET /api/v1/admin/registrations/pending
      * status = pending (default) | rejected | all
+     *
+     * Lists every registrant awaiting approval — residents and staff/admin —
+     * except Super Admin accounts.
      */
     public function pending(Request $request): JsonResponse
     {
@@ -55,10 +81,13 @@ class RegistrationApprovalController extends Controller
 
         $status = $validated['status'] ?? 'pending';
 
+        $superRolesSql = "'" . implode("','", self::SUPER_ROLES) . "'";
+
         $query = User::with('role')
-            ->whereHas('role', function ($q) {
+            // Everyone who requires approval = everyone except Super Admin.
+            ->whereHas('role', function ($q) use ($superRolesSql) {
                 $q->whereRaw(
-                    "LOWER(REPLACE(REPLACE(name, ' ', '_'), '-', '_')) IN ('resident', 'patient')"
+                    "LOWER(REPLACE(REPLACE(name, ' ', '_'), '-', '_')) NOT IN ({$superRolesSql})"
                 );
             })
             ->when($status === 'pending', fn ($q) => $q->where('account_status', 'pending'))
@@ -87,7 +116,8 @@ class RegistrationApprovalController extends Controller
 
     /**
      * GET /api/v1/admin/registrations/{id}/ocr
-     * Returns the latest identity-verification OCR record for the resident.
+     * Returns the latest identity-verification OCR record for the registrant
+     * (resident ID or staff Employee Identification Card).
      */
     public function ocr(Request $request, int $id): JsonResponse
     {
@@ -95,6 +125,7 @@ class RegistrationApprovalController extends Controller
 
         $user = User::with('role')->findOrFail($id);
         $ocr = $this->latestIdOcr($id);
+        $raw = $this->ocrRawMeta($ocr);
 
         return response()->json([
             'data' => [
@@ -102,6 +133,10 @@ class RegistrationApprovalController extends Controller
                 'ocr' => $ocr ? [
                     'id'                  => $ocr->id,
                     'id_type'             => $ocr->id_type ?? null,
+                    'document_category'   => $raw['document_category'] ?? $this->documentCategoryForUser($user),
+                    'designation'         => $raw['designation'] ?? null,
+                    'rhu_label'           => $raw['rhu_label'] ?? null,
+                    'municipality'        => $raw['municipality'] ?? null,
                     'status'              => $ocr->status ?? null,
                     'extracted_text'      => $ocr->extracted_text ?? null,
                     'extracted_name'      => $ocr->extracted_name ?? null,
@@ -124,8 +159,9 @@ class RegistrationApprovalController extends Controller
 
     /**
      * GET /api/v1/admin/registrations/{id}/ocr/file
-     * Streams the uploaded ID image through an AUTHENTICATED, super-admin-only
-     * route so the raw storage path is never relied upon for access control.
+     * Streams the uploaded ID / Employee ID image through an AUTHENTICATED,
+     * super-admin-only route so the raw storage path is never relied upon for
+     * access control.
      */
     public function ocrFile(Request $request, int $id): StreamedResponse
     {
@@ -141,6 +177,8 @@ class RegistrationApprovalController extends Controller
 
     /**
      * POST /api/v1/admin/registrations/{id}/approve
+     *
+     * Approval is blocked until an ID / Employee ID document exists on file.
      */
     public function approve(Request $request, int $id): JsonResponse
     {
@@ -148,27 +186,47 @@ class RegistrationApprovalController extends Controller
 
         $user = User::with('role')->findOrFail($id);
 
-        if (!$this->isResident($user)) {
+        if (!$this->isApprovable($user)) {
             return response()->json([
-                'message' => 'Only resident registrations can be approved here.',
+                'message' => 'This account is not part of the approval queue.',
+            ], 422);
+        }
+
+        // FINAL RULE: do not approve without a submitted ID / Employee ID.
+        $ocr = $this->latestIdOcr($id);
+
+        if (!$ocr || empty($ocr->file_path) || !Storage::disk('public')->exists($ocr->file_path)) {
+            return response()->json([
+                'message' => $this->isStaff($user)
+                    ? 'Cannot approve yet — no Employee Identification Card has been submitted for review.'
+                    : 'Cannot approve yet — no valid ID document has been submitted for review.',
+                'requires_document' => true,
             ], 422);
         }
 
         $reviewerId = (int) ($request->user()->user_id ?? 0);
+        $isStaff = $this->isStaff($user);
 
-        DB::transaction(function () use ($user, $reviewerId) {
+        DB::transaction(function () use ($user, $reviewerId, $isStaff) {
             $updates = [
                 'account_status'   => 'active',
                 'id_verified'      => true,
                 'rejection_reason' => null,
             ];
 
-            foreach ([
-                'approved_by'  => $reviewerId,
-                'approved_at'  => now(),
-                'rejected_by'  => null,
-                'rejected_at'  => null,
-            ] as $column => $value) {
+            $columns = [
+                'approved_by' => $reviewerId,
+                'approved_at' => now(),
+                'rejected_by' => null,
+                'rejected_at' => null,
+            ];
+
+            if ($isStaff) {
+                $columns['staff_approved_by'] = $reviewerId;
+                $columns['staff_approved_at'] = now();
+            }
+
+            foreach ($columns as $column => $value) {
                 if (Schema::hasColumn('users', $column)) {
                     $updates[$column] = $value;
                 }
@@ -177,10 +235,12 @@ class RegistrationApprovalController extends Controller
             $user->forceFill($updates)->save();
         });
 
-        $this->audit($request, 'REGISTRATION_APPROVED', $user, []);
+        $this->audit($request, 'REGISTRATION_APPROVED', $user, [
+            'document_type' => $ocr->id_type ?? null,
+        ]);
 
         return response()->json([
-            'message' => 'Registration approved. The resident can now sign in.',
+            'message' => 'Registration approved. The user can now sign in.',
             'data' => $this->summaryPayload($user->fresh()->load('role')),
         ]);
     }
@@ -198,9 +258,9 @@ class RegistrationApprovalController extends Controller
 
         $user = User::with('role')->findOrFail($id);
 
-        if (!$this->isResident($user)) {
+        if (!$this->isApprovable($user)) {
             return response()->json([
-                'message' => 'Only resident registrations can be rejected here.',
+                'message' => 'This account is not part of the approval queue.',
             ], 422);
         }
 
@@ -230,7 +290,7 @@ class RegistrationApprovalController extends Controller
         $this->audit($request, 'REGISTRATION_REJECTED', $user, ['reason' => $reason]);
 
         return response()->json([
-            'message' => 'Registration rejected. The resident will see the reason on next login.',
+            'message' => 'Registration rejected. The user will see the reason on next login.',
             'data' => $this->summaryPayload($user->fresh()->load('role')),
         ]);
     }
@@ -252,16 +312,50 @@ class RegistrationApprovalController extends Controller
             ->first();
     }
 
-    private function isResident(User $user): bool
+    private function ocrRawMeta(?object $ocr): array
     {
-        $role = strtolower(str_replace([' ', '-'], '_', (string) ($user->role_name ?? $user->role?->name)));
+        if (!$ocr || empty($ocr->raw_ocr_response)) {
+            return [];
+        }
 
-        return in_array($role, self::RESIDENT_ROLES, true);
+        $decoded = json_decode((string) $ocr->raw_ocr_response, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function normalizeRole(?string $role): string
+    {
+        return strtolower(str_replace([' ', '-'], '_', (string) $role));
+    }
+
+    private function userRole(User $user): string
+    {
+        return $this->normalizeRole($user->role_name ?? $user->role?->name);
+    }
+
+    private function isApprovable(User $user): bool
+    {
+        return !in_array($this->userRole($user), self::SUPER_ROLES, true);
+    }
+
+    private function isStaff(User $user): bool
+    {
+        return in_array($this->userRole($user), self::STAFF_ROLES, true);
+    }
+
+    private function documentCategoryForUser(User $user): string
+    {
+        return $this->isStaff($user) ? 'employee_id' : 'resident_id';
     }
 
     private function summaryPayload(User $user): array
     {
         $ocr = $this->latestIdOcr((int) $user->user_id);
+        $raw = $this->ocrRawMeta($ocr);
+        $rhuId = Rhu::resolveRhuIdFromUser($user);
+
+        $documentType = $ocr->id_type
+            ?? ($this->isStaff($user) ? 'Employee Identification Card' : null);
 
         return [
             'user_id'           => $user->user_id,
@@ -272,13 +366,24 @@ class RegistrationApprovalController extends Controller
             'email'             => $user->email,
             'mobile_number'     => $user->mobile_number,
             'barangay'          => $user->barangay,
+
+            'role'              => $this->userRole($user),
+            'is_staff'          => $this->isStaff($user),
+
+            'assigned_rhu_id'   => $rhuId,
+            'rhu_label'         => $raw['rhu_label'] ?? Rhu::rhuLabel($rhuId),
+
+            'document_type'     => $documentType,
+            'document_category' => $raw['document_category'] ?? $this->documentCategoryForUser($user),
+            'designation'       => $raw['designation'] ?? null,
+
             'account_status'    => $user->account_status,
             'id_verified'       => (bool) $user->id_verified,
             'terms_accepted'    => !empty($user->terms_accepted_at),
             'terms_accepted_at' => optional($user->terms_accepted_at)->toIso8601String(),
             'rejection_reason'  => $user->rejection_reason,
             'submitted_at'      => optional($user->created_at)->toIso8601String(),
-            'approved_at'       => optional($user->approved_at)->toIso8601String(),
+            'approved_at'       => optional($user->approved_at ?? $user->staff_approved_at)->toIso8601String(),
             'rejected_at'       => optional($user->rejected_at)->toIso8601String(),
             'ocr_status'        => $ocr->status ?? 'none',
             'ocr_id'            => $ocr->id ?? null,
@@ -300,6 +405,7 @@ class RegistrationApprovalController extends Controller
                 'subject_label' => trim((string) $user->first_name . ' ' . (string) $user->last_name),
                 'metadata'      => array_merge($meta, [
                     'target_user_id' => $user->user_id,
+                    'target_role'    => $this->userRole($user),
                     'ip'             => $request->ip(),
                 ]),
                 'ip_address'    => $request->ip(),

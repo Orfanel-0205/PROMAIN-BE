@@ -513,6 +513,14 @@ class AuthController extends Controller
 
                 'birthday' => $birthday,
                 'sex' => $validated['sex'] ?? null,
+
+                /*
+                 * FINAL REGISTRATION RULE:
+                 * ALL registrants stay PENDING until a Super Admin approves them.
+                 * The resident must accept the Terms and submit a valid ID (OCR)
+                 * for review. OCR never auto-approves the account — only Super
+                 * Admin approval flips account_status to 'active'.
+                 */
                 'account_status' => 'pending',
                 'id_verified' => false,
                 'biometric_enabled' => false,
@@ -567,11 +575,13 @@ class AuthController extends Controller
         ], $request);
 
         return response()->json([
-            'message' => 'Registration submitted. Please upload a valid ID, then wait for Super Admin approval.',
+            'message' => 'Registration submitted successfully. Please complete ID verification. Your account will be reviewed by the Super Admin.',
             'user' => $this->formatUser($user),
             'token' => $token,
+            // ID verification (OCR) is REQUIRED before Super Admin approval.
             'next_step' => 'upload_id',
             'requires_id_upload' => true,
+            'account_status' => 'pending',
         ], 201);
     }
 
@@ -936,6 +946,28 @@ class AuthController extends Controller
     private function normalizeRoleName(?string $role): string
     {
         return strtolower(str_replace([' ', '-'], '_', trim((string) $role)));
+    }
+
+    /**
+     * Resident-type roles get the simple, active-on-registration flow.
+     * Accepts a role name string or a User instance.
+     */
+    private function isResidentRole(User|string|null $userOrRole): bool
+    {
+        $role = $userOrRole instanceof User
+            ? $this->resolveUserRoleName($userOrRole)
+            : (string) $userOrRole;
+
+        return in_array($this->normalizeRoleName($role), ['resident', 'patient'], true);
+    }
+
+    /**
+     * Staff/admin/personnel roles require Super Admin approval (pending until
+     * reviewed). Everything that is not a resident role requires approval.
+     */
+    private function requiresApproval(User|string|null $userOrRole): bool
+    {
+        return !$this->isResidentRole($userOrRole);
     }
 
     private function normalizeStatus(?string $status): string
