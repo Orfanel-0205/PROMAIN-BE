@@ -575,7 +575,7 @@ class AuthController extends Controller
         ], $request);
 
         return response()->json([
-            'message' => 'Registration submitted successfully. Please complete ID verification. Your account will be reviewed by the Super Admin.',
+            'message' => 'Registration submitted successfully. Please complete ID verification. Your account will remain pending until reviewed by the Super Admin.',
             'user' => $this->formatUser($user),
             'token' => $token,
             // ID verification (OCR) is REQUIRED before Super Admin approval.

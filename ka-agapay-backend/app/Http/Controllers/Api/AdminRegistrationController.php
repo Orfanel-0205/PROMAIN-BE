@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 
@@ -41,6 +42,18 @@ class AdminRegistrationController extends Controller
             'role' => ['required', Rule::in($this->staffRoles)],
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()->symbols()],
             'password_confirmation' => ['required'],
+
+            // FINAL RULE: RHU staff/admin must accept the Terms and upload an
+            // Employee Identification Card. The account is created as PENDING and
+            // the document is reviewed by the Super Admin before approval.
+            'terms_accepted' => ['required', 'accepted'],
+            'employee_id' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
+        ], [
+            'terms_accepted.required' => 'You must accept the Terms and Conditions to register.',
+            'terms_accepted.accepted' => 'You must accept the Terms and Conditions to register.',
+            'employee_id.required' => 'Please upload your Employee Identification Card.',
+            'employee_id.mimes' => 'Employee ID must be a JPG, PNG, WEBP, or PDF file.',
+            'employee_id.max' => 'Employee ID file must be 20MB or smaller.',
         ]);
 
         $role = UserRole::where('name', $validated['role'])->first();
@@ -51,7 +64,7 @@ class AdminRegistrationController extends Controller
             ], 422);
         }
 
-        $user = DB::transaction(function () use ($validated, $role) {
+        $user = DB::transaction(function () use ($request, $validated, $role) {
             $user = new User();
             $user->role_id = $role->role_id;
             $user->first_name = trim($validated['first_name']);
@@ -69,6 +82,10 @@ class AdminRegistrationController extends Controller
                 $user->id_verified = false;
             }
 
+            if (Schema::hasColumn('users', 'terms_accepted_at')) {
+                $user->terms_accepted_at = now();
+            }
+
             if (Schema::hasColumn('users', 'staff_approved_by')) {
                 $user->staff_approved_by = null;
             }
@@ -83,11 +100,17 @@ class AdminRegistrationController extends Controller
 
             $user->save();
 
+            // Store the Employee Identification Card and LINK it to the user as
+            // an OCR/document record so the Super Admin's "View OCR" + the
+            // approve-requires-document gate work. OCR matching is NOT run and
+            // this NEVER auto-approves the account.
+            $this->storeEmployeeIdDocument($request, $user, (string) $validated['role']);
+
             return $user->fresh()->load('role');
         });
 
         return response()->json([
-            'message' => 'Registration submitted. Please wait for MHO, IT Staff, or Super Admin approval.',
+            'message' => 'Registration submitted successfully. Your Employee ID was uploaded. Your account will remain pending until reviewed by the Super Admin.',
             'data' => [
                 'user_id' => $user->user_id,
                 'name' => trim($user->first_name . ' ' . $user->last_name),
@@ -95,8 +118,50 @@ class AdminRegistrationController extends Controller
                 'email' => $user->email,
                 'role' => $user->role?->name,
                 'account_status' => $user->account_status,
+                'document_type' => 'Employee Identification Card',
             ],
         ], 201);
+    }
+
+    /**
+     * Persist the uploaded Employee Identification Card to the public disk and
+     * create a linked ocr_results row (id_type = Employee Identification Card).
+     * Column-filtered so it is safe across schema variations.
+     */
+    private function storeEmployeeIdDocument(Request $request, User $user, string $role): void
+    {
+        if (!$request->hasFile('employee_id') || !Schema::hasTable('ocr_results')) {
+            return;
+        }
+
+        $path = $request->file('employee_id')->store(
+            'ocr/employee-id/' . $user->user_id,
+            'public'
+        );
+
+        $row = [
+            'user_id' => $user->user_id,
+            'id_type' => 'Employee Identification Card',
+            'file_path' => $path,
+            'extracted_text' => null,
+            'raw_ocr_response' => json_encode([
+                'provider' => 'manual_upload',
+                'document_type' => 'Employee Identification Card',
+                'document_category' => 'employee_id',
+                'role' => $role,
+                'submitted_via' => 'staff_registration',
+            ]),
+            'confidence_score' => 0,
+            'status' => 'submitted',
+            'processed_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        $columns = Schema::getColumnListing('ocr_results');
+        $safe = array_intersect_key($row, array_flip($columns));
+
+        DB::table('ocr_results')->insert($safe);
     }
 
     private function normalizeMobile(mixed $value): string

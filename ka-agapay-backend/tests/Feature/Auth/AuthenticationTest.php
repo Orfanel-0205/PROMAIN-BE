@@ -29,12 +29,14 @@ class AuthenticationTest extends TestCase
             'last_name' => 'Doe',
             'email' => 'johndoe@example.com',
             'mobile_number' => '09171112222',
-            'password' => 'password123',
-            'password_confirmation' => 'password123',
+            'password' => 'Password123!',
+            'password_confirmation' => 'Password123!',
             'barangay_id' => $barangay->barangay_id,
+            // FINAL RULE: residents must accept Terms; account is created pending.
+            'terms_accepted' => true,
         ];
 
-        $response = $this->postJson('/api/register', $payload);
+        $response = $this->postJson('/api/v1/register', $payload);
 
         $response->assertStatus(201)
             ->assertJsonStructure([
@@ -63,7 +65,7 @@ class AuthenticationTest extends TestCase
             'account_status' => 'active',
         ]);
 
-        $response = $this->postJson('/api/login', [
+        $response = $this->postJson('/api/v1/login', [
             'mobile_number' => '09181234567',
             'password' => 'securepass',
         ]);
@@ -89,12 +91,14 @@ class AuthenticationTest extends TestCase
             'account_status' => 'pending',
         ]);
 
-        $response = $this->postJson('/api/login', [
+        $response = $this->postJson('/api/v1/login', [
             'mobile_number' => '09181234567',
             'password' => 'securepass',
         ]);
 
+        // FINAL RULE: pending accounts are blocked at login and told to wait
+        // for Super Admin approval.
         $response->assertStatus(403)
-            ->assertJson(['message' => 'Account is not active.']);
+            ->assertJson(['message' => 'Your account is pending Super Admin approval.']);
     }
 }
