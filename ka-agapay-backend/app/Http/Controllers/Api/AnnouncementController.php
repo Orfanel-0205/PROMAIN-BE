@@ -146,6 +146,23 @@ class AnnouncementController extends Controller
 
         $row = $this->baseQuery()->where('id', $id)->first();
 
+        // Notify residents (push + stored notification) when content is published.
+        // Only the public title is sent — no sensitive data in the notification.
+        if (($data['status'] ?? 'draft') === 'published') {
+            try {
+                $isEvent = str_contains(strtolower($this->table), 'event');
+                app(\App\Services\Notification\NotificationService::class)->notifyResidents(
+                    $isEvent ? 'event' : 'announcement',
+                    $isEvent ? 'New event posted by RHU' : 'New announcement from RHU',
+                    (string) ($row->title ?? ($isEvent ? 'A new RHU event was posted.' : 'A new announcement was posted.')),
+                    ['related_type' => $isEvent ? 'event' : 'announcement', 'related_id' => $id],
+                    $isEvent ? '/events' : '/announcements'
+                );
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         return response()->json([
             'message' => 'Announcement created.',
             'data' => $this->format($row),

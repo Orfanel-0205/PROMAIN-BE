@@ -750,6 +750,16 @@ class AppointmentController extends Controller
             $this->cancelLinkedQueueTicket($appointment, $updateData['rejection_reason'] ?? 'Appointment closed.');
         }
 
+        // Notify the resident (push + stored notification) of the status change.
+        // The NotificationService maps approved/rejected/scheduled/cancelled to a
+        // friendly title/message and never blocks the response on failure.
+        try {
+            app(\App\Services\Notification\NotificationService::class)
+                ->notifyAppointmentStatus($appointment->fresh(['resident']));
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
         return response()->json([
             'message' => 'Appointment status updated.',
             'appointment' => $appointment->fresh([
@@ -1297,6 +1307,9 @@ class AppointmentController extends Controller
                 'diagnosis' => null,
                 'treatment' => null,
                 'status' => $status,
+                // Inherit the RHU facility from the appointment so consultation
+                // records are correctly scoped to RHU 1 / RHU 2.
+                'rhu_id' => $appointment->rhu_id,
                 'subjective' => $chiefComplaint,
                 'objective' => $symptoms,
                 'assessment' => null,

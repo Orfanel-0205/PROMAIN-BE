@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Consultation;
 use App\Support\BoardVisibility;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -26,6 +27,28 @@ class ConsultationController extends Controller
         $query = Consultation::with(['resident', 'attendant', 'appointment'])
             ->latest('consultation_date')
             ->latest('id');
+
+        // RHU scoping (authoritative): global-scope roles (super_admin / MHO) may
+        // view all RHUs or filter by ?rhu_id; facility-scoped staff are locked to
+        // their own RHU. Legacy rows with NULL rhu_id are treated as RHU 1.
+        if (Schema::hasColumn('consultations', 'rhu_id')) {
+            $effectiveRhu = Rhu::filterRhuId(
+                $request->user(),
+                $request->integer('rhu_id') ?: null
+            );
+
+            if ($effectiveRhu !== null) {
+                if ($effectiveRhu === Rhu::DEFAULT_ID) {
+                    $query->where(function ($q) {
+                        $q->where('rhu_id', Rhu::DEFAULT_ID)
+                            ->orWhereNull('rhu_id')
+                            ->orWhereNotIn('rhu_id', Rhu::IDS);
+                    });
+                } else {
+                    $query->where('rhu_id', $effectiveRhu);
+                }
+            }
+        }
 
         if ($request->filled('status') && $request->status !== 'all') {
             $query->where('status', $request->status);

@@ -361,6 +361,23 @@ class EventController extends Controller
             'created_by' => $request->user()?->user_id,
         ]);
 
+        // Notify residents (push + stored notification) when an event/announcement
+        // is published. Only the public title is sent — no sensitive data.
+        if ($publish) {
+            try {
+                $isEvent = ($validated['event_type'] ?? 'event') !== 'announcement';
+                app(\App\Services\Notification\NotificationService::class)->notifyResidents(
+                    $isEvent ? 'event' : 'announcement',
+                    $isEvent ? 'New event posted by RHU' : 'New announcement from RHU',
+                    (string) ($event->title ?? ($isEvent ? 'A new RHU event was posted.' : 'A new announcement was posted.')),
+                    ['related_type' => $isEvent ? 'event' : 'announcement', 'related_id' => $event->id],
+                    $isEvent ? '/events' : '/announcements'
+                );
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         return response()->json([
             'message' => $publish
                 ? 'Post published and visible to residents.'
