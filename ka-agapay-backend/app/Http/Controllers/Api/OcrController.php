@@ -335,6 +335,15 @@ class OcrController extends Controller
 
     public function scanPrescription(Request $request, int $consultationId): JsonResponse
     {
+        // Scanning a prescription image CREATES an e-prescription order, so it is
+        // restricted to prescribers — only a Doctor, MHO, or Super Admin. Nurses,
+        // midwives, BHWs, and head nurses cannot create prescriptions this way.
+        abort_unless(
+            $request->user()?->hasAnyRole(['doctor', 'mho', 'mho_admin', 'super_admin', 'superadmin']),
+            403,
+            'Only a Doctor, MHO, or Super Admin can create prescriptions. Nurses, midwives, BHWs, and head nurses may only release or dispense an existing prescription.'
+        );
+
         abort_unless(Schema::hasTable('consultations'), 404, 'Consultations table not found.');
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
 

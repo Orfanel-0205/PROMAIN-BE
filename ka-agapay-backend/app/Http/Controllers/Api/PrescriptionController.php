@@ -21,9 +21,36 @@ use Illuminate\Validation\ValidationException;
 
 class PrescriptionController extends Controller
 {
+    /**
+     * Roles allowed to CREATE / ISSUE a prescription order.
+     * Nurses, midwives, BHWs, and head nurses are intentionally excluded — they
+     * may only release/dispense an existing valid order, never create one.
+     */
+    private const PRESCRIBER_ROLES = [
+        'doctor',
+        'mho',
+        'mho_admin',
+        'super_admin',
+        'superadmin',
+    ];
+
     public function __construct(
         private readonly PrescriptionService $service
     ) {}
+
+    /**
+     * Enforce that only a Doctor, MHO, or Super Admin can create/issue a
+     * prescription. Enforced server-side so a bypassed frontend cannot create
+     * orders. Returns a clear 403 for everyone else.
+     */
+    private function authorizePrescriber(Request $request): void
+    {
+        abort_unless(
+            $request->user()?->hasAnyRole(self::PRESCRIBER_ROLES),
+            403,
+            'Only a Doctor, MHO, or Super Admin can create or issue prescriptions. Nurses, midwives, BHWs, and head nurses may only release or dispense an existing prescription.'
+        );
+    }
 
     public function index(Request $request): JsonResponse
     {
@@ -116,6 +143,8 @@ class PrescriptionController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        $this->authorizePrescriber($request);
+
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
 
         $formType = $request->input('form_type') === 'lab_request'
@@ -217,6 +246,8 @@ class PrescriptionController extends Controller
 
     public function fromConsultation(Request $request, int $id): JsonResponse
     {
+        $this->authorizePrescriber($request);
+
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
         abort_unless(Schema::hasTable('consultations'), 404, 'Consultations table not found.');
 
@@ -351,6 +382,8 @@ class PrescriptionController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        $this->authorizePrescriber($request);
+
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
 
         $validated = $request->validate([
