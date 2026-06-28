@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ResidentProfile;
 use App\Models\User;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
@@ -344,6 +345,13 @@ class ProfileController extends Controller
             'barangay' => $user->barangay,
             'birthday' => optional($user->birthday)->toDateString(),
             'sex' => $user->sex,
+
+            // RHU facility (1 = RHU 1, 2 = RHU 2 / Don Pedro), derived from the
+            // resident's barangay so the mobile app shows the correct RHU in
+            // appointment booking. The backend remains authoritative when storing.
+            'barangay_id' => $profile?->barangay_id,
+            'rhu_id' => Rhu::resolveRhuIdFromUser($user),
+            'rhu_label' => Rhu::rhuLabel(Rhu::resolveRhuIdFromUser($user)),
 
             'role' => $this->normalizeRoleName($this->resolveRoleName($user)),
             'role_name' => $this->normalizeRoleName($this->resolveRoleName($user)),

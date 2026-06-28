@@ -170,9 +170,47 @@ class RegistrationApprovalController extends Controller
         $ocr = $this->latestIdOcr($id);
 
         abort_if(!$ocr || empty($ocr->file_path), 404, 'No ID document on file.');
-        abort_unless(Storage::disk('public')->exists($ocr->file_path), 404, 'ID document file is missing.');
 
-        return Storage::disk('public')->response($ocr->file_path);
+        $disk = Storage::disk('public');
+        abort_unless($disk->exists($ocr->file_path), 404, 'ID document file is missing.');
+
+        // Resolve a correct, explicit Content-Type so the browser can render the
+        // image / PDF inline. Prefer the extension mapping, then the disk's own
+        // detection, then a safe binary fallback. The raw storage path is never
+        // exposed — the streamed filename is a generic "id-document.<ext>".
+        $ext = strtolower((string) pathinfo($ocr->file_path, PATHINFO_EXTENSION));
+
+        $mimeByExt = [
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png'  => 'image/png',
+            'webp' => 'image/webp',
+            'heic' => 'image/heic',
+            'heif' => 'image/heif',
+            'gif'  => 'image/gif',
+            'bmp'  => 'image/bmp',
+            'pdf'  => 'application/pdf',
+        ];
+
+        $mime = $mimeByExt[$ext] ?? null;
+
+        if (!$mime) {
+            try {
+                $mime = $disk->mimeType($ocr->file_path) ?: 'application/octet-stream';
+            } catch (\Throwable) {
+                $mime = 'application/octet-stream';
+            }
+        }
+
+        return $disk->response(
+            $ocr->file_path,
+            'id-document.' . ($ext !== '' ? $ext : 'bin'),
+            [
+                'Content-Type'  => $mime,
+                'Cache-Control' => 'private, max-age=0, no-store',
+            ],
+            'inline'
+        );
     }
 
     /**
