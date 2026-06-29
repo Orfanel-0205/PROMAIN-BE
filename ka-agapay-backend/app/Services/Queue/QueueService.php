@@ -806,7 +806,7 @@ class QueueService
         $this->reflowQueuePositions($rhuId, $serviceType);
 
         $query = QueueTicket::query()
-            ->with(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy'])
+            ->with(['residentProfile.barangay', 'residentProfile.user', 'rhu', 'issuedBy', 'servedBy'])
             ->forRhu($rhuId)
             ->forToday()
             ->whereIn('status', self::ACTIVE_STATUSES)

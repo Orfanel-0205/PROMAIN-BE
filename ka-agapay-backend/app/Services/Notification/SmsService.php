@@ -45,12 +45,15 @@ class SmsService
 
             $messageId = $first['message_id'] ?? null;
             $rawStatus = $first['status'] ?? null;
-            $status    = $this->mapStatus($rawStatus);
+
+            // A message_id in the response means Semaphore accepted the SMS and
+            // queued it for delivery. Their initial status "Pending" reflects their
+            // internal queue state, not a failure — treat acceptance as 'sent'.
+            $status = ($messageId !== null) ? 'sent' : $this->mapStatus($rawStatus);
 
             $updates = [
                 'status'              => $status,
                 'provider_message_id' => $messageId,
-                // Only stamp sent_at once the message is actually sent/delivered.
                 'sent_at'             => $status === 'sent' ? now() : null,
                 'error_message'       => $status === 'failed'
                     ? ('Semaphore status: ' . ($rawStatus ?? 'unknown'))

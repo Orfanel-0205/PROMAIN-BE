@@ -590,19 +590,21 @@ class NotificationService
 
             $ticketNumber = $ticket->ticket_number ?? $ticket->queue_number ?? $ticket->id;
             $deskName = $this->serviceLabel((string) $ticket->service_type);
+            $patientName = $this->userName($resident);
             $title = 'Your queue number is being called';
             $message = "Queue {$ticketNumber} is now being called. Please proceed to {$deskName}.";
             $payload = [
                 'type' => 'queue_called',
                 'queue_ticket_id' => $ticket->id,
                 'queue_number' => $ticketNumber,
+                'ticket_number' => $ticketNumber,
+                'patient_name' => $patientName,
                 'desk' => $deskName,
                 'rhu_id' => $ticket->rhu_id,
                 'status' => $ticket->status,
                 'screen' => 'queue',
                 'related_type' => 'queue',
                 'related_id' => $ticket->id,
-                'ticket_number' => $ticketNumber,
             ];
 
             $notificationId = $this->notifyUser(

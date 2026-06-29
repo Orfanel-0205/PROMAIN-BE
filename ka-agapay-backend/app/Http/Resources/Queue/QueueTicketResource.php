@@ -117,7 +117,33 @@ class QueueTicketResource extends JsonResource
 
         $name = trim(implode(' ', $parts));
 
-        return $name !== '' ? $name : null;
+        if ($name !== '') {
+            return $name;
+        }
+
+        // Fall back to the linked user account's display name when resident
+        // profile name fields are not yet populated.
+        $user = $resident->relationLoaded('user') ? $resident->user : null;
+
+        if ($user) {
+            $userName = $user->name ?? $user->full_name ?? null;
+
+            if ($userName) {
+                return trim((string) $userName);
+            }
+
+            $userParts = array_filter([
+                $user->first_name ?? null,
+                $user->last_name ?? null,
+            ]);
+            $userName = trim(implode(' ', $userParts));
+
+            if ($userName !== '') {
+                return $userName;
+            }
+        }
+
+        return null;
     }
 
     private function residentMobile($resident): ?string

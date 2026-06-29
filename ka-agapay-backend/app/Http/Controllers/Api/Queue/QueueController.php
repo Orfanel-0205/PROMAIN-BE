@@ -255,6 +255,7 @@ class QueueController extends Controller
     {
         $query = QueueTicket::with([
             'residentProfile.barangay',
+            'residentProfile.user',
             'rhu',
             'issuedBy',
             'servedBy',
@@ -306,6 +307,7 @@ class QueueController extends Controller
 
         $ticket->load([
             'residentProfile.barangay',
+            'residentProfile.user',
             'rhu',
             'issuedBy',
             'servedBy',
