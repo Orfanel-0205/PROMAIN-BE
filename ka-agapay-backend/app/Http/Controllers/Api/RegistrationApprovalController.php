@@ -398,8 +398,13 @@ class RegistrationApprovalController extends Controller
         return [
             'user_id'           => $user->user_id,
             'id'                => $user->user_id,
-            'name'              => trim((string) $user->first_name . ' ' . (string) $user->last_name),
+            'name'              => trim(implode(' ', array_filter([
+                (string) $user->first_name,
+                (string) ($user->middle_name ?? ''),
+                (string) $user->last_name,
+            ]))),
             'first_name'        => $user->first_name,
+            'middle_name'       => $user->middle_name ?? null,
             'last_name'         => $user->last_name,
             'email'             => $user->email,
             'mobile_number'     => $user->mobile_number,

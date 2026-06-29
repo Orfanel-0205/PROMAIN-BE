@@ -21,6 +21,7 @@ class User extends Authenticatable
         'assigned_rhu_id',
 
         'first_name',
+        'middle_name',
         'last_name',
         'email',
         'mobile_number',

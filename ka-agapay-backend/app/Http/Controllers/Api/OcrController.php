@@ -564,6 +564,38 @@ class OcrController extends Controller
     }
 
     // =========================================================================
+    // REUSABLE EXTRACTION (used by AdminRegistrationController for Employee ID)
+    // Runs the SAME OCR pipeline as the working /ocr/upload flow and returns the
+    // structured fields. Never throws — callers can rely on safe defaults.
+    // =========================================================================
+
+    public function extractDocumentFields(string $fullPath, string $mimeType): array
+    {
+        try {
+            $ocr = $this->runOcr($fullPath, $mimeType);
+            $text = trim((string) ($ocr['text'] ?? ''));
+
+            return [
+                'text' => $text,
+                'extracted_name' => $this->extractName($text),
+                'extracted_birthdate' => $this->extractBirthdate($text),
+                'extracted_id_number' => $this->extractIdNumber($text),
+                'confidence' => (float) ($ocr['confidence'] ?? 0),
+                'raw' => $ocr['raw'] ?? [],
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'text' => '',
+                'extracted_name' => null,
+                'extracted_birthdate' => null,
+                'extracted_id_number' => null,
+                'confidence' => 0.0,
+                'raw' => ['provider' => 'ocr.space', 'error' => $e->getMessage()],
+            ];
+        }
+    }
+
+    // =========================================================================
     // OCR PROVIDER
     // =========================================================================
 
