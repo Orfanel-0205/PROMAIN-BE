@@ -177,12 +177,14 @@ Route::prefix('v1')->group(function () {
         // POST /api/v1/admin/sms/send
         // =====================================================================
 
-        Route::prefix('admin/sms')->group(function () {
-            Route::get('/account',  [AdminSmsController::class, 'account']);
-            Route::get('/logs',     [AdminSmsController::class, 'logs']);
-            Route::post('/preview', [AdminSmsController::class, 'preview']);
-            Route::post('/send',    [AdminSmsController::class, 'send']);
-        });
+        Route::prefix('admin/sms')
+            ->middleware('role:super_admin,mho,rhu_admin')
+            ->group(function () {
+                Route::get('/account',  [AdminSmsController::class, 'account']);
+                Route::get('/logs',     [AdminSmsController::class, 'logs']);
+                Route::post('/preview', [AdminSmsController::class, 'preview']);
+                Route::post('/send',    [AdminSmsController::class, 'send']);
+            });
 
         // =====================================================================
         // ACTIVITY LOGS
@@ -346,9 +348,15 @@ Route::prefix('v1')->group(function () {
                 Route::post('/appointments/{id}/add-to-queue',       [AppointmentController::class, 'addToQueueFromAppointment']);
                 Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
 
-                Route::get('/consultations',                 [ConsultationController::class, 'index']);
-                Route::post('/consultations',                [ConsultationController::class, 'store']);
-                Route::get('/consultations/{id}',            [ConsultationController::class, 'show']);
+                Route::get('/consultations',      [ConsultationController::class, 'index']);
+                Route::post('/consultations',     [ConsultationController::class, 'store']);
+                Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
+            });
+
+        // Consultation write actions that finalize clinical records — doctor/MHO only.
+        Route::middleware('role:doctor,mho,super_admin')
+            ->prefix('admin')
+            ->group(function () {
                 Route::put('/consultations/{id}/soap',       [ConsultationController::class, 'updateSoap']);
                 Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
             });
@@ -392,8 +400,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/summary',   [QueueController::class, 'summary']);
             Route::get('/my-ticket', [QueueController::class, 'myTicket']);
 
-            Route::post('/call-next', [QueueController::class, 'callNext']);
-            Route::post('/call-priority-next', [QueueController::class, 'callPriorityNext']);
+            Route::post('/call-next', [QueueController::class, 'callNext'])
+                ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,mho,super_admin');
+            Route::post('/call-priority-next', [QueueController::class, 'callPriorityNext'])
+                ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,mho,super_admin');
 
             // IMPORTANT: use {ticket}, not {id}
             Route::post('/{ticket}/start-service', [QueueController::class, 'startService']);
@@ -514,10 +524,13 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/sessions',                    [SessionController::class, 'index']);
             Route::get('/sessions/{session}',          [SessionController::class, 'show']);
-            Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
+            Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus'])
+                ->middleware('role:doctor,mho,super_admin');
             Route::post('/sessions/{session}/notify-patient', [SessionController::class, 'notifyPatient']);
-            Route::patch('/sessions/{session}/end',    [SessionController::class, 'end']);
-            Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
+            Route::patch('/sessions/{session}/end',    [SessionController::class, 'end'])
+                ->middleware('role:doctor,mho,super_admin');
+            Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes'])
+                ->middleware('role:doctor,mho,super_admin');
 
             // -----------------------------------------------------------------
             // WEBRTC / SIGNALING

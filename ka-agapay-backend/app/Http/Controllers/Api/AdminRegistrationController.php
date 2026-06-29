@@ -152,7 +152,7 @@ class AdminRegistrationController extends Controller
                 'submitted_via' => 'staff_registration',
             ]),
             'confidence_score' => 0,
-            'status' => 'submitted',
+            'status' => 'pending',
             'processed_at' => now(),
             'created_at' => now(),
             'updated_at' => now(),

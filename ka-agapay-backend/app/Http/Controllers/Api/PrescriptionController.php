@@ -421,8 +421,9 @@ class PrescriptionController extends Controller
         return $this->show($id);
     }
 
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, int $id): JsonResponse
     {
+        $this->authorizePrescriber($request);
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
 
         DB::table('prescriptions')->where('id', $id)->update([
@@ -441,6 +442,13 @@ class PrescriptionController extends Controller
 
         $row = DB::table('prescriptions')->where('id', $id)->first();
         abort_unless($row, 404, 'Prescription not found.');
+
+        // Only release/dispense prescriptions that have been approved by a doctor/MHO.
+        abort_unless(
+            in_array($row->status ?? '', ['approved', 'active', 'dispensed'], true),
+            422,
+            'This prescription has not been approved yet and cannot be released. Only a Doctor or MHO can approve prescriptions.'
+        );
 
         $pdfPath = $this->generateAndStoreModernPdf($row);
 

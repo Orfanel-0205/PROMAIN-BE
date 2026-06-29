@@ -731,12 +731,20 @@ class AppointmentController extends Controller
 
         if (in_array($status, ['confirmed', 'approved'], true)) {
             $updateData['approved_at'] = $appointment->approved_at ?: now();
-            $updateData['scheduled_at'] = $appointment->scheduled_at ?: now();
+            // scheduled_at = the resident's chosen appointment slot, not the approval timestamp.
+            if (!$appointment->scheduled_at) {
+                $date = $targetDate ?? $appointment->appointment_date;
+                $time = $targetTime ?? $appointment->appointment_time ?? '08:00:00';
+                $updateData['scheduled_at'] = \Carbon\Carbon::parse("{$date} {$time}");
+            }
         }
 
         if ($status === 'scheduled') {
             $updateData['approved_at'] = $appointment->approved_at ?: now();
-            $updateData['scheduled_at'] = now();
+            // Use appointment_date + appointment_time, not now().
+            $date = $targetDate ?? $appointment->appointment_date;
+            $time = $targetTime ?? $appointment->appointment_time ?? '08:00:00';
+            $updateData['scheduled_at'] = \Carbon\Carbon::parse("{$date} {$time}");
         }
 
         if ($status === 'rejected' || $status === 'cancelled') {
