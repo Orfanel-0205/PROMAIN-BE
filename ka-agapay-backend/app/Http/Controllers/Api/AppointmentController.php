@@ -237,13 +237,16 @@ class AppointmentController extends Controller
             ], 422);
         }
 
-        // Resolve the resident's REAL barangay (kept on the profile) and derive
-        // the FACILITY RHU (1 or 2) from it. The appointment stores the facility
-        // rhu_id — never a barangay id.
+        // Resolve the resident's REAL barangay (kept on the profile). The
+        // appointment stores the facility rhu_id (1 or 2) — never a barangay id.
         $barangayId = $this->resolveResidentBarangayId($user);
 
-        $rhuId = Rhu::deriveRhuIdFromBarangayId($barangayId)
-            ?? Rhu::normalizeRhuId($validated['rhu_id'] ?? null)
+        // The resident CHOOSES the RHU/health center they want to book (RHU 2 may
+        // be nearer than the barangay default). The requested rhu_id is honored
+        // FIRST (already validated to be 1 or 2 above); the barangay-derived RHU
+        // is only the fallback recommendation when none is sent.
+        $rhuId = Rhu::normalizeRhuId($validated['rhu_id'] ?? null)
+            ?? Rhu::deriveRhuIdFromBarangayId($barangayId)
             ?? Rhu::resolveRhuIdFromUser($user)
             ?? Rhu::DEFAULT_ID;
 
