@@ -135,6 +135,29 @@ class SessionController extends Controller
     }
 
     /**
+     * POST /api/v1/telemedicine/sessions/{session}/notify-patient
+     *
+     * RHU staff action: tells the resident the room is ready to join. Creates a
+     * stored notification + sends a push so the resident can tap to enter the
+     * SAME room. Jitsi itself never notifies the resident, so this is required.
+     */
+    public function notifyPatient(Request $request, TelemedicineSession $session): JsonResponse
+    {
+        $session->loadMissing(['request.residentProfile.user', 'request.rhu']);
+
+        $result = app(\App\Services\Notification\NotificationService::class)
+            ->notifyTelemedicineCalling($session);
+
+        return response()->json([
+            'message' => ($result['database_created'] ?? false)
+                ? 'The patient has been notified that the telemedicine room is ready.'
+                : ($result['message'] ?? 'Could not notify the patient.'),
+            'notified' => (bool) ($result['database_created'] ?? false),
+            'push_sent' => (bool) ($result['push_sent'] ?? false),
+        ]);
+    }
+
+    /**
      * PATCH /api/v1/telemedicine/sessions/{session}/end
      *
      * Single source of truth for ending a telemedicine call from the room.

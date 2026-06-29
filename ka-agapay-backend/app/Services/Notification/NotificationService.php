@@ -475,7 +475,7 @@ class NotificationService
             }
 
             $request = $session->request;
-            $title = 'Telemedicine consultation is calling';
+            $title = 'Telemedicine session is ready';
             $message = 'Your RHU telemedicine consultation is ready. Tap to join.';
             $payload = [
                 'type' => 'telemedicine_calling',

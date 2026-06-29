@@ -497,6 +497,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/sessions',                    [SessionController::class, 'index']);
             Route::get('/sessions/{session}',          [SessionController::class, 'show']);
             Route::patch('/sessions/{session}/status', [SessionController::class, 'updateStatus']);
+            Route::post('/sessions/{session}/notify-patient', [SessionController::class, 'notifyPatient']);
             Route::patch('/sessions/{session}/end',    [SessionController::class, 'end']);
             Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
 
