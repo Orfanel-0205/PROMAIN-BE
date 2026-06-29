@@ -157,6 +157,8 @@ Route::prefix('v1')->group(function () {
             ->middleware('role:admin,staff_admin,rhu_admin,mho,municipal_mayor,it_staff,super_admin,superadmin')
             ->group(function () {
                 Route::get('/',                    [AdminUserController::class, 'index']);
+                // Declared BEFORE /{id} so "roles" is not treated as a user id.
+                Route::get('/roles',               [AdminUserController::class, 'roles']);
                 Route::post('/',                   [AdminUserController::class, 'store']);
                 Route::patch('/{id}',              [AdminUserController::class, 'update']);
                 Route::put('/{id}',                [AdminUserController::class, 'update']);

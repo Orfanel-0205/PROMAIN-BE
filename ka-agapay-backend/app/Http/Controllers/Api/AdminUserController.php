@@ -7,12 +7,15 @@ use App\Http\Controllers\Controller;
 use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AdminUserController extends Controller
 {
@@ -216,19 +219,23 @@ class AdminUserController extends Controller
 
         $email = $this->normalizeEmail($validated['email'] ?? null);
 
-        if ($email !== null) {
-            abort_if(
-                User::whereRaw('LOWER(email) = ?', [$email])->exists(),
-                422,
-                'Email is already used by another account.'
-            );
+        // Check duplicates INCLUDING soft-deleted rows. The Postgres unique
+        // constraints (users_mobile_number_unique / users_email_unique) still
+        // count soft-deleted accounts, so without withTrashed() a previously
+        // deleted patient would slip past this check and crash on INSERT (23505).
+        $duplicateErrors = [];
+
+        if ($email !== null && User::withTrashed()->whereRaw('LOWER(email) = ?', [$email])->exists()) {
+            $duplicateErrors['email'] = ['Email is already registered.'];
         }
 
-        abort_if(
-            User::where('mobile_number', $mobile)->exists(),
-            422,
-            'Mobile number is already used by another account.'
-        );
+        if (User::withTrashed()->where('mobile_number', $mobile)->exists()) {
+            $duplicateErrors['mobile_number'] = ['Mobile number is already registered.'];
+        }
+
+        if (!empty($duplicateErrors)) {
+            throw ValidationException::withMessages($duplicateErrors);
+        }
 
         $status = $this->normalizeStatus(
             (string) ($validated['account_status'] ?? $validated['status'] ?? '')
@@ -242,54 +249,145 @@ class AdminUserController extends Controller
             $this->authorizeStaffApprover($request);
         }
 
-        $user = DB::transaction(function () use (
-            $request,
-            $validated,
-            $roleId,
-            $roleName,
-            $firstName,
-            $lastName,
-            $email,
-            $mobile,
-            $status
-        ) {
-            $user = User::create([
-                'role_id' => $roleId,
-                'first_name' => $firstName,
-                'last_name' => $lastName,
-                'email' => $email,
-                'mobile_number' => $mobile,
-                'barangay' => $validated['barangay'] ?? null,
-                'password' => Hash::make($validated['password'] ?? 'KaAgapay@1234'),
-                'account_status' => $status,
+        try {
+            $user = DB::transaction(function () use (
+                $request,
+                $validated,
+                $roleId,
+                $roleName,
+                $firstName,
+                $lastName,
+                $email,
+                $mobile,
+                $status
+            ) {
+                $user = User::create([
+                    'role_id' => $roleId,
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'email' => $email,
+                    'mobile_number' => $mobile,
+                    'barangay' => $validated['barangay'] ?? null,
+                    'password' => Hash::make($validated['password'] ?? 'KaAgapay@1234'),
+                    'account_status' => $status,
 
-                /*
-                 * Admin-created accounts are treated as verified records.
-                 * Staff still become pending unless status was explicitly active.
-                 */
-                'id_verified' => true,
+                    /*
+                     * Admin-created accounts are treated as verified records.
+                     * Staff still become pending unless status was explicitly active.
+                     */
+                    'id_verified' => true,
 
-                'staff_approved_by' => $status === 'active' && $this->isStaffRole($roleName)
-                    ? $request->user()?->user_id
-                    : null,
-                'staff_approved_at' => $status === 'active' && $this->isStaffRole($roleName)
-                    ? now()
-                    : null,
-                'rejection_reason' => null,
-            ]);
+                    'staff_approved_by' => $status === 'active' && $this->isStaffRole($roleName)
+                        ? $request->user()?->user_id
+                        : null,
+                    'staff_approved_at' => $status === 'active' && $this->isStaffRole($roleName)
+                        ? now()
+                        : null,
+                    'rejection_reason' => null,
+                ]);
 
-            if ($this->isResidentRole($roleName)) {
-                $this->persistUserPatientFields($user, $validated);
-                $this->persistResidentProfileFields($user, $validated, $firstName, $lastName, $mobile);
-            }
+                if ($this->isResidentRole($roleName)) {
+                    $this->persistUserPatientFields($user, $validated);
+                    $this->persistResidentProfileFields($user, $validated, $firstName, $lastName, $mobile);
+                }
 
-            return $user;
-        });
+                return $user;
+            });
+        } catch (QueryException $e) {
+            // Safety net for any unique-constraint race that slips past the
+            // pre-checks above — never let a 23505 escape as a 500.
+            return $this->handleUserUniqueViolation($e);
+        }
 
         return response()->json([
             'message' => 'User created successfully.',
             'data' => $this->userPayload($user->fresh()->load('role')),
         ], 201);
+    }
+
+    /**
+     * GET /admin/users/roles
+     * Safe role list for the Web Admin "Add Patient / Mobile Account" modal.
+     * Returns only the roles the admin UI needs — no secrets.
+     */
+    public function roles(Request $request): JsonResponse
+    {
+        $this->authorizeUserManagement($request);
+
+        if (!Schema::hasTable('user_roles')) {
+            return response()->json(['data' => []]);
+        }
+
+        $columns = Schema::getColumnListing('user_roles');
+        $hasLabel = in_array('label', $columns, true);
+        $hasDescription = in_array('description', $columns, true);
+
+        // Only expose the roles the Web Admin actually uses.
+        $allowed = [
+            'resident', 'patient', 'staff', 'nurse', 'midwife', 'bhw',
+            'doctor', 'mho', 'rhu_admin', 'super_admin',
+        ];
+
+        $roles = UserRole::query()->get()
+            ->map(function (UserRole $role) use ($hasLabel, $hasDescription) {
+                $name = $this->normalizeRoleName(
+                    (string) ($role->name ?? $role->role_name ?? $role->slug ?? $role->role ?? '')
+                );
+
+                return [
+                    'role_id' => (int) $role->role_id,
+                    'name' => $name,
+                    'label' => $hasLabel && !empty($role->label)
+                        ? $role->label
+                        : ucwords(str_replace('_', ' ', $name)),
+                    'description' => $hasDescription ? ($role->description ?? null) : null,
+                ];
+            })
+            ->filter(fn (array $role) => $role['role_id'] > 0
+                && in_array($role['name'], $allowed, true))
+            ->values();
+
+        return response()->json(['data' => $roles]);
+    }
+
+    /**
+     * Map a Postgres unique-violation (SQLSTATE 23505) to a clean 422 JSON
+     * response so a duplicate mobile/email never escapes as a 500.
+     */
+    private function handleUserUniqueViolation(QueryException $e): JsonResponse
+    {
+        $sqlState = $e->errorInfo[0] ?? null;
+        $message = $e->getMessage();
+
+        if ($sqlState === '23505' || str_contains($message, '23505')) {
+            if (str_contains($message, 'users_mobile_number_unique')) {
+                return response()->json([
+                    'message' => 'Mobile number is already registered.',
+                    'errors' => ['mobile_number' => ['Mobile number is already registered.']],
+                ], 422);
+            }
+
+            if (str_contains($message, 'users_email_unique')) {
+                return response()->json([
+                    'message' => 'Email is already registered.',
+                    'errors' => ['email' => ['Email is already registered.']],
+                ], 422);
+            }
+
+            return response()->json([
+                'message' => 'This account already exists.',
+                'errors' => ['mobile_number' => ['This account already exists.']],
+            ], 422);
+        }
+
+        Log::error('[AdminUserController] Database error while creating user.', [
+            'sql_state' => $sqlState,
+            'error' => $message,
+        ]);
+
+        return response()->json([
+            'message' => 'Could not create the account due to a server error. Please try again.',
+        ], 500);
     }
 
     public function update(Request $request, int $id): JsonResponse
@@ -358,11 +456,12 @@ class AdminUserController extends Controller
 
             if ($email !== null) {
                 abort_if(
-                    User::whereRaw('LOWER(email) = ?', [$email])
+                    User::withTrashed()
+                        ->whereRaw('LOWER(email) = ?', [$email])
                         ->where('user_id', '!=', $user->user_id)
                         ->exists(),
                     422,
-                    'Email is already used by another account.'
+                    'Email is already registered.'
                 );
             }
 
@@ -378,11 +477,12 @@ class AdminUserController extends Controller
             abort_unless($this->isValidPhilippineMobile($mobile), 422, 'Mobile number must use this format: 09XXXXXXXXX.');
 
             abort_if(
-                User::where('mobile_number', $mobile)
+                User::withTrashed()
+                    ->where('mobile_number', $mobile)
                     ->where('user_id', '!=', $user->user_id)
                     ->exists(),
                 422,
-                'Mobile number is already used by another account.'
+                'Mobile number is already registered.'
             );
 
             $updates['mobile_number'] = $mobile;
