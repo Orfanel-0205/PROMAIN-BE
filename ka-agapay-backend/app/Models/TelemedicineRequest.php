@@ -31,6 +31,12 @@ class TelemedicineRequest extends Model
         'screened_by',
         'screening_notes',
         'screened_at',
+        'vital_temperature',
+        'vital_bp',
+        'vital_heart_rate',
+        'vital_respiratory_rate',
+        'endorsed_to',
+        'endorsed_at',
         'status',
         'rejection_reason',
         'cancellation_reason',
@@ -43,13 +49,14 @@ class TelemedicineRequest extends Model
     ];
 
     protected $casts = [
-        'symptoms' => 'array',
-        'is_bhw_assisted' => 'boolean',
-        'screened_at' => 'datetime',
-        'cancelled_at' => 'datetime',
-        'completed_at' => 'datetime',
+        'symptoms'           => 'array',
+        'is_bhw_assisted'    => 'boolean',
+        'screened_at'        => 'datetime',
+        'endorsed_at'        => 'datetime',
+        'cancelled_at'       => 'datetime',
+        'completed_at'       => 'datetime',
         'board_visible_until' => 'datetime',
-        'archived_at' => 'datetime',
+        'archived_at'        => 'datetime',
     ];
 
     public function residentProfile(): BelongsTo
@@ -70,6 +77,11 @@ class TelemedicineRequest extends Model
     public function screenedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'screened_by', 'user_id');
+    }
+
+    public function endorsedTo(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'endorsed_to', 'user_id');
     }
 
     public function rhu(): BelongsTo
@@ -120,12 +132,14 @@ class TelemedicineRequest extends Model
     public function canTransitionTo(string $newStatus): bool
     {
         $allowed = [
-            'pending' => ['screened', 'rejected', 'cancelled'],
-            'screened' => ['scheduled', 'rejected', 'cancelled'],
-            'scheduled' => ['completed', 'cancelled'],
-            'rejected' => [],
-            'cancelled' => [],
-            'completed' => [],
+            'pending'            => ['screening', 'screened', 'rejected', 'cancelled'],
+            'screening'          => ['screened', 'cancelled'],
+            'screened'           => ['endorsed_to_doctor', 'scheduled', 'rejected', 'cancelled'],
+            'endorsed_to_doctor' => ['scheduled', 'cancelled'],
+            'scheduled'          => ['completed', 'cancelled'],
+            'rejected'           => [],
+            'cancelled'          => [],
+            'completed'          => [],
         ];
 
         return in_array($newStatus, $allowed[$this->status] ?? [], true);

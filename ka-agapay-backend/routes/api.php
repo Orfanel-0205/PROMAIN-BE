@@ -463,35 +463,53 @@ Route::prefix('v1')->group(function () {
 
         // =====================================================================
         // TELEMEDICINE
-        // Final URLs:
-        // GET    /api/v1/telemedicine/requests
-        // POST   /api/v1/telemedicine/requests
-        // GET    /api/v1/telemedicine/requests/mine
-        // GET    /api/v1/telemedicine/requests/{request}
-        // PATCH  /api/v1/telemedicine/requests/{request}/screen
-        // DELETE /api/v1/telemedicine/requests/{telemedicineRequest}
+        // Two-level workflow:
+        //   Level 1 (nurse/midwife/head_nurse/staff/rhu_staff/rhu_admin):
+        //     PATCH  /requests/{request}/start-screening  — pending → screening
+        //     PATCH  /requests/{request}/screen           — screening → screened (with vitals)
+        //     POST   /requests/{request}/endorse-to-doctor — screened → endorsed_to_doctor
+        //   Level 2 (doctor/mho/super_admin):
+        //     POST   /requests/{telemedicineRequest}/session — create & schedule session
+        //     All session lifecycle endpoints
         //
-        // GET    /api/v1/telemedicine/sessions
-        // GET    /api/v1/telemedicine/sessions/{session}
-        // PATCH  /api/v1/telemedicine/sessions/{session}/status
-        // PUT    /api/v1/telemedicine/sessions/{session}/notes
+        // Open to all authenticated staff (no role restriction on reads/cancel):
+        //   GET    /api/v1/telemedicine/requests
+        //   POST   /api/v1/telemedicine/requests
+        //   GET    /api/v1/telemedicine/requests/mine
+        //   GET    /api/v1/telemedicine/requests/{request}
+        //   DELETE /api/v1/telemedicine/requests/{telemedicineRequest}
+        //   GET    /api/v1/telemedicine/sessions
+        //   GET    /api/v1/telemedicine/sessions/{session}
+        //   PATCH  /api/v1/telemedicine/sessions/{session}/status
+        //   PUT    /api/v1/telemedicine/sessions/{session}/notes
         // =====================================================================
 
         Route::prefix('telemedicine')->group(function () {
 
             // -----------------------------------------------------------------
-            // TELEMEDICINE REQUESTS
+            // TELEMEDICINE REQUESTS — open reads / resident submission
             // -----------------------------------------------------------------
 
-            Route::get('/requests',                         [TelemedicineController::class, 'index']);
-            Route::post('/requests',                        [TelemedicineController::class, 'store']);
-            Route::get('/requests/mine',                    [TelemedicineController::class, 'mine']);
-            Route::get('/requests/{request}',               [TelemedicineController::class, 'show']);
-            Route::patch('/requests/{request}/screen',      [TelemedicineController::class, 'screen']);
-            Route::delete('/requests/{telemedicineRequest}', [TelemedicineController::class, 'destroy']);
+            Route::get('/requests',                           [TelemedicineController::class, 'index']);
+            Route::post('/requests',                          [TelemedicineController::class, 'store']);
+            Route::get('/requests/mine',                      [TelemedicineController::class, 'mine']);
+            Route::get('/requests/{request}',                 [TelemedicineController::class, 'show']);
+            Route::delete('/requests/{telemedicineRequest}',  [TelemedicineController::class, 'destroy']);
+
+            // Level 1 (screening staff) — nurse/midwife/head_nurse/staff/rhu_staff/rhu_admin
+            Route::patch('/requests/{request}/screen', [TelemedicineController::class, 'screen'])
+                ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,super_admin');
+            Route::patch('/requests/{request}/start-screening', [TelemedicineController::class, 'startScreening'])
+                ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,super_admin');
+            Route::post('/requests/{request}/endorse-to-doctor', [TelemedicineController::class, 'endorseToDoctor'])
+                ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,super_admin');
+
+            // Level 2 (clinical) — doctor/mho/super_admin
+            Route::post('/requests/{telemedicineRequest}/session', [SessionController::class, 'store'])
+                ->middleware('role:doctor,mho,super_admin');
 
             // -----------------------------------------------------------------
-            // TELEMEDICINE SESSIONS
+            // TELEMEDICINE SESSIONS — all authenticated staff
             // -----------------------------------------------------------------
 
             Route::get('/sessions',                    [SessionController::class, 'index']);
@@ -500,8 +518,6 @@ Route::prefix('v1')->group(function () {
             Route::post('/sessions/{session}/notify-patient', [SessionController::class, 'notifyPatient']);
             Route::patch('/sessions/{session}/end',    [SessionController::class, 'end']);
             Route::put('/sessions/{session}/notes',    [SessionController::class, 'saveNotes']);
-
-            Route::post('/requests/{telemedicineRequest}/session', [SessionController::class, 'store']);
 
             // -----------------------------------------------------------------
             // WEBRTC / SIGNALING

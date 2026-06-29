@@ -238,42 +238,154 @@ class NotificationService
 
         $status = (string) $appointment->status;
 
-        $type = match ($status) {
+        $notifType = match ($status) {
             'confirmed', 'approved', 'scheduled' => NotificationTypes::APPOINTMENT_CONFIRMED,
-            'cancelled' => NotificationTypes::APPOINTMENT_CANCELLED,
-            'rejected' => NotificationTypes::APPOINTMENT_REJECTED,
-            'completed' => NotificationTypes::APPOINTMENT_COMPLETED,
-            default => NotificationTypes::APPOINTMENT_UPDATED,
+            'cancelled'                           => NotificationTypes::APPOINTMENT_CANCELLED,
+            'rejected'                            => NotificationTypes::APPOINTMENT_REJECTED,
+            'completed'                           => NotificationTypes::APPOINTMENT_COMPLETED,
+            default                               => NotificationTypes::APPOINTMENT_UPDATED,
         };
 
         $title = match ($status) {
             'confirmed', 'approved', 'scheduled' => 'Appointment approved',
-            'cancelled' => 'Appointment cancelled',
-            'rejected' => 'Appointment rejected',
-            'completed' => 'Appointment completed',
-            default => 'Appointment updated',
+            'cancelled'                           => 'Appointment cancelled',
+            'rejected'                            => 'Appointment rejected',
+            'completed'                           => 'Appointment completed',
+            default                               => 'Appointment updated',
         };
 
         $message = match ($status) {
             'confirmed', 'approved', 'scheduled' => 'Your RHU appointment has been approved. Please check your schedule.',
-            'cancelled' => 'Your RHU appointment has been cancelled.',
-            'rejected' => 'Your RHU appointment request was rejected. Please check the reason or submit another request.',
-            'completed' => 'Your RHU appointment has been marked completed.',
-            default => "Your appointment status is now {$status}.",
+            'cancelled'                           => 'Your RHU appointment has been cancelled.',
+            'rejected'                            => 'Your RHU appointment request was rejected. Please check the reason or submit another request.',
+            'completed'                           => 'Your RHU appointment has been marked completed.',
+            default                               => "Your appointment status is now {$status}.",
         };
+
+        // Payload includes routing fields so the mobile push handler
+        // can navigate directly to the appointment detail screen on tap.
+        $payload = [
+            'type'           => $notifType,
+            'screen'         => 'appointments',
+            'appointment_id' => $appointment->id,
+            'related_type'   => 'appointment',
+            'related_id'     => $appointment->id,
+            'status'         => $status,
+            'rhu_id'         => $appointment->rhu_id,
+        ];
 
         $this->notifyUser(
             $resident,
-            $type,
+            $notifType,
             $title,
             $message,
-            [
-                'related_type' => 'appointment',
-                'related_id' => $appointment->id,
-                'status' => $status,
-            ],
+            $payload,
             '/appointments'
         );
+
+        // Send push notification to the resident's device (non-blocking).
+        // Mirrors the same pattern used by notifyQueueTicketCalled().
+        try {
+            $userId = $this->userKey($resident);
+
+            if ($userId && Schema::hasTable('user_device_tokens')) {
+                $tokenCount = (int) UserDeviceToken::query()
+                    ->where('user_id', $userId)
+                    ->where('provider', 'expo')
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($tokenCount > 0) {
+                    app(ExpoPushService::class)->sendToUser(
+                        userId: $userId,
+                        title: $title,
+                        body: $message,
+                        data: $payload,
+                        channelId: 'default'
+                    );
+                }
+            }
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] Appointment push notification failed.', [
+                'appointment_id' => $appointment->id ?? null,
+                'status'         => $status,
+                'error'          => $e->getMessage(),
+            ]);
+        }
+    }
+
+    public function notifyTelemedicineEndorsed(TelemedicineRequest $request): array
+    {
+        $request->loadMissing(['residentProfile.user', 'rhu', 'endorsedTo']);
+
+        $endorsedTo = $request->endorsedTo;
+
+        if (!$endorsedTo) {
+            return ['notified' => false, 'message' => 'No doctor assigned for endorsement.'];
+        }
+
+        $patientName = $this->userName($request->residentProfile?->user);
+        $rhuName = $request->rhu?->name ?? 'RHU';
+
+        $title = 'Telemedicine Request Endorsed to You';
+        $message = "A telemedicine request from {$patientName} at {$rhuName} has been endorsed to you for scheduling.";
+
+        $payload = [
+            'type'         => NotificationTypes::TELE_REQUEST_ENDORSED,
+            'screen'       => 'telemedicine',
+            'request_id'   => $request->id,
+            'related_type' => 'telemedicine_request',
+            'related_id'   => $request->id,
+            'patient_name' => $patientName,
+            'rhu_id'       => $request->rhu_id,
+        ];
+
+        $databaseCreated = (bool) $this->notifyUser(
+            $endorsedTo,
+            NotificationTypes::TELE_REQUEST_ENDORSED,
+            $title,
+            $message,
+            $payload,
+            '/telemedicine'
+        );
+
+        $pushSent = false;
+
+        try {
+            $endorsedId = $this->userKey($endorsedTo);
+
+            if ($endorsedId && Schema::hasTable('user_device_tokens')) {
+                $tokenCount = (int) UserDeviceToken::query()
+                    ->where('user_id', $endorsedId)
+                    ->where('provider', 'expo')
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($tokenCount > 0) {
+                    app(ExpoPushService::class)->sendToUser(
+                        userId: $endorsedId,
+                        title: $title,
+                        body: $message,
+                        data: $payload,
+                        channelId: 'default'
+                    );
+
+                    $pushSent = true;
+                }
+            }
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] Telemedicine endorsement push failed.', [
+                'request_id' => $request->id,
+                'endorsed_to' => $request->endorsed_to,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return [
+            'notified'         => $databaseCreated,
+            'push_sent'        => $pushSent,
+            'database_created' => $databaseCreated,
+        ];
     }
 
     public function notifyTelemedicineRequestReceived(TelemedicineRequest $request): void

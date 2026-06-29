@@ -28,6 +28,7 @@ class NotificationTypes
     public const TELE_REQUEST_RECEIVED = 'telemedicine_request_received';
     public const TELE_REQUEST_SCREENED = 'telemedicine_request_screened';
     public const TELE_REQUEST_REJECTED = 'telemedicine_request_rejected';
+    public const TELE_REQUEST_ENDORSED = 'telemedicine_request_endorsed';
     public const TELE_SESSION_SCHEDULED = 'telemedicine_session_scheduled';
     public const TELE_SESSION_REMINDER = 'telemedicine_session_reminder';
     public const TELE_SESSION_STARTED = 'telemedicine_session_started';

@@ -191,6 +191,7 @@ class TelemedicineController extends Controller
             'requestedBy',
             'endorsedByBhw',
             'screenedBy',
+            'endorsedTo',
             'rhu',
             'queueTicket',
             'session.assignedDoctor',
@@ -229,6 +230,70 @@ class TelemedicineController extends Controller
 
         return response()->json([
             'message' => 'Request screened successfully.',
+            'data'    => new TelemedicineRequestResource($result),
+        ]);
+    }
+
+    /**
+     * PATCH /api/v1/telemedicine/requests/{request}/start-screening
+     *
+     * Level 1 (nurse/midwife/head_nurse/staff/rhu_staff/rhu_admin):
+     * Marks a pending request as actively being screened. Vitals and notes are
+     * saved through the existing screen() endpoint once collection is complete.
+     */
+    public function startScreening(Request $request, TelemedicineRequest $telemedicineRequest): JsonResponse
+    {
+        $result = $this->service->startScreening($telemedicineRequest, $request->user());
+
+        $result->load([
+            'residentProfile.user',
+            'residentProfile.barangay',
+            'requestedBy',
+            'screenedBy',
+            'rhu',
+            'queueTicket',
+            'session.assignedDoctor',
+        ]);
+
+        return response()->json([
+            'message' => 'Screening started.',
+            'data'    => new TelemedicineRequestResource($result),
+        ]);
+    }
+
+    /**
+     * POST /api/v1/telemedicine/requests/{request}/endorse-to-doctor
+     *
+     * Level 1 (nurse/midwife/head_nurse/staff/rhu_staff/rhu_admin):
+     * Endorses a screened (or screening) request to a specific doctor/MHO for
+     * session scheduling. Notifies the endorsed doctor via push + in-app.
+     */
+    public function endorseToDoctor(Request $request, TelemedicineRequest $telemedicineRequest): JsonResponse
+    {
+        $request->validate([
+            'endorsed_to'       => ['required', 'integer', 'exists:users,user_id'],
+            'endorsement_notes' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $result = $this->service->endorseToDoctor(
+            $telemedicineRequest,
+            $request->validated(),
+            $request->user()
+        );
+
+        $result->load([
+            'residentProfile.user',
+            'residentProfile.barangay',
+            'requestedBy',
+            'screenedBy',
+            'endorsedTo',
+            'rhu',
+            'queueTicket',
+            'session.assignedDoctor',
+        ]);
+
+        return response()->json([
+            'message' => 'Request endorsed to doctor.',
             'data'    => new TelemedicineRequestResource($result),
         ]);
     }

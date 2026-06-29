@@ -39,6 +39,10 @@ class TelemedicineRequestResource extends JsonResource
             ? $this->screenedBy
             : null;
 
+        $endorsedTo = $this->resource->relationLoaded('endorsedTo')
+            ? $this->endorsedTo
+            : null;
+
         $requestedBy = $this->resource->relationLoaded('requestedBy')
             ? $this->requestedBy
             : null;
@@ -100,6 +104,23 @@ class TelemedicineRequestResource extends JsonResource
                 ] : null,
                 'screening_notes' => $this->screening_notes,
                 'screened_at'     => optional($this->screened_at)->toIso8601String(),
+                'vitals'          => [
+                    'temperature'      => $this->vital_temperature,
+                    'blood_pressure'   => $this->vital_bp,
+                    'heart_rate'       => $this->vital_heart_rate,
+                    'respiratory_rate' => $this->vital_respiratory_rate,
+                ],
+            ],
+
+            'endorsement' => [
+                'endorsed_to' => $endorsedTo ? [
+                    'id'   => $endorsedTo->user_id,
+                    'name' => trim(
+                        ($endorsedTo->first_name ?? '') . ' ' .
+                        ($endorsedTo->last_name ?? '')
+                    ) ?: ($endorsedTo->name ?? null),
+                ] : null,
+                'endorsed_at' => optional($this->endorsed_at)->toIso8601String(),
             ],
 
             'requested_by' => $requestedBy ? [

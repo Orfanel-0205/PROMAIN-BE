@@ -18,6 +18,7 @@ class ScreenTelemedicineRequestRequest extends FormRequest
             'doctor',
             'nurse',
             'midwife',
+            'head_nurse',
             'super_admin',
         ]) ?? false;
     }
@@ -35,6 +36,12 @@ class ScreenTelemedicineRequestRequest extends FormRequest
                 'string',
                 'max:500',
             ],
+
+            // Vital signs collected at screening time (Level 1 staff)
+            'vital_temperature'      => ['nullable', 'string', 'max:20'],
+            'vital_bp'               => ['nullable', 'string', 'max:30'],
+            'vital_heart_rate'       => ['nullable', 'string', 'max:20'],
+            'vital_respiratory_rate' => ['nullable', 'string', 'max:20'],
 
             'schedule_now' => ['sometimes', 'boolean'],
 

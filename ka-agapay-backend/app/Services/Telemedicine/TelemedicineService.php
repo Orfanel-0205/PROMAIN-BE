@@ -70,6 +70,112 @@ class TelemedicineService
         });
     }
 
+    public function startScreening(TelemedicineRequest $request, $screener): TelemedicineRequest
+    {
+        if ($request->isTerminal()) {
+            throw new \DomainException("Request [{$request->id}] is already closed.");
+        }
+
+        if ($request->status !== 'pending') {
+            throw new \DomainException(
+                "Can only start screening for a pending request. Current status: [{$request->status}]."
+            );
+        }
+
+        return DB::transaction(function () use ($request, $screener) {
+            $request->update([
+                'status'      => 'screening',
+                'screened_by' => $screener->user_id ?? $screener->id ?? $this->currentUserId(),
+            ]);
+
+            $this->writeLog($request, 'pending', 'screening', 'screening_started', []);
+
+            $this->audit->info(AuditActions::TELE_REQUEST_SCREENED, 'telemedicine', [
+                'subject'       => $request,
+                'subject_label' => "Telemedicine Request #{$request->id}",
+                'old_values'    => ['status' => 'pending'],
+                'new_values'    => ['status' => 'screening'],
+            ]);
+
+            return $request->fresh([
+                'residentProfile.user',
+                'residentProfile.barangay',
+                'requestedBy',
+                'screenedBy',
+                'rhu',
+                'queueTicket',
+                'session.assignedDoctor',
+            ]);
+        });
+    }
+
+    public function endorseToDoctor(TelemedicineRequest $request, array $data, $endorser): TelemedicineRequest
+    {
+        if ($request->isTerminal()) {
+            throw new \DomainException("Request [{$request->id}] is already closed.");
+        }
+
+        if (!in_array($request->status, ['screening', 'screened'], true)) {
+            throw new \DomainException(
+                "Can only endorse a screening or screened request. Current status: [{$request->status}]."
+            );
+        }
+
+        return DB::transaction(function () use ($request, $data, $endorser) {
+            $fromStatus = $request->status;
+
+            $request->update([
+                'status'      => 'endorsed_to_doctor',
+                'endorsed_to' => $data['endorsed_to'],
+                'endorsed_at' => now(),
+                'screened_by' => $endorser->user_id ?? $endorser->id ?? $this->currentUserId(),
+                'screened_at' => $request->screened_at ?? now(),
+            ]);
+
+            $this->writeLog($request, $fromStatus, 'endorsed_to_doctor', 'request_endorsed', [
+                'endorsed_to'       => $data['endorsed_to'],
+                'endorsement_notes' => $data['endorsement_notes'] ?? null,
+            ]);
+
+            $this->audit->info(AuditActions::TELE_REQUEST_SCREENED, 'telemedicine', [
+                'subject'       => $request,
+                'subject_label' => "Telemedicine Request #{$request->id}",
+                'old_values'    => ['status' => $fromStatus],
+                'new_values'    => ['status' => 'endorsed_to_doctor'],
+            ]);
+
+            DB::afterCommit(function () use ($request) {
+                try {
+                    $fresh = $request->fresh([
+                        'residentProfile.user',
+                        'rhu',
+                        'endorsedTo',
+                    ]);
+
+                    if ($fresh) {
+                        $this->notifications->notifyTelemedicineEndorsed($fresh);
+                    }
+                } catch (\Throwable $e) {
+                    logger()->warning('[TelemedicineService] endorseToDoctor notification failed.', [
+                        'request_id' => $request->id,
+                        'error'      => $e->getMessage(),
+                    ]);
+                }
+            });
+
+            return $request->fresh([
+                'residentProfile.user',
+                'residentProfile.barangay',
+                'requestedBy',
+                'screenedBy',
+                'endorsedTo',
+                'rhu',
+                'queueTicket',
+                'session.assignedDoctor',
+            ]);
+        });
+    }
+
     public function screenRequest(TelemedicineRequest $request, array $data): TelemedicineRequest
     {
         $decision = $data['decision'] ?? 'approve';
@@ -78,11 +184,12 @@ class TelemedicineService
             throw new \DomainException("Request [{$request->id}] is already closed.");
         }
 
-        if ($decision === 'approve' && $request->status === 'scheduled' && $request->session) {
+        if ($decision === 'approve' && in_array($request->status, ['scheduled', 'endorsed_to_doctor'], true) && $request->session) {
             return $request->fresh([
                 'residentProfile.user',
                 'residentProfile.barangay',
                 'screenedBy',
+                'endorsedTo',
                 'rhu',
                 'queueTicket',
                 'session.assignedDoctor',
@@ -101,10 +208,14 @@ class TelemedicineService
 
             if ($decision === 'approve') {
                 $request->update([
-                    'status'          => 'screened',
-                    'screened_by'     => $this->currentUserId(),
-                    'screening_notes' => $data['screening_notes'] ?? null,
-                    'screened_at'     => now(),
+                    'status'                  => 'screened',
+                    'screened_by'             => $this->currentUserId(),
+                    'screening_notes'         => $data['screening_notes'] ?? null,
+                    'screened_at'             => now(),
+                    'vital_temperature'       => $data['vital_temperature'] ?? null,
+                    'vital_bp'                => $data['vital_bp'] ?? null,
+                    'vital_heart_rate'        => $data['vital_heart_rate'] ?? null,
+                    'vital_respiratory_rate'  => $data['vital_respiratory_rate'] ?? null,
                 ]);
 
                 $this->writeLog($request, $fromStatus, 'screened', 'request_screened', [
@@ -122,11 +233,15 @@ class TelemedicineService
                 }
             } else {
                 $request->update([
-                    'status'           => 'rejected',
-                    'screened_by'      => $this->currentUserId(),
-                    'screening_notes'  => $data['screening_notes'] ?? null,
-                    'screened_at'      => now(),
-                    'rejection_reason' => $data['rejection_reason']
+                    'status'                  => 'rejected',
+                    'screened_by'             => $this->currentUserId(),
+                    'screening_notes'         => $data['screening_notes'] ?? null,
+                    'screened_at'             => now(),
+                    'vital_temperature'       => $data['vital_temperature'] ?? null,
+                    'vital_bp'                => $data['vital_bp'] ?? null,
+                    'vital_heart_rate'        => $data['vital_heart_rate'] ?? null,
+                    'vital_respiratory_rate'  => $data['vital_respiratory_rate'] ?? null,
+                    'rejection_reason'        => $data['rejection_reason']
                         ?? $data['screening_notes']
                         ?? 'Request did not meet telemedicine criteria.',
                 ]);
@@ -152,6 +267,7 @@ class TelemedicineService
                 'residentProfile.barangay',
                 'requestedBy',
                 'screenedBy',
+                'endorsedTo',
                 'rhu',
                 'queueTicket',
                 'session.assignedDoctor',
@@ -162,8 +278,8 @@ class TelemedicineService
 
     public function createSession(TelemedicineRequest $request, array $data): TelemedicineSession
     {
-        if ($request->status !== 'screened') {
-            throw new \DomainException('A session can only be created for a screened request.');
+        if (!in_array($request->status, ['screened', 'endorsed_to_doctor'], true)) {
+            throw new \DomainException('A session can only be created for a screened or endorsed request.');
         }
 
         $existing = $request->session()->first();
