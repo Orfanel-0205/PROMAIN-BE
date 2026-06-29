@@ -380,6 +380,20 @@ class AdminUserController extends Controller
             ], 422);
         }
 
+        // Check-constraint violation (e.g. users_sex_check) → clean 422.
+        if ($sqlState === '23514' || str_contains($message, '23514')) {
+            if (str_contains($message, 'users_sex_check')) {
+                return response()->json([
+                    'message' => 'Invalid sex/gender value.',
+                    'errors' => ['sex' => ['Invalid sex/gender value.']],
+                ], 422);
+            }
+
+            return response()->json([
+                'message' => 'One of the submitted values is not allowed.',
+            ], 422);
+        }
+
         Log::error('[AdminUserController] Database error while creating user.', [
             'sql_state' => $sqlState,
             'error' => $message,
@@ -939,6 +953,25 @@ class AdminUserController extends Controller
         return in_array($this->normalizeRoleName($role), ['resident', 'patient'], true);
     }
 
+    /**
+     * Normalize a sex/gender value to a value accepted by the users.sex DB
+     * check constraint: sex IN ('male','female','other'). Returns null for
+     * unknown/empty so the column simply stays unset instead of violating it.
+     */
+    private function normalizeSex(?string $value): ?string
+    {
+        if ($value === null || trim($value) === '') {
+            return null;
+        }
+
+        return match (strtolower(trim($value))) {
+            'male', 'm' => 'male',
+            'female', 'f' => 'female',
+            'other', 'prefer not to say', 'prefer_not_to_say', 'prefer-not-to-say' => 'other',
+            default => null,
+        };
+    }
+
     private function persistUserPatientFields(User $user, array $validated): void
     {
         if (!Schema::hasTable('users')) {
@@ -947,13 +980,17 @@ class AdminUserController extends Controller
 
         $columns = Schema::getColumnListing('users');
         $birthDate = $validated['birth_date'] ?? $validated['birthdate'] ?? null;
+        // users.sex has a DB check constraint: sex IN ('male','female','other').
+        // Normalize the Web Admin display label ("Male"/"Female") so it never
+        // violates the constraint.
+        $sex = $this->normalizeSex($validated['sex'] ?? $validated['gender'] ?? null);
         $fieldMap = [
             'birthday' => $birthDate,
             'birthdate' => $birthDate,
             'birth_date' => $birthDate,
             'date_of_birth' => $birthDate,
-            'sex' => $validated['sex'] ?? null,
-            'gender' => $validated['sex'] ?? null,
+            'sex' => $sex,
+            'gender' => $sex,
             'address' => $validated['address'] ?? null,
         ];
 
