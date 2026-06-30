@@ -20,6 +20,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -759,6 +760,14 @@ class AppointmentController extends Controller
 
         if ($status === 'cancelled' || $status === 'rejected') {
             $this->cancelLinkedQueueTicket($appointment, $updateData['rejection_reason'] ?? 'Appointment closed.');
+        }
+
+        // Approving / scheduling / confirming an onsite appointment pushes the
+        // patient into the RHU queue immediately, so they appear in Queue
+        // Management without a separate manual "Add to Queue" step. Best-effort:
+        // a queue sync failure must never block the approval itself.
+        if (in_array($status, ['confirmed', 'approved', 'scheduled'], true)) {
+            $this->ensureQueueTicketForAppointment($appointment);
         }
 
         // Notify the resident (push + stored notification) of the status change.
@@ -1576,6 +1585,55 @@ class AppointmentController extends Controller
         return QueueTicket::create(
             $this->filterTablePayload('queue_tickets', $data)
         );
+    }
+
+    /**
+     * Ensure an approved/scheduled/confirmed appointment has a live queue ticket.
+     *
+     * Delegates to QueueService::syncAppointmentToQueue(), which already:
+     * - prevents duplicate tickets for the same appointment_id (re-approving is safe),
+     * - resolves the resident profile, facility rhu_id, and OPD service_type,
+     * - issues the ticket with status = waiting, issued_at = now() (so it lands on
+     *   TODAY's Queue Management board), and the existing queue numbering rules.
+     *
+     * Onsite consultations only — online/telemedicine appointments are handled by
+     * the telemedicine flow, not the onsite queue (mirrors addToQueueFromAppointment).
+     *
+     * Best-effort: any failure is logged and swallowed so appointment approval
+     * (already committed above) never fails because of a queue sync problem.
+     */
+    private function ensureQueueTicketForAppointment(Appointment $appointment): ?QueueTicket
+    {
+        try {
+            if ($this->normalizeConsultationType($appointment->consultation_type ?? null) === 'online') {
+                return null;
+            }
+
+            $ticket = DB::transaction(function () use ($appointment) {
+                return app(QueueService::class)->syncAppointmentToQueue($appointment);
+            });
+
+            Log::info('[AppointmentApproval] Queue ticket ensured', [
+                'appointment_id' => $appointment->id,
+                'user_id' => $appointment->user_id,
+                'rhu_id' => $appointment->rhu_id,
+                'status' => $appointment->status,
+                'queue_ticket_id' => $ticket?->id,
+                'ticket_number' => $ticket?->ticket_number,
+                'ticket_status' => $ticket?->status,
+            ]);
+
+            return $ticket;
+        } catch (Throwable $e) {
+            report($e);
+
+            Log::warning('[AppointmentApproval] Queue ticket sync failed', [
+                'appointment_id' => $appointment->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     private function cancelLinkedQueueTicket(Appointment $appointment, string $reason): void
