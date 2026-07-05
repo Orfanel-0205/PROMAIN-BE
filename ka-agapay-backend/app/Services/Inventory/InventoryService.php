@@ -56,7 +56,7 @@ class InventoryService
             ]);
         }
 
-        return DB::transaction(function () use ($item, $quantity, $data) {
+        $transaction = DB::transaction(function () use ($item, $quantity, $data) {
             $lockedItem = InventoryItem::whereKey($item->id)
                 ->lockForUpdate()
                 ->firstOrFail();
@@ -87,6 +87,12 @@ class InventoryService
                 ], $data)
             );
         });
+
+        // Part 2 (trigger #4) — after the stock drop is committed, raise a
+        // staff-only alert if the item is now low/out. Never blocks the movement.
+        $this->raiseStockAlert($item);
+
+        return $transaction;
     }
 
     public function adjust(InventoryItem $item, int $newQuantity, string $reason): InventoryTransaction
@@ -97,7 +103,7 @@ class InventoryService
             ]);
         }
 
-        return DB::transaction(function () use ($item, $newQuantity, $reason) {
+        $transaction = DB::transaction(function () use ($item, $newQuantity, $reason) {
             $lockedItem = InventoryItem::whereKey($item->id)
                 ->lockForUpdate()
                 ->firstOrFail();
@@ -122,6 +128,29 @@ class InventoryService
                 ]
             );
         });
+
+        // Part 2 (trigger #4) — an adjustment can leave the item low/out too.
+        $this->raiseStockAlert($item);
+
+        return $transaction;
+    }
+
+    /**
+     * Raise a staff-only low/out/expiry notification for an item after a stock
+     * change. Runs outside the stock transaction and never throws, so a
+     * notification problem can never roll back or block the movement.
+     */
+    private function raiseStockAlert(InventoryItem $item): void
+    {
+        try {
+            app(\App\Services\Notification\NotificationService::class)
+                ->notifyInventoryStockAlert($item->fresh() ?? $item);
+        } catch (\Throwable $e) {
+            logger()->warning('[InventoryService] Inventory stock alert failed.', [
+                'item_id' => $item->id ?? null,
+                'error'   => $e->getMessage(),
+            ]);
+        }
     }
 
     public function getLowStockItems(int $rhuId)

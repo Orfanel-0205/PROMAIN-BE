@@ -7,6 +7,7 @@ use App\Models\Announcement;
 use App\Models\Appointment;
 use App\Models\Event;
 use App\Models\FollowUpReminder;
+use App\Models\InventoryItem;
 use App\Models\QueueTicket;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
@@ -161,7 +162,8 @@ class NotificationService
         string $title,
         string $message,
         array $meta = [],
-        ?string $actionUrl = null
+        ?string $actionUrl = null,
+        ?string $pushChannelId = null
     ): void {
         if (!Schema::hasTable('users')) {
             return;
@@ -191,14 +193,34 @@ class NotificationService
             }
         }
 
+        $residents = $query->get();
+
         $this->notifyUsers(
-            $query->get(),
+            $residents,
             $notificationType,
             $title,
             $message,
             $meta,
             $actionUrl
         );
+
+        // PART 2 (trigger #1) — fan-out an Expo push so residents learn about a
+        // new event/announcement without opening the app. Every recipient already
+        // has the in-app row created above, so the Notifications screen and the
+        // push stay consistent (never push-only, never list-only).
+        if ($pushChannelId !== null) {
+            $this->pushToUsersWithTokens(
+                $residents,
+                $title,
+                $message,
+                array_merge($meta, [
+                    'type' => $notificationType,
+                    'notification_type' => $notificationType,
+                    'action_url' => $actionUrl,
+                ]),
+                $pushChannelId
+            );
+        }
     }
 
     public function notifyAppointmentRequestReceived(Appointment $appointment): void
@@ -911,10 +933,13 @@ class NotificationService
             [
                 'related_type' => 'event',
                 'related_id' => $event->id,
+                'event_id' => $event->id,
                 'event_type' => $event->event_type,
                 'category' => $event->category,
+                'screen' => 'home',
             ],
-            "/events/{$event->id}"
+            "/events/{$event->id}",
+            'default'
         );
     }
 
@@ -928,9 +953,214 @@ class NotificationService
                 'related_type' => 'announcement',
                 'related_id' => $announcement->id,
                 'category' => $announcement->category ?? 'general',
+                'screen' => 'home',
             ],
-            '/announcements'
+            '/announcements',
+            'default'
         );
+    }
+
+    /**
+     * PART 2 — push a single title/body/data to every given user that has an
+     * active Expo token. Pre-filters to token holders so a large resident list
+     * does not trigger one HTTP call per tokenless account. Never throws.
+     */
+    private function pushToUsersWithTokens(
+        $users,
+        string $title,
+        string $body,
+        array $data,
+        string $channelId
+    ): void {
+        if (!Schema::hasTable('user_device_tokens')) {
+            return;
+        }
+
+        $userIds = collect($users)
+            ->map(fn ($user) => $this->userKey($user))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($userIds->isEmpty()) {
+            return;
+        }
+
+        $targetIds = UserDeviceToken::query()
+            ->whereIn('user_id', $userIds->all())
+            ->where('provider', 'expo')
+            ->where('is_active', true)
+            ->pluck('user_id')
+            ->unique();
+
+        if ($targetIds->isEmpty()) {
+            return;
+        }
+
+        $expo = app(ExpoPushService::class);
+
+        foreach ($targetIds as $uid) {
+            try {
+                $expo->sendToUser((int) $uid, $title, $body, $data, $channelId);
+            } catch (\Throwable $e) {
+                logger()->warning('[NotificationService] Bulk resident push failed.', [
+                    'user_id' => $uid,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * PART 2 (trigger #4) — STAFF-ONLY inventory alert. Creates an in-app
+     * notification-center entry for RHU staff (via notifyAdmins, which never
+     * pushes to resident devices). Deduped per item + kind + day so repeated
+     * stock movements or a re-run of the daily sweep do not spam.
+     */
+    public function notifyInventoryStockAlert(InventoryItem $item): void
+    {
+        if (!Schema::hasTable('notifications')) {
+            return;
+        }
+
+        $item = $item->fresh() ?? $item;
+
+        $stock = (int) ($item->current_stock ?? 0);
+        $min   = (int) ($item->minimum_stock_level ?? 0);
+        $name  = (string) ($item->name ?? ('Item #' . $item->id));
+        $unit  = (string) ($item->unit_of_measure ?? 'units');
+
+        // 1) Stock level — out of stock or below reorder point.
+        if ($stock <= 0) {
+            $this->dispatchInventoryAlert(
+                $item,
+                'out_of_stock',
+                'critical',
+                'Medicine out of stock',
+                "{$name} is out of stock. Reorder now to avoid service disruption."
+            );
+        } elseif ($min > 0 && $stock <= $min) {
+            $this->dispatchInventoryAlert(
+                $item,
+                'low_stock',
+                'warning',
+                'Low stock alert',
+                "{$name} is low: {$stock} {$unit} left (reorder point {$min})."
+            );
+        }
+
+        // 2) Expiry — already expired or expiring within 30 days.
+        $expiration = $item->expiration_date ?? null;
+
+        if ($expiration) {
+            try {
+                $expDate = $expiration instanceof \DateTimeInterface
+                    ? \Illuminate\Support\Carbon::instance($expiration)
+                    : \Illuminate\Support\Carbon::parse((string) $expiration);
+
+                $days = now()->startOfDay()->diffInDays($expDate->startOfDay(), false);
+
+                if ($days < 0) {
+                    $this->dispatchInventoryAlert(
+                        $item,
+                        'expired',
+                        'critical',
+                        'Expired medicine',
+                        "{$name} expired on {$expDate->toDateString()}. Remove it from usable stock."
+                    );
+                } elseif ($days <= 30) {
+                    $this->dispatchInventoryAlert(
+                        $item,
+                        'expiring',
+                        'warning',
+                        'Medicine expiring soon',
+                        "{$name} expires in {$days} day(s) on {$expDate->toDateString()}. Use or replace it soon."
+                    );
+                }
+            } catch (\Throwable) {
+                // Unparseable expiry date — ignore.
+            }
+        }
+    }
+
+    private function dispatchInventoryAlert(
+        InventoryItem $item,
+        string $kind,
+        string $severity,
+        string $title,
+        string $message
+    ): void {
+        $dedupeKey = "inventory_alert:{$item->id}:{$kind}:" . now()->toDateString();
+
+        if ($this->inventoryAlertDedupeExists($dedupeKey)) {
+            return;
+        }
+
+        // Staff-facing only. notifyAdmins() writes notification rows for staff and
+        // does NOT send any push — inventory alerts must never reach residents.
+        $this->notifyAdmins(
+            NotificationTypes::INVENTORY_LOW_STOCK,
+            $title,
+            $message,
+            [
+                'related_type'  => 'inventory',
+                'related_id'    => $item->id,
+                'item_code'     => $item->item_code ?? null,
+                'current_stock' => (int) ($item->current_stock ?? 0),
+                'reorder_point' => (int) ($item->minimum_stock_level ?? 0),
+                'alert_kind'    => $kind,
+                'severity'      => $severity,
+                'screen'        => 'inventory',
+                'dedupe_key'    => $dedupeKey,
+            ],
+            '/inventory'
+        );
+    }
+
+    private function inventoryAlertDedupeExists(string $dedupeKey): bool
+    {
+        if (!Schema::hasTable('notifications')) {
+            return false;
+        }
+
+        $query = DB::table('notifications')
+            ->where('type', NotificationTypes::INVENTORY_LOW_STOCK);
+
+        $this->whereNotificationDataContains($query, $dedupeKey);
+
+        return $query->exists();
+    }
+
+    /**
+     * Daily scheduled sweep so alerts are not limited to items that happened to
+     * have a stock movement. Deduped, so it is safe to run repeatedly.
+     */
+    public function sweepInventoryAlerts(): int
+    {
+        if (!Schema::hasTable('inventory_items')) {
+            return 0;
+        }
+
+        $count = 0;
+
+        InventoryItem::query()
+            ->where('is_active', true)
+            ->where(function ($q) {
+                $q->whereColumn('current_stock', '<=', 'minimum_stock_level')
+                    ->orWhere('current_stock', '<=', 0)
+                    ->orWhere(function ($q2) {
+                        $q2->whereNotNull('expiration_date')
+                            ->where('expiration_date', '<=', now()->addDays(30));
+                    });
+            })
+            ->chunkById(200, function ($items) use (&$count) {
+                foreach ($items as $item) {
+                    $this->notifyInventoryStockAlert($item);
+                    $count++;
+                }
+            });
+
+        return $count;
     }
 
     private function userKey(?User $user): ?int

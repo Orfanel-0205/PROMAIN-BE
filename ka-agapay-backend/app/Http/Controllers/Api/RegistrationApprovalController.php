@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\User;
+use App\Services\Notification\AccountSmsService;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -277,6 +278,11 @@ class RegistrationApprovalController extends Controller
             'document_type' => $ocr->id_type ?? null,
         ]);
 
+        // PART 3b — tell the resident their self-registration was approved so they
+        // no longer have to return to the RHU to find out. Logged to sms_logs;
+        // never blocks the approval.
+        app(AccountSmsService::class)->sendRegistrationApproved($user->fresh());
+
         return response()->json([
             'message' => 'Registration approved. The user can now sign in.',
             'data' => $this->summaryPayload($user->fresh()->load('role')),
@@ -326,6 +332,10 @@ class RegistrationApprovalController extends Controller
         });
 
         $this->audit($request, 'REGISTRATION_REJECTED', $user, ['reason' => $reason]);
+
+        // PART 3b — tell the resident the outcome + the concrete next step
+        // (resubmit a clearer ID). Logged to sms_logs; never blocks the rejection.
+        app(AccountSmsService::class)->sendRegistrationRejected($user->fresh(), $reason);
 
         return response()->json([
             'message' => 'Registration rejected. The user will see the reason on next login.',

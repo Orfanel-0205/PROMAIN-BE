@@ -27,6 +27,13 @@ class Kernel extends ConsoleKernel
             ->dailyAt('08:00')
             ->withoutOverlapping()
             ->description('Send follow-up reminder push notifications');
+
+        // Part 2 (trigger #4) — daily staff alerts for low/out/expiring inventory
+        // so alerts are not limited to items that had a stock movement. Deduped.
+        $schedule->call(function () {
+            $count = app(\App\Services\Notification\NotificationService::class)->sweepInventoryAlerts();
+            logger()->info("Swept {$count} inventory item(s) for staff stock/expiry alerts.");
+        })->dailyAt('07:30')->withoutOverlapping()->description('Sweep inventory low-stock / expiry alerts');
     }
 
     /**

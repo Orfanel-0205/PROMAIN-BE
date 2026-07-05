@@ -64,9 +64,9 @@ class ReportController extends Controller
             // SESSION / VISIT DETAILS
             // ================================================================
             'Session: Consultation ID' => fn (array $row) => $this->value($row, ['consultation_id']),
-            'Session: Consultation Date' => fn (array $row) => $this->value($row, ['consultation_date']),
-            'Session: First Attended At' => fn (array $row) => $this->value($row, ['first_attended_at']),
-            'Session: Completed At' => fn (array $row) => $this->value($row, ['completed_at']),
+            'Session: Consultation Date' => fn (array $row) => $this->csvDate($this->value($row, ['consultation_date'])),
+            'Session: First Attended At' => fn (array $row) => $this->csvDateTime($this->value($row, ['first_attended_at'])),
+            'Session: Completed At' => fn (array $row) => $this->csvDateTime($this->value($row, ['completed_at'])),
             'Session: Status' => fn (array $row) => $this->value($row, ['status']),
             'Session: RHU' => fn (array $row) => $this->rhuLabel($this->value($row, ['rhu_id'])),
             'Session: Queue Number' => fn (array $row) => $this->value($row, ['queue_number']),
@@ -361,5 +361,37 @@ class ReportController extends Controller
         }
 
         return trim((string) ($value ?? ''));
+    }
+
+    /** Normalize any date value to a single spreadsheet-friendly YYYY-MM-DD. */
+    private function csvDate(mixed $value): string
+    {
+        $string = trim((string) ($value ?? ''));
+
+        if ($string === '') {
+            return '';
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse($string)->format('Y-m-d');
+        } catch (\Throwable) {
+            return $string;
+        }
+    }
+
+    /** Normalize any datetime value to a single YYYY-MM-DD HH:mm (no timezone). */
+    private function csvDateTime(mixed $value): string
+    {
+        $string = trim((string) ($value ?? ''));
+
+        if ($string === '') {
+            return '';
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse($string)->format('Y-m-d H:i');
+        } catch (\Throwable) {
+            return $string;
+        }
     }
 }

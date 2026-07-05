@@ -87,6 +87,12 @@ class AdminUserController extends Controller
         'rejected',
     ];
 
+    /**
+     * Default password applied when staff create a resident account without
+     * typing one. Also the value SMS'd to the resident so they can sign in.
+     */
+    private const DEFAULT_RESIDENT_PASSWORD = 'KaAgapay@1234';
+
     public function index(Request $request): JsonResponse
     {
         $this->authorizeUserManagement($request);
@@ -268,7 +274,7 @@ class AdminUserController extends Controller
                     'email' => $email,
                     'mobile_number' => $mobile,
                     'barangay' => $validated['barangay'] ?? null,
-                    'password' => Hash::make($validated['password'] ?? 'KaAgapay@1234'),
+                    'password' => Hash::make($validated['password'] ?? self::DEFAULT_RESIDENT_PASSWORD),
                     'account_status' => $status,
 
                     /*
@@ -297,6 +303,20 @@ class AdminUserController extends Controller
             // Safety net for any unique-constraint race that slips past the
             // pre-checks above — never let a 23505 escape as a 500.
             return $this->handleUserUniqueViolation($e);
+        }
+
+        // PART 3a — staff-assisted account creation: text the resident their
+        // sign-in details so they never have to return to the RHU to learn their
+        // account exists. Residents are created 'active', so they can sign in now.
+        // When staff left the password blank we share the temporary default;
+        // otherwise staff conveyed the password themselves. Never blocks creation.
+        if ($this->isResidentRole($roleName) && $status === 'active') {
+            $temporaryPassword = ($validated['password'] ?? null) === null
+                ? self::DEFAULT_RESIDENT_PASSWORD
+                : null;
+
+            app(\App\Services\Notification\AccountSmsService::class)
+                ->sendWelcome($user->fresh(), $temporaryPassword);
         }
 
         return response()->json([
