@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Rules\FilipinoName;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -16,8 +17,8 @@ class RegisterRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'first_name'            => ['required', 'string', 'max:100'],
-            'last_name'             => ['required', 'string', 'max:100'],
+            'first_name'            => ['required', 'string', 'max:100', new FilipinoName()],
+            'last_name'             => ['required', 'string', 'max:100', new FilipinoName()],
             'email'                 => ['nullable', 'email', 'max:255', 'unique:users,email'],
             'mobile_number'         => [
                 'required',

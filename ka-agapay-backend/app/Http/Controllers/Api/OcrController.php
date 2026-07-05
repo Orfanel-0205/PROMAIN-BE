@@ -36,9 +36,14 @@ class OcrController extends Controller
 
     public function upload(Request $request): JsonResponse
     {
+        // ID verification only accepts real photo IDs: JPG/JPEG/PNG up to 5 MB.
+        // (PhilHealth + prescription scans keep their own wider rules below.)
         $validated = $request->validate([
             'id_type' => ['required', 'string', 'max:100'],
-            'id_image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
+            'id_image' => ['required', 'file', 'mimes:jpg,jpeg,png', 'max:5120'],
+        ], [
+            'id_image.mimes' => 'Only JPG, JPEG, or PNG images are accepted.',
+            'id_image.max'   => 'The ID image must not be larger than 5 MB.',
         ]);
 
         $user = $request->user();
@@ -87,7 +92,21 @@ class OcrController extends Controller
             : (($nameScore * 0.75) + ($dateScore * 0.25));
 
         $hasReadableText = $text !== '';
-        $verified = $hasReadableText && $overallMatch >= 0.65;
+
+        // Reject memes / selfies / landscapes / receipts BEFORE trusting the
+        // name match. A real ID must pass geometry + required-keyword + duplicate
+        // checks; only then does the name-match gate the final decision.
+        $documentValidation = app(\App\Services\Ocr\IdDocumentValidator::class)->validate($fullPath, $text, [
+            'category'       => $documentCategory,
+            'id_type'        => $validated['id_type'],
+            'mime'           => (string) $file->getMimeType(),
+            'size_kb'        => $file->getSize() / 1024,
+            'user_id'        => $this->authUserId($user),
+            'ocr_confidence' => (float) ($ocr['confidence'] ?? 0),
+        ]);
+        $documentValid = $documentValidation['passed'];
+
+        $verified = $documentValid && $hasReadableText && $overallMatch >= 0.65;
 
         $confidence = (float) ($ocr['confidence'] ?? 0);
         if ($confidence <= 0) {
@@ -123,6 +142,7 @@ class OcrController extends Controller
                 'name_match_score' => round($nameScore, 2),
                 'date_match_score' => $dateScore === null ? null : round($dateScore, 2),
                 'overall_match' => round($overallMatch, 2),
+                'image_hash' => $documentValidation['image_hash'],
                 'status' => $verified ? 'approved' : 'failed',
                 'processed_at' => now(),
                 'created_at' => now(),
@@ -165,13 +185,22 @@ class OcrController extends Controller
             }
         }
 
+        // Prefer a specific document-rejection reason (wrong image type, not an
+        // ID, duplicate, etc.) over the generic name-mismatch message.
+        $failureMessage = !$documentValid && !empty($documentValidation['reasons'])
+            ? $documentValidation['reasons'][0]
+            : 'OCR verification failed. The ID name must match the registered first name and last name.';
+
         return response()->json([
             'message' => $verified
                 ? 'ID scanned successfully. Name matched the registered user.'
-                : 'OCR verification failed. The ID name must match the registered first name and last name.',
+                : $failureMessage,
             'ocr_id' => $ocrId,
             'status' => $verified ? 'approved' : 'failed',
             'verified' => $verified,
+            'document_valid' => $documentValid,
+            'document_checks' => $documentValidation['checks'],
+            'rejection_reasons' => $documentValidation['reasons'],
             'document_type' => $validated['id_type'],
             'document_category' => $documentCategory,
             'designation' => $designation,

@@ -118,6 +118,14 @@ class AdminDeletedRecordController extends Controller
                 $updates['delete_reason'] = null;
             }
 
+            // Inventory items are hidden on delete via is_active=false, so a plain
+            // restore() would leave them invisible in the active list. Return
+            // is_active to its exact pre-delete value from the snapshot.
+            if (in_array($module, ['inventory', 'inventory_items'], true) && Schema::hasColumn($table, 'is_active')) {
+                $priorActive = $oldValues['is_active'] ?? true;
+                $updates['is_active'] = filter_var($priorActive, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true;
+            }
+
             if ($module === 'users') {
                 if (Schema::hasColumn($table, 'account_status')) {
                     $oldStatus = $this->normalizeStatus(

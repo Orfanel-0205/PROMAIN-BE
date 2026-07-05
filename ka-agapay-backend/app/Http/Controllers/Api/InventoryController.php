@@ -5,17 +5,20 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
+use App\Services\Audit\AuditService;
 use App\Services\Inventory\InventoryService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class InventoryController extends Controller
 {
     public function __construct(
-        private readonly InventoryService $service
+        private readonly InventoryService $service,
+        private readonly AuditService $audit
     ) {}
 
     private function authorizeInventory(Request $request, bool $strict = false): void
@@ -335,11 +338,59 @@ class InventoryController extends Controller
     {
         $this->authorizeInventory($request, true);
 
-        $inventory->update(['is_active' => false]);
-        $inventory->delete();
+        // Capture the "why" (sent by the web admin) and a full pre-delete
+        // snapshot so this deletion is auditable AND restorable from the
+        // Delete & Archive History recycle bin.
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $reason = trim((string) ($validated['reason'] ?? '')) ?: 'Inventory item removed by staff.';
+        $snapshot = array_merge($inventory->attributesToArray(), ['id' => $inventory->getKey()]);
+        $label = $inventory->getAuditLabel();
+
+        DB::transaction(function () use ($request, $inventory, $reason) {
+            $table = $inventory->getTable();
+            $actorId = $request->user()?->user_id ?? $request->user()?->id;
+
+            // Mark inactive + stamp deleted_by / delete_reason when those columns
+            // exist (guarded so a missing column never breaks the delete).
+            $updates = ['is_active' => false];
+
+            if (Schema::hasColumn($table, 'deleted_by')) {
+                $updates['deleted_by'] = $actorId;
+            }
+            if (Schema::hasColumn($table, 'delete_reason')) {
+                $updates['delete_reason'] = $reason;
+            }
+
+            $inventory->forceFill($updates)->save();
+            $inventory->delete(); // soft delete (SoftDeletes) — recoverable
+        });
+
+        // Delete-history / restore is keyed on this audit log. The action MUST
+        // contain "deleted" so AuditController::deleteHistory surfaces it, and
+        // the subject id lets AdminDeletedRecordController::restore find the row.
+        $this->audit->log(
+            $request,
+            'inventory.deleted',
+            'inventory',
+            $inventory,
+            $snapshot,
+            [],
+            [
+                'reason' => $reason,
+                'delete_reason' => $reason,
+                'archive_reason' => $reason,
+                'restore_id' => $inventory->getKey(),
+                'item_code' => $inventory->item_code,
+            ],
+            'warning',
+            $label
+        );
 
         return response()->json([
-            'message' => 'Inventory item removed.',
+            'message' => 'Inventory item removed. It can be restored from Delete & Archive History within 30 days.',
         ]);
     }
 
