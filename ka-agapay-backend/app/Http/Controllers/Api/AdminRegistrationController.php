@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Api\OcrController;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Services\Notification\NotificationService;
+use App\Services\PasswordPolicyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -42,7 +44,7 @@ class AdminRegistrationController extends Controller
             'mobile_number' => ['required', 'regex:/^09\d{9}$/', 'unique:users,mobile_number'],
             'barangay' => ['nullable', 'string', 'max:150'],
             'role' => ['required', Rule::in($this->staffRoles)],
-            'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()->symbols()],
+            'password' => ['required', 'confirmed', PasswordPolicyService::standard()],
             'password_confirmation' => ['required'],
 
             // FINAL RULE: RHU staff/admin must accept the Terms and upload an
@@ -114,8 +116,13 @@ class AdminRegistrationController extends Controller
             return $user->fresh()->load('role');
         });
 
+        // Part 1 — alert the CORRECT approver that a new staff registration is
+        // waiting: the MHO for clinical roles, the Super Admin otherwise. Reuses
+        // the existing NotificationService (in-app row) — no new pipeline.
+        $this->notifyApprovers($user, (string) $validated['role']);
+
         return response()->json([
-            'message' => 'Registration submitted successfully. Your Employee ID was uploaded. Your account will remain pending until reviewed by the Super Admin.',
+            'message' => 'Registration submitted successfully. Your Employee ID was uploaded. Your account will remain pending until reviewed by the assigned approver.',
             'data' => [
                 'user_id' => $user->user_id,
                 'name' => trim(implode(' ', array_filter([
@@ -289,6 +296,76 @@ class AdminRegistrationController extends Controller
     {
         $value = preg_replace('/\s{2,}/', ' ', trim($value)) ?? $value;
         return trim($value, " .,-");
+    }
+
+    /**
+     * Notify the role-appropriate approver(s) that a new staff registration is
+     * awaiting review (Part 1). Clinical roles -> MHO (+ Super Admin as safety
+     * net / override); administrative roles -> Super Admin. Calls the existing
+     * NotificationService only; never blocks registration.
+     */
+    private function notifyApprovers(User $applicant, string $role): void
+    {
+        try {
+            $clinical = in_array(
+                $this->normalizeRole($role),
+                ['doctor', 'nurse', 'midwife', 'bhw'],
+                true
+            );
+
+            $approverRoles = $clinical
+                ? ['mho', 'mho_admin', 'super_admin', 'superadmin']
+                : ['super_admin', 'superadmin'];
+
+            $approvers = User::query()
+                ->whereHas('role', function ($q) use ($approverRoles) {
+                    $q->whereIn(DB::raw('LOWER(name)'), $approverRoles);
+                })
+                ->when(
+                    Schema::hasColumn('users', 'account_status'),
+                    fn ($q) => $q->where('account_status', 'active')
+                )
+                ->get();
+
+            if ($approvers->isEmpty()) {
+                return;
+            }
+
+            $name = trim(implode(' ', array_filter([
+                $applicant->first_name,
+                $applicant->last_name,
+            ]))) ?: ('User #' . $applicant->user_id);
+
+            $roleLabel = ucwords(str_replace('_', ' ', $this->normalizeRole($role)));
+            $awaiting = $clinical ? 'MHO' : 'Super Admin';
+
+            $title = 'New staff registration to review';
+            $message = "{$name} registered as {$roleLabel} and is awaiting {$awaiting} approval.";
+
+            $notifier = app(NotificationService::class);
+
+            foreach ($approvers as $approver) {
+                $notifier->notifyUser(
+                    $approver,
+                    'registration_pending_review',
+                    $title,
+                    $message,
+                    [
+                        'related_type'    => 'registration',
+                        'related_id'      => $applicant->user_id,
+                        'applicant_role'  => $this->normalizeRole($role),
+                        'awaiting_approver' => $awaiting,
+                        'screen'          => 'registrations',
+                    ],
+                    '/registrations'
+                );
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('[AdminRegistration] approver notify failed.', [
+                'user_id' => $applicant->user_id ?? null,
+                'error'   => $e->getMessage(),
+            ]);
+        }
     }
 
     private function normalizeMobile(mixed $value): string

@@ -35,6 +35,13 @@ class RegistrationApprovalController extends Controller
 
     private const RESIDENT_ROLES = ['resident', 'patient'];
 
+    /**
+     * Clinical roles whose registration the MHO signs off (Part 1). Everything
+     * else in the staff queue is an administrative role decided by the Super
+     * Admin. The Super Admin retains override authority over both.
+     */
+    private const CLINICAL_ROLES = ['doctor', 'nurse', 'midwife', 'bhw'];
+
     /** Roles whose required document is an Employee Identification Card. */
     private const STAFF_ROLES = [
         'doctor',
@@ -64,6 +71,54 @@ class RegistrationApprovalController extends Controller
     }
 
     /**
+     * Read access to the queue: Super Admin OR MHO. Both can SEE every pending
+     * row (so the MHO knows what is clinical vs administrative); the per-row
+     * decision is separately gated by canApprove().
+     */
+    private function authorizeQueueAccess(Request $request): void
+    {
+        abort_unless(
+            $request->user()?->hasAnyRole(['super_admin', 'superadmin', 'mho', 'mho_admin']),
+            403,
+            'Only a Super Admin or MHO can review registrations.'
+        );
+    }
+
+    /**
+     * CONTROLLER-LEVEL role gate (defense in depth — the route middleware only
+     * checks group membership, so it alone would let an MHO hit approve/reject
+     * for ANY row). Super Admin may act on ANY registration; the MHO may act
+     * ONLY on clinical-role registrations (doctor/nurse/midwife/bhw).
+     */
+    private function canApprove(?User $approver, User $target): bool
+    {
+        if (!$approver) {
+            return false;
+        }
+
+        if ($approver->hasAnyRole(self::SUPER_ROLES)) {
+            return true;
+        }
+
+        if ($approver->hasAnyRole(['mho', 'mho_admin'])) {
+            return $this->isClinical($target);
+        }
+
+        return false;
+    }
+
+    private function authorizeApprover(Request $request, User $target): void
+    {
+        abort_unless(
+            $this->canApprove($request->user(), $target),
+            403,
+            $this->isClinical($target)
+                ? 'Only the MHO or a Super Admin can decide a clinical-staff registration.'
+                : 'Only a Super Admin can decide an administrative-staff registration.'
+        );
+    }
+
+    /**
      * GET /api/v1/admin/registrations/pending
      * status = pending (default) | rejected | all
      *
@@ -72,7 +127,7 @@ class RegistrationApprovalController extends Controller
      */
     public function pending(Request $request): JsonResponse
     {
-        $this->authorizeSuperAdmin($request);
+        $this->authorizeQueueAccess($request);
 
         $validated = $request->validate([
             'status'   => ['nullable', 'string', 'in:pending,rejected,all'],
@@ -122,7 +177,7 @@ class RegistrationApprovalController extends Controller
      */
     public function ocr(Request $request, int $id): JsonResponse
     {
-        $this->authorizeSuperAdmin($request);
+        $this->authorizeQueueAccess($request);
 
         $user = User::with('role')->findOrFail($id);
         $ocr = $this->latestIdOcr($id);
@@ -166,7 +221,7 @@ class RegistrationApprovalController extends Controller
      */
     public function ocrFile(Request $request, int $id): StreamedResponse
     {
-        $this->authorizeSuperAdmin($request);
+        $this->authorizeQueueAccess($request);
 
         $ocr = $this->latestIdOcr($id);
 
@@ -221,9 +276,12 @@ class RegistrationApprovalController extends Controller
      */
     public function approve(Request $request, int $id): JsonResponse
     {
-        $this->authorizeSuperAdmin($request);
+        $this->authorizeQueueAccess($request);
 
         $user = User::with('role')->findOrFail($id);
+
+        // Defense in depth: an MHO can only approve clinical-role registrations.
+        $this->authorizeApprover($request, $user);
 
         if (!$this->isApprovable($user)) {
             return response()->json([
@@ -294,13 +352,16 @@ class RegistrationApprovalController extends Controller
      */
     public function reject(Request $request, int $id): JsonResponse
     {
-        $this->authorizeSuperAdmin($request);
+        $this->authorizeQueueAccess($request);
 
         $validated = $request->validate([
             'reason' => ['required', 'string', 'min:3', 'max:500'],
         ]);
 
         $user = User::with('role')->findOrFail($id);
+
+        // Defense in depth: an MHO can only reject clinical-role registrations.
+        $this->authorizeApprover($request, $user);
 
         if (!$this->isApprovable($user)) {
             return response()->json([
@@ -391,6 +452,17 @@ class RegistrationApprovalController extends Controller
         return in_array($this->userRole($user), self::STAFF_ROLES, true);
     }
 
+    private function isClinical(User $user): bool
+    {
+        return in_array($this->userRole($user), self::CLINICAL_ROLES, true);
+    }
+
+    /** Human label of who should decide this row (drives the UI badge). */
+    private function awaitingApprover(User $user): string
+    {
+        return $this->isClinical($user) ? 'MHO' : 'Super Admin';
+    }
+
     private function documentCategoryForUser(User $user): string
     {
         return $this->isStaff($user) ? 'employee_id' : 'resident_id';
@@ -422,6 +494,9 @@ class RegistrationApprovalController extends Controller
 
             'role'              => $this->userRole($user),
             'is_staff'          => $this->isStaff($user),
+            'is_clinical'       => $this->isClinical($user),
+            'awaiting_approver'     => $this->awaitingApprover($user),
+            'awaiting_approver_key' => $this->isClinical($user) ? 'mho' : 'super_admin',
 
             'assigned_rhu_id'   => $rhuId,
             'rhu_label'         => $raw['rhu_label'] ?? Rhu::rhuLabel($rhuId),

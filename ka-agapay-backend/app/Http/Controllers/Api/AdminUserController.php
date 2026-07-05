@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Services\PasswordPolicyService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -182,7 +183,7 @@ class AdminUserController extends Controller
 
             'role' => ['required', 'string', 'max:50'],
 
-            'password' => ['nullable', 'string', 'min:8', 'max:100'],
+            'password' => ['nullable', 'string', PasswordPolicyService::standard()],
 
             'sex' => ['nullable', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -445,7 +446,7 @@ class AdminUserController extends Controller
 
             'role' => ['nullable', 'string', 'max:50'],
 
-            'password' => ['nullable', 'string', 'min:8', 'max:100'],
+            'password' => ['nullable', 'string', PasswordPolicyService::standard()],
 
             'sex' => ['nullable', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],

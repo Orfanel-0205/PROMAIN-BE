@@ -144,7 +144,10 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('admin/registrations')
-            ->middleware('role:super_admin,superadmin')
+            // Group membership only — the controller (canApprove) still enforces
+            // that the MHO may decide clinical rows and administrative rows stay
+            // Super-Admin-only.
+            ->middleware('role:super_admin,superadmin,mho,mho_admin')
             ->group(function () {
                 Route::get('/pending',          [RegistrationApprovalController::class, 'pending']);
                 Route::get('/{id}/ocr',         [RegistrationApprovalController::class, 'ocr']);

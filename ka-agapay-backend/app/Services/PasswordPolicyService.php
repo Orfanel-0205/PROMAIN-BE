@@ -38,6 +38,25 @@ class PasswordPolicyService
             ->uncompromised();  // checks HaveIBeenPwned API (optional, remove if offline)
     }
 
+    /**
+     * Canonical password rule used across ALL password-set flows (resident
+     * registration, staff self-registration, admin-created accounts, and any
+     * password change). Min 8 / max 128, requires upper + lower + number +
+     * symbol. Intentionally OMITS uncompromised()/HIBP so it never depends on an
+     * external network call in production (the droplet may be offline for that
+     * check). Use this everywhere so the policy has a single source of truth.
+     *
+     * Usage:  'password' => ['required', 'confirmed', PasswordPolicyService::standard()]
+     */
+    public static function standard(): Password
+    {
+        return Password::min(8)
+            ->max(128)
+            ->mixedCase()
+            ->numbers()
+            ->symbols();
+    }
+
     // ── Programmatic check (use where FormRequest is unavailable) ─────────
 
     /**
