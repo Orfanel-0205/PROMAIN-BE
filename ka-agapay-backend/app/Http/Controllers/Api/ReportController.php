@@ -47,6 +47,11 @@ class ReportController extends Controller
      *
      * ITR + SOAP + Diagnosis CSV Export.
      *
+     * GRAIN: one row per COMPLETED consultation. A patient with several
+     * consultations appears on several rows (by design) — this is a per-visit
+     * clinical log, not a per-patient roster. All dates are normalized to
+     * YYYY-MM-DD (dates) / YYYY-MM-DD HH:mm (datetimes) via csvDate/csvDateTime.
+     *
      * CSV design:
      * - ITR / Patient-filled section:
      *   patient details, PhilHealth, address, guardian, history, reason/chief complaint.
@@ -91,13 +96,13 @@ class ReportController extends Controller
             'ITR: Mobile Number' => fn (array $row) => $this->value($row, ['mobile_number']),
             'ITR: Age' => fn (array $row) => $this->value($row, ['age']),
             'ITR: DOH Age Group' => fn (array $row) => $this->dohAgeGroup($this->value($row, ['age'])),
-            'ITR: Birthdate' => fn (array $row) => $this->value($row, ['birthdate']),
+            'ITR: Birthdate' => fn (array $row) => $this->csvDate($this->value($row, ['birthdate'])),
             'ITR: Gender / Sex' => fn (array $row) => $this->value($row, ['sex_gender']),
             'ITR: Civil Status' => fn (array $row) => $this->value($row, ['civil_status']),
             'ITR: Religion' => fn (array $row) => $this->value($row, ['religion']),
             'ITR: Education' => fn (array $row) => $this->value($row, ['educational_attainment', 'education']),
             'ITR: Guardian Name' => fn (array $row) => $this->value($row, ['guardian_name']),
-            'ITR: Guardian Birthdate' => fn (array $row) => $this->value($row, ['guardian_birthdate']),
+            'ITR: Guardian Birthdate' => fn (array $row) => $this->csvDate($this->value($row, ['guardian_birthdate'])),
             'ITR: Guardian Contact' => fn (array $row) => $this->value($row, ['guardian_contact']),
 
             // ================================================================
@@ -139,7 +144,7 @@ class ReportController extends Controller
             'Survey: Altered Sensorium' => fn (array $row) => $this->value($row, ['altered_sensorium']),
 
             'ITR: Female - No. of Child' => fn (array $row) => $this->value($row, ['number_of_children']),
-            'ITR: Female - LMP' => fn (array $row) => $this->value($row, ['lmp']),
+            'ITR: Female - LMP' => fn (array $row) => $this->csvDate($this->value($row, ['lmp'])),
             'ITR: Female - Period Duration' => fn (array $row) => $this->value($row, ['period_duration']),
             'ITR: Female - Cycle' => fn (array $row) => $this->value($row, ['cycle']),
             'ITR: Female - FP Method' => fn (array $row) => $this->value($row, ['family_planning_method', 'fp_method']),
@@ -189,7 +194,7 @@ class ReportController extends Controller
             // FOLLOW-UP
             // ================================================================
             'Follow-up Needed' => fn (array $row) => $this->yesNo($this->value($row, ['follow_up_needed'])),
-            'Follow-up Date / Time' => fn (array $row) => $this->value($row, ['follow_up_date_time']),
+            'Follow-up Date / Time' => fn (array $row) => $this->csvDateTime($this->value($row, ['follow_up_date_time'])),
             'Follow-up Instructions' => fn (array $row) => $this->value($row, ['follow_up_instructions']),
             'Follow-up Status' => fn (array $row) => $this->value($row, ['follow_up_status']),
 
@@ -199,7 +204,49 @@ class ReportController extends Controller
             'Doctor / Attending Staff' => fn (array $row) => $this->value($row, ['attending_staff']),
         ];
 
-        $filename = 'itr_soap_diagnosis_consultation_report_' . now()->format('Y-m-d_His') . '.csv';
+        // Default export = a curated, scannable CORE set (one row per completed
+        // consultation). The full paper-ITR layout — vitals, pediatric, female,
+        // survey, and extended history columns that are mostly blank until the
+        // profile/SOAP forms are completed — is available with ?detail=full so
+        // the default deliverable is not a wall of empty columns.
+        $detail = strtolower((string) $request->query('detail', '')) === 'full';
+
+        if (!$detail) {
+            $coreLabels = [
+                'Session: Consultation ID',
+                'Session: Consultation Date',
+                'Session: Completed At',
+                'Session: RHU',
+                'ITR: PhilHealth Number / ID',
+                'ITR: Patient Full Name',
+                'ITR: Barangay',
+                'ITR: Mobile Number',
+                'ITR: Age',
+                'ITR: DOH Age Group',
+                'ITR: Gender / Sex',
+                'ITR/SOAP: Chief Complaint',
+                'SOAP: Diagnosis',
+                'SOAP: Plan - Doctor Filled',
+                'SOAP: Prescribed Drug/s / Treatment',
+                'Follow-up Needed',
+                'Follow-up Date / Time',
+                'Follow-up Status',
+                'Doctor / Attending Staff',
+            ];
+
+            $full = $columns;
+            $columns = [];
+
+            foreach ($coreLabels as $label) {
+                if (array_key_exists($label, $full)) {
+                    $columns[$label] = $full[$label];
+                }
+            }
+        }
+
+        $filename = 'itr_soap_diagnosis_consultation_report_'
+            . ($detail ? 'full_' : 'core_')
+            . now()->format('Y-m-d_His') . '.csv';
 
         return response()->streamDownload(function () use ($columns, $rows) {
             $out = fopen('php://output', 'w');
