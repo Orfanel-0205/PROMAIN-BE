@@ -90,6 +90,12 @@ Route::prefix('v1')->group(function () {
     Route::get('/barangays', [BarangayController::class, 'index'])
         ->middleware('throttle:30,1');
 
+    // Stateless Employee-ID OCR autofill for the staff registration form. Extracts
+    // and returns fields only — persists NOTHING (no account, no file). The real
+    // name-match gate runs at POST /admin/register.
+    Route::post('/admin/register/extract-employee-id', [AdminRegistrationController::class, 'extractEmployeeId'])
+        ->middleware('throttle:20,1');
+
     // =========================================================================
     // AUTHENTICATED ROUTES
     // =========================================================================

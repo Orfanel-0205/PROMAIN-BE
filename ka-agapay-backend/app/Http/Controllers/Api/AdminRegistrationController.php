@@ -6,8 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Api\OcrController;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Rules\FilipinoName;
 use App\Services\Notification\NotificationService;
 use App\Services\PasswordPolicyService;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -37,27 +39,35 @@ class AdminRegistrationController extends Controller
         ]);
 
         $validated = $request->validate([
-            'first_name' => ['required', 'string', 'max:100'],
-            'middle_name' => ['nullable', 'string', 'max:100'],
-            'last_name' => ['required', 'string', 'max:100'],
+            // Reuse the SAME realistic-name rule as resident registration (Pass 1)
+            // so junk like "this-isa-test..." / "POGIII...-123" is rejected here too.
+            'first_name' => ['required', 'string', 'max:100', new FilipinoName()],
+            'middle_name' => ['nullable', 'string', 'max:100', new FilipinoName()],
+            'last_name' => ['required', 'string', 'max:100', new FilipinoName()],
             'email' => ['nullable', 'email', 'max:150', 'unique:users,email'],
             'mobile_number' => ['required', 'regex:/^09\d{9}$/', 'unique:users,mobile_number'],
-            'barangay' => ['nullable', 'string', 'max:150'],
+            // Barangay is a required dropdown validated against the live list — no
+            // free text (BarangayList's own guidance: use Rule::exists, not the const).
+            'barangay' => ['required', 'string', Rule::exists('barangays', 'name')],
+            'birthday' => ['nullable', 'date', 'before:today'],
             'role' => ['required', Rule::in($this->staffRoles)],
             'password' => ['required', 'confirmed', PasswordPolicyService::standard()],
             'password_confirmation' => ['required'],
 
-            // FINAL RULE: RHU staff/admin must accept the Terms and upload an
-            // Employee Identification Card. The account is created as PENDING and
-            // the document is reviewed by the Super Admin before approval.
+            // FINAL RULE: RHU staff/admin must accept the Terms and upload ONE
+            // Employee Identification Card photo. Single file only; 5 MB max;
+            // JPG/PNG only (a photographed card). Account stays PENDING for review.
             'terms_accepted' => ['required', 'accepted'],
-            'employee_id' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:20480'],
+            'employee_id' => ['required', 'file', 'mimes:jpg,jpeg,png', 'max:5120'],
         ], [
             'terms_accepted.required' => 'You must accept the Terms and Conditions to register.',
             'terms_accepted.accepted' => 'You must accept the Terms and Conditions to register.',
-            'employee_id.required' => 'Please upload your Employee Identification Card.',
-            'employee_id.mimes' => 'Employee ID must be a JPG, PNG, WEBP, or PDF file.',
-            'employee_id.max' => 'Employee ID file must be 20MB or smaller.',
+            'barangay.required' => 'Please choose your barangay from the list.',
+            'barangay.exists' => 'Please choose a valid barangay from the list.',
+            'employee_id.required' => 'Please upload a clear photo of your Employee ID.',
+            'employee_id.file' => 'Please upload a clear photo of your Employee ID.',
+            'employee_id.mimes' => 'Please upload a JPG or PNG image of your Employee ID.',
+            'employee_id.max' => 'That image is too large. Please upload a photo up to 5 MB.',
         ]);
 
         $role = UserRole::where('name', $validated['role'])->first();
@@ -68,7 +78,14 @@ class AdminRegistrationController extends Controller
             ], 422);
         }
 
-        $user = DB::transaction(function () use ($request, $validated, $role) {
+        // PART 5 — hard name-match gate BEFORE any account/file is created. Runs
+        // OCR on the TEMPORARY uploaded file (nothing persisted yet) and reuses
+        // the resident/PhilHealth scorer at the same 0.65 threshold. A rejected
+        // upload therefore leaves NO account, NO ocr_results row, and NO stored
+        // file. The extracted fields are reused below so OCR runs only once.
+        $ocrFields = $this->verifyEmployeeIdNameMatch($request, $validated);
+
+        $user = DB::transaction(function () use ($request, $validated, $role, $ocrFields) {
             $user = new User();
             $user->role_id = $role->role_id;
             $user->first_name = trim($validated['first_name']);
@@ -83,6 +100,10 @@ class AdminRegistrationController extends Controller
 
             if (Schema::hasColumn('users', 'barangay')) {
                 $user->barangay = $validated['barangay'] ?? null;
+            }
+
+            if (Schema::hasColumn('users', 'birthday') && !empty($validated['birthday'])) {
+                $user->birthday = $validated['birthday'];
             }
 
             if (Schema::hasColumn('users', 'id_verified')) {
@@ -111,7 +132,7 @@ class AdminRegistrationController extends Controller
             // an OCR/document record so the Super Admin's "View OCR" + the
             // approve-requires-document gate work. OCR matching is NOT run and
             // this NEVER auto-approves the account.
-            $this->storeEmployeeIdDocument($request, $user, (string) $validated['role']);
+            $this->storeEmployeeIdDocument($request, $user, (string) $validated['role'], $ocrFields);
 
             return $user->fresh()->load('role');
         });
@@ -156,7 +177,7 @@ class AdminRegistrationController extends Controller
      *
      * Column-filtered so it is safe across schema variations.
      */
-    private function storeEmployeeIdDocument(Request $request, User $user, string $role): void
+    private function storeEmployeeIdDocument(Request $request, User $user, string $role, array $fields = []): void
     {
         if (!$request->hasFile('employee_id') || !Schema::hasTable('ocr_results')) {
             return;
@@ -169,38 +190,15 @@ class AdminRegistrationController extends Controller
             'public'
         );
 
-        // Attempt OCR extraction using the existing OCR service used by the
-        // working School/PhilHealth ID flow. Wrapped so it can never break
-        // registration — extraction failure is logged and left as pending.
-        $extractedText = null;
-        $extractedName = null;
-        $extractedBirthdate = null;
-        $extractedIdNumber = null;
-        $confidence = 0.0;
-        $rawProviderResponse = [];
-
-        try {
-            $fullPath = Storage::disk('public')->path($path);
-
-            $fields = app(OcrController::class)->extractDocumentFields(
-                $fullPath,
-                (string) ($file->getMimeType() ?: 'image/jpeg')
-            );
-
-            $extractedText = ($fields['text'] ?? '') !== '' ? $fields['text'] : null;
-            // Prefer the employee-ID-aware parser; fall back to the generic OCR name.
-            $extractedName = $this->parseEmployeeName($fields['text'] ?? '')
-                ?? ($fields['extracted_name'] ?? null);
-            $extractedBirthdate = $fields['extracted_birthdate'] ?? null;
-            $extractedIdNumber = $fields['extracted_id_number'] ?? null;
-            $confidence = (float) ($fields['confidence'] ?? 0);
-            $rawProviderResponse = $fields['raw'] ?? [];
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('[EmployeeIdOCR] extraction failed; keeping pending.', [
-                'user_id' => $user->user_id,
-                'error' => $e->getMessage(),
-            ]);
-        }
+        // Reuse the fields already extracted by the pre-create name-match gate so
+        // OCR runs only ONCE per registration. Safe nulls if extraction was empty.
+        $text = (string) ($fields['text'] ?? '');
+        $extractedText = $text !== '' ? $text : null;
+        $extractedName = $this->parseEmployeeName($text) ?? ($fields['extracted_name'] ?? null);
+        $extractedBirthdate = $fields['extracted_birthdate'] ?? null;
+        $extractedIdNumber = $fields['extracted_id_number'] ?? null;
+        $confidence = (float) ($fields['confidence'] ?? 0);
+        $rawProviderResponse = $fields['raw'] ?? [];
 
         $row = [
             'user_id' => $user->user_id,
@@ -296,6 +294,210 @@ class AdminRegistrationController extends Controller
     {
         $value = preg_replace('/\s{2,}/', ' ', trim($value)) ?? $value;
         return trim($value, " .,-");
+    }
+
+    /**
+     * PART 5 — run OCR on the TEMP uploaded Employee ID and reject registration
+     * if the typed name does not reasonably match the ID, reusing the SAME
+     * OcrController::nameMatchScore() + 0.65 threshold as the resident/PhilHealth
+     * flows. Returns the extracted fields so the caller persists them without a
+     * second OCR call. Nothing is stored here — a rejected upload leaves no
+     * account, no ocr_results row, and no stored file.
+     */
+    private function verifyEmployeeIdNameMatch(Request $request, array $validated): array
+    {
+        $file = $request->file('employee_id');
+
+        try {
+            $fields = app(OcrController::class)->extractDocumentFields(
+                $file->getRealPath(),
+                (string) ($file->getMimeType() ?: 'image/jpeg')
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('[EmployeeIdOCR] pre-create extraction failed.', [
+                'error' => $e->getMessage(),
+            ]);
+            $fields = [];
+        }
+
+        $text = (string) ($fields['text'] ?? '');
+
+        if (trim($text) === '') {
+            throw ValidationException::withMessages([
+                'employee_id' => ['We could not read your Employee ID. Please upload a clearer, well-lit photo.'],
+            ]);
+        }
+
+        $extractedName = $this->parseEmployeeName($text) ?? ($fields['extracted_name'] ?? null);
+        $typedName = trim(($validated['first_name'] ?? '') . ' ' . ($validated['last_name'] ?? ''));
+
+        $score = app(OcrController::class)->nameMatchScore($typedName, $extractedName, $text);
+
+        if ($score < 0.65) {
+            throw ValidationException::withMessages([
+                'employee_id' => ['The name on your Employee ID does not match the name you entered. Please check your name or upload the correct ID.'],
+            ]);
+        }
+
+        $fields['name_match_score'] = round($score, 2);
+
+        return $fields;
+    }
+
+    /**
+     * PART 5 — STATELESS Employee-ID OCR autofill. Extracts fields from the TEMP
+     * uploaded file and returns them for the form to pre-fill; persists NOTHING
+     * (no DB row, no stored file), so re-uploads / abandoned attempts never leave
+     * orphans. Advisory only — the real gate is verifyEmployeeIdNameMatch at
+     * submission.
+     *
+     * POST /api/v1/admin/register/extract-employee-id
+     */
+    public function extractEmployeeId(Request $request): JsonResponse
+    {
+        $request->validate([
+            'employee_id' => ['required', 'file', 'mimes:jpg,jpeg,png', 'max:5120'],
+        ], [
+            'employee_id.required' => 'Please upload a clear photo of your Employee ID.',
+            'employee_id.file' => 'Please upload a clear photo of your Employee ID.',
+            'employee_id.mimes' => 'Please upload a JPG or PNG image of your Employee ID.',
+            'employee_id.max' => 'That image is too large. Please upload a photo up to 5 MB.',
+        ]);
+
+        $file = $request->file('employee_id');
+
+        try {
+            $fields = app(OcrController::class)->extractDocumentFields(
+                $file->getRealPath(),
+                (string) ($file->getMimeType() ?: 'image/jpeg')
+            );
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'We could not read that image. Please review the details and fill them in.',
+                'data' => ['ok' => false, 'fields' => $this->emptyEmployeeFields()],
+            ]);
+        }
+
+        $text = (string) ($fields['text'] ?? '');
+
+        return response()->json([
+            'message' => trim($text) !== ''
+                ? 'Employee ID scanned. Please review the details below.'
+                : 'We could not read much from that image. Please review and fill in the details.',
+            'data' => [
+                'ok' => trim($text) !== '',
+                'fields' => $this->parseEmployeeIdFields($text, $fields),
+            ],
+        ]);
+    }
+
+    private function emptyEmployeeFields(): array
+    {
+        return [
+            'first_name' => null,
+            'middle_name' => null,
+            'last_name' => null,
+            'full_name' => null,
+            'position' => null,
+            'office' => null,
+            'address' => null,
+            'birthday' => null,
+        ];
+    }
+
+    /**
+     * Best-effort parse of the Malasiqui LGU Employee ID layout into form fields.
+     * Advisory — the user reviews/edits before submitting. Never throws.
+     */
+    private function parseEmployeeIdFields(string $text, array $ocr = []): array
+    {
+        $fullName = $this->parseEmployeeName($text) ?? ($ocr['extracted_name'] ?? null);
+        [$first, $middle, $last] = $this->splitEmployeeName($fullName);
+
+        return [
+            'first_name' => $first,
+            'middle_name' => $middle,
+            'last_name' => $last,
+            'full_name' => $fullName,
+            'position' => $this->parseLabelledValue($text, ['POSITION', 'DESIGNATION']),
+            'office' => $this->parseLabelledValue($text, ['OFFICE', 'DEPARTMENT', 'ASSIGNED', 'RURAL HEALTH UNIT', 'RHU']),
+            'address' => $this->parseLabelledValue($text, ['ADDRESS']),
+            'birthday' => $this->normalizeDate(
+                $ocr['extracted_birthdate']
+                    ?? $this->parseLabelledValue($text, ['DATE OF BIRTH', 'BIRTH DATE', 'BIRTHDATE', 'BIRTHDAY', 'DOB'])
+            ),
+        ];
+    }
+
+    /** Return the value printed after a label (same line, or the next line). */
+    private function parseLabelledValue(string $text, array $labels): ?string
+    {
+        $lines = preg_split('/\r?\n/', $text) ?: [];
+        $count = count($lines);
+
+        foreach ($lines as $i => $rawLine) {
+            $line = trim($rawLine);
+            $upper = mb_strtoupper($line);
+
+            foreach ($labels as $label) {
+                if (mb_strpos($upper, $label) === false) {
+                    continue;
+                }
+
+                // Value after "LABEL:" / "LABEL -" on the same line.
+                $after = trim((string) preg_replace('/^.*?' . preg_quote($label, '/') . '\s*[:\-]?\s*/iu', '', $line));
+                if ($after !== '' && mb_strtoupper($after) !== $label) {
+                    return $this->cleanName($after);
+                }
+
+                // Otherwise take the next non-empty line.
+                for ($j = $i + 1; $j < $count; $j++) {
+                    $next = trim($lines[$j]);
+                    if ($next !== '') {
+                        return $this->cleanName($next);
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** Split "JUAN SANTOS DELA CRUZ" into [first, middle, last] (best effort). */
+    private function splitEmployeeName(?string $name): array
+    {
+        $parts = array_values(array_filter(preg_split('/\s+/', trim((string) $name)) ?: []));
+        $count = count($parts);
+
+        if ($count === 0) {
+            return [null, null, null];
+        }
+        if ($count === 1) {
+            return [$this->cleanName($parts[0]), null, null];
+        }
+        if ($count === 2) {
+            return [$this->cleanName($parts[0]), null, $this->cleanName($parts[1])];
+        }
+
+        $first = $this->cleanName($parts[0]);
+        $last = $this->cleanName($parts[$count - 1]);
+        $middle = $this->cleanName(implode(' ', array_slice($parts, 1, $count - 2)));
+
+        return [$first, $middle !== '' ? $middle : null, $last];
+    }
+
+    private function normalizeDate(mixed $value): ?string
+    {
+        $string = trim((string) ($value ?? ''));
+        if ($string === '') {
+            return null;
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse($string)->format('Y-m-d');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**

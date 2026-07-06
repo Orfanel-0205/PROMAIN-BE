@@ -1130,7 +1130,10 @@ class OcrController extends Controller
     // MATCHING HELPERS
     // =========================================================================
 
-    private function nameMatchScore(string $registeredName, ?string $extractedName, string $fullText): float
+    // Public so the staff self-registration flow (AdminRegistrationController)
+    // can reuse the SAME name-match scoring the resident/PhilHealth ID flows use,
+    // instead of duplicating it. Internal logic is unchanged.
+    public function nameMatchScore(string $registeredName, ?string $extractedName, string $fullText): float
     {
         $registered = $this->normalizeName($registeredName);
         $candidate = $this->normalizeName($extractedName ?: $fullText);

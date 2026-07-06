@@ -4,6 +4,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Announcement;
+use App\Services\Audit\AuditService;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -300,20 +302,56 @@ class AnnouncementController extends Controller
     {
         $this->authorizeCms($request);
 
-        $row = DB::table($this->table)->where('id', $id)->first();
-        abort_unless($row, 404, 'Announcement not found.');
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:500'],
+        ]);
+        $reason = trim((string) ($validated['reason'] ?? '')) ?: 'Announcement archived by staff.';
 
-        if (Schema::hasColumn($this->table, 'deleted_at')) {
-            DB::table($this->table)->where('id', $id)->update([
-                'deleted_at' => now(),
-                'updated_at' => Schema::hasColumn($this->table, 'updated_at') ? now() : null,
-            ]);
-        } else {
-            DB::table($this->table)->where('id', $id)->delete();
-        }
+        // Archive (soft-delete) via the model so it lands in Delete & Archive
+        // History and can be restored — matching the Inventory/Event pattern.
+        $announcement = Announcement::findOrFail($id);
+        $snapshot = array_merge($announcement->attributesToArray(), ['id' => $announcement->getKey()]);
+        $label = (string) ($announcement->title ?? ('Announcement #' . $announcement->getKey()));
+
+        DB::transaction(function () use ($request, $announcement, $reason) {
+            $table = $announcement->getTable();
+            $actorId = $request->user()?->user_id ?? $request->user()?->id;
+
+            $updates = [];
+            if (Schema::hasColumn($table, 'deleted_by')) {
+                $updates['deleted_by'] = $actorId;
+            }
+            if (Schema::hasColumn($table, 'delete_reason')) {
+                $updates['delete_reason'] = $reason;
+            }
+            if (!empty($updates)) {
+                $announcement->forceFill($updates)->save();
+            }
+
+            $announcement->delete(); // soft delete (SoftDeletes) — recoverable
+        });
+
+        // Attribution + reason live in the audit log (single source of truth),
+        // surfaced by the Delete & Archive History recycle bin.
+        app(AuditService::class)->log(
+            $request,
+            'announcement.deleted',
+            'announcements',
+            $announcement,
+            $snapshot,
+            [],
+            [
+                'reason' => $reason,
+                'delete_reason' => $reason,
+                'archive_reason' => $reason,
+                'restore_id' => $announcement->getKey(),
+            ],
+            'warning',
+            $label
+        );
 
         return response()->json([
-            'message' => 'Announcement deleted.',
+            'message' => 'Announcement archived. It can be restored from Delete & Archive History within 30 days.',
         ]);
     }
 
