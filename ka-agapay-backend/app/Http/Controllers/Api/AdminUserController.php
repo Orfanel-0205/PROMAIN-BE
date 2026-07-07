@@ -54,6 +54,18 @@ class AdminUserController extends Controller
     ];
 
     /*
+     * Only these roles may SELECT/ASSIGN a role other than the resident/patient
+     * default — on create, edit, and the assign-role endpoint. Other admins can
+     * still create plain resident accounts (front-desk flow) but never choose a
+     * staff/admin role. Protected roles below stay Super Admin-only on top.
+     */
+    private array $roleManagerRoles = [
+        'mho',
+        'super_admin',
+        'superadmin',
+    ];
+
+    /*
      * Only Super Admin can modify these protected accounts.
      */
     private array $protectedRoles = [
@@ -343,11 +355,16 @@ class AdminUserController extends Controller
         $hasLabel = in_array('label', $columns, true);
         $hasDescription = in_array('description', $columns, true);
 
-        // Only expose the roles the Web Admin actually uses.
-        $allowed = [
-            'resident', 'patient', 'staff', 'nurse', 'midwife', 'bhw',
-            'doctor', 'mho', 'rhu_admin', 'super_admin',
-        ];
+        // Only expose the roles the Web Admin actually uses. Role selection is
+        // restricted: non role-managers (everyone but Super Admin / MHO) only
+        // ever see the resident/patient default, which drives the create/edit
+        // dropdowns on the frontend from a single source of truth.
+        $allowed = $this->currentUserCanManageRoles($request)
+            ? [
+                'resident', 'patient', 'staff', 'nurse', 'midwife', 'bhw',
+                'doctor', 'mho', 'rhu_admin', 'super_admin',
+            ]
+            : ['resident', 'patient'];
 
         $roles = UserRole::query()->get()
             ->map(function (UserRole $role) use ($hasLabel, $hasDescription) {
@@ -536,13 +553,18 @@ class AdminUserController extends Controller
 
             abort_unless(in_array($newRole, $this->allowedRoles, true), 422, 'Invalid role.');
 
-            $this->assertTargetCanBeChanged($request, $user);
-            $this->authorizeRoleAssignment($request, $newRole);
+            // Only gate an actual role CHANGE. Edit forms echo the current role
+            // back on every save, and that must not 403 an otherwise-innocent
+            // profile edit made by a non role-manager.
+            if ($newRole !== $this->normalizeRoleName($user->role_name)) {
+                $this->assertTargetCanBeChanged($request, $user);
+                $this->authorizeRoleAssignment($request, $newRole);
 
-            $roleId = $this->resolveRoleId($newRole);
-            abort_unless($roleId, 422, "Role '{$newRole}' was not found in user_roles table.");
+                $roleId = $this->resolveRoleId($newRole);
+                abort_unless($roleId, 422, "Role '{$newRole}' was not found in user_roles table.");
 
-            $updates['role_id'] = $roleId;
+                $updates['role_id'] = $roleId;
+            }
         }
 
         if (array_key_exists('account_status', $validated) || array_key_exists('status', $validated)) {
@@ -812,6 +834,11 @@ class AdminUserController extends Controller
         );
     }
 
+    private function currentUserCanManageRoles(Request $request): bool
+    {
+        return (bool) $request->user()?->hasAnyRole($this->roleManagerRoles);
+    }
+
     private function authorizeRoleAssignment(Request $request, string $roleName): void
     {
         if ($this->isProtectedRole($roleName)) {
@@ -822,8 +849,14 @@ class AdminUserController extends Controller
             );
         }
 
-        if ($this->isStaffRole($roleName)) {
-            $this->authorizeStaffApprover($request);
+        // Role SELECTION is restricted: anyone else on this route may only
+        // create/keep default resident/patient accounts.
+        if (!in_array($roleName, ['resident', 'patient'], true)) {
+            abort_unless(
+                $this->currentUserCanManageRoles($request),
+                403,
+                'Only the Super Admin or MHO can assign roles to users.'
+            );
         }
     }
 

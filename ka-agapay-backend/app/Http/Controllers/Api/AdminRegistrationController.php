@@ -263,6 +263,12 @@ class AdminRegistrationController extends Controller
             'VALID', 'LICENSE', 'PHILHEALTH', 'EMPLOYEE', 'POSITION',
             'DESIGNATION', 'GOVERNMENT', 'PROVINCE', 'CITY', 'DEPARTMENT',
             'NAME', 'BLOOD', 'TYPE', 'EMERGENCY', 'CONTACT',
+            // LGU Malasiqui employee-card layout: seal/header, address values,
+            // the position line, and the mayor's signature block are all-caps
+            // lines with no label — without these they win over the holder's name.
+            'BAYAN', 'LOCAL', 'MALASIQUI', 'PANGASINAN', 'MANILA', 'HON',
+            'MAYOR', 'ADMINISTRATIVE', 'AIDE', 'OFFICER', 'NURSE', 'MIDWIFE',
+            'PHYSICIAN', 'INSPECTOR',
         ];
 
         $lines = preg_split('/\r?\n+/', $text) ?: [];
@@ -275,14 +281,11 @@ class AdminRegistrationController extends Controller
                 continue;
             }
 
-            // Skip institutional / header lines.
-            $hasStopWord = false;
-            foreach ($stopWords as $stop) {
-                if (str_contains($line, $stop)) {
-                    $hasStopWord = true;
-                    break;
-                }
-            }
+            // Skip institutional / header lines. Compare whole WORDS, not
+            // substrings — substring matching wrongly skipped real surnames
+            // (e.g. "CARDENAS" contains CARD, "JHON" would contain HON).
+            $lineTokens = preg_split('/[^A-ZÑ]+/u', $line) ?: [];
+            $hasStopWord = count(array_intersect($lineTokens, $stopWords)) > 0;
             if ($hasStopWord) {
                 continue;
             }
@@ -340,7 +343,18 @@ class AdminRegistrationController extends Controller
         $extractedName = $this->parseEmployeeName($text) ?? ($fields['extracted_name'] ?? null);
         $typedName = trim(($validated['first_name'] ?? '') . ' ' . ($validated['last_name'] ?? ''));
 
-        $score = app(OcrController::class)->nameMatchScore($typedName, $extractedName, $text);
+        // Score against BOTH the parsed name line and the full OCR text, keeping
+        // the best. LGU employee cards print the holder's name WITHOUT a label,
+        // so the line parser can lock onto the wrong all-caps line (the LGU
+        // header or the mayor's signature block). nameMatchScore() only falls
+        // back to the full text when no name was parsed — a wrongly parsed line
+        // would otherwise mask the real name that IS in the text and reject a
+        // legitimate registrant.
+        $ocr = app(OcrController::class);
+        $score = max(
+            $ocr->nameMatchScore($typedName, $extractedName, $text),
+            $ocr->nameMatchScore($typedName, null, $text)
+        );
 
         if ($score < self::EMPLOYEE_ID_NAME_MATCH_THRESHOLD) {
             throw ValidationException::withMessages([
