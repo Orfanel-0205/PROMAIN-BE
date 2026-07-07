@@ -44,8 +44,10 @@ class AdminRegistrationController extends Controller
             'first_name' => ['required', 'string', 'max:100', new FilipinoName()],
             'middle_name' => ['nullable', 'string', 'max:100', new FilipinoName()],
             'last_name' => ['required', 'string', 'max:100', new FilipinoName()],
-            'email' => ['nullable', 'email', 'max:150', 'unique:users,email'],
-            'mobile_number' => ['required', 'regex:/^09\d{9}$/', 'unique:users,mobile_number'],
+            // Ignore archived (soft-deleted) accounts so a released number/email
+            // can be reused — see Part 6 archive-not-delete premise.
+            'email' => ['nullable', 'email', 'max:150', Rule::unique('users', 'email')->whereNull('deleted_at')],
+            'mobile_number' => ['required', 'regex:/^09\d{9}$/', Rule::unique('users', 'mobile_number')->whereNull('deleted_at')],
             // Barangay is a required dropdown validated against the live list — no
             // free text (BarangayList's own guidance: use Rule::exists, not the const).
             'barangay' => ['required', 'string', Rule::exists('barangays', 'name')],

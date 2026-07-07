@@ -101,6 +101,29 @@ class AdminDeletedRecordController extends Controller
             'This record is already active or was permanently removed.'
         );
 
+        // Part 6 consistency: while an account is archived, its released mobile
+        // number / email can be reused by a new registration (partial unique
+        // index scoped to active rows). If an ACTIVE account now holds this
+        // archived account's number or email, restoring it would collide with
+        // that index — surface a clear 422 instead of a duplicate-key 500.
+        if ($module === 'users') {
+            $conflict = User::where($record->getKeyName(), '!=', $record->getKey())
+                ->where(function ($query) use ($record) {
+                    $query->where('mobile_number', $record->mobile_number);
+
+                    if (!empty($record->email)) {
+                        $query->orWhere('email', $record->email);
+                    }
+                })
+                ->exists();
+
+            abort_if(
+                $conflict,
+                422,
+                'This account cannot be restored: its mobile number or email is now registered to another active account.'
+            );
+        }
+
         DB::transaction(function () use ($request, $record, $auditLog, $validated, $module) {
             $oldValues = $this->toArray($auditLog->old_values ?? null);
 

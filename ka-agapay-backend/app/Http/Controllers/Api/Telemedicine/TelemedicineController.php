@@ -11,6 +11,7 @@ use App\Models\Barangay;
 use App\Models\TelemedicineRequest;
 use App\Services\Telemedicine\TelemedicineService;
 use App\Support\BoardVisibility;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -28,15 +29,19 @@ class TelemedicineController extends Controller
     public function index(Request $request): AnonymousResourceCollection
     {
         $validated = $request->validate([
-            'rhu_id'        => ['nullable', 'integer', 'exists:barangays,barangay_id'],
+            'rhu_id'        => ['nullable', 'integer'],
             'status'        => ['nullable', 'string'],
             'urgency_level' => ['nullable', 'string'],
             'date'          => ['nullable', 'date'],
             'per_page'      => ['nullable', 'integer', 'min:5', 'max:100'],
         ]);
 
-        $rhuId = $validated['rhu_id']
-            ?? Barangay::query()->orderBy('barangay_id')->value('barangay_id');
+        // RHU isolation: global staff may focus a facility (or see all); everyone
+        // else is HARD-LOCKED to their own RHU regardless of the requested id.
+        $rhuId = Rhu::filterRhuId(
+            $request->user(),
+            isset($validated['rhu_id']) ? (int) $validated['rhu_id'] : null
+        );
 
         $query = TelemedicineRequest::with([
                 'residentProfile.user',

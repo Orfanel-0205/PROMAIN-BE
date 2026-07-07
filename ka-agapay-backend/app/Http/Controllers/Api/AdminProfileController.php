@@ -32,12 +32,12 @@ class AdminProfileController extends Controller
                 'nullable',
                 'email',
                 'max:150',
-                Rule::unique('users', 'email')->ignore($user->user_id, 'user_id'),
+                Rule::unique('users', 'email')->ignore($user->user_id, 'user_id')->whereNull('deleted_at'),
             ],
             'mobile_number' => [
                 'required',
                 'regex:/^09\d{9}$/',
-                Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id'),
+                Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id')->whereNull('deleted_at'),
             ],
             'barangay' => ['nullable', 'string', 'max:150'],
         ]);

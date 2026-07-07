@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Services\Ai\AiTriageService;
 use App\Services\Analytics\HeatmapAnalyticsService;
 use App\Services\Reports\DiagnosisItrReportService;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -22,13 +23,15 @@ class AnalyticsController extends Controller
             'from'    => ['nullable', 'date'],
             'to'      => ['nullable', 'date', 'after_or_equal:from'],
             'disease' => ['nullable', 'string', 'max:100'],
+            'rhu_id'  => ['nullable'],
         ]);
 
         [$from, $to] = $this->dateRange($request);
 
         $disease = trim((string) ($validated['disease'] ?? ''));
+        $rhuId = $this->resolveRhuId($request);
 
-        $barangayCases = $this->barangayCases($from, $to, $disease);
+        $barangayCases = $this->barangayCases($from, $to, $disease, $rhuId);
 
         $heatmap = collect($barangayCases)
             ->map(function ($row) {
@@ -51,7 +54,7 @@ class AnalyticsController extends Controller
             ->values()
             ->all();
 
-        $clusters = collect($this->complaintDistribution($from, $to))
+        $clusters = collect($this->complaintDistribution($from, $to, $rhuId))
             ->when($disease !== '', function ($items) use ($disease) {
                 $needle = Str::lower($disease);
 
@@ -89,14 +92,14 @@ class AnalyticsController extends Controller
             'data' => [
                 'overview' => [
                     'total_patients' => $this->safeCount('users'),
-                    'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date'),
-                    'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to),
-                    'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at'),
-                    'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to),
-                    ...$this->operationsOverview($from, $to),
+                    'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date', $rhuId),
+                    'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to, 'created_at', $rhuId),
+                    'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at', $rhuId),
+                    'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to, 'created_at', $rhuId),
+                    ...$this->operationsOverview($from, $to, $rhuId),
                     'barangay_cases' => $barangayCases,
                     'complaint_distribution' => $clusters,
-                    'risk_summary' => $this->riskSummary($from, $to),
+                    'risk_summary' => $this->riskSummary($from, $to, $rhuId),
                 ],
                 'heatmap' => $heatmap,
                 'risk' => $risk,
@@ -109,6 +112,7 @@ class AnalyticsController extends Controller
     public function overview(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
+        $rhuId = $this->resolveRhuId($request);
 
         return response()->json([
             'status' => 'success',
@@ -119,14 +123,14 @@ class AnalyticsController extends Controller
             ],
             'data' => [
                 'total_patients' => $this->safeCount('users'),
-                'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date'),
-                'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to),
-                'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at'),
-                'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to),
-                ...$this->operationsOverview($from, $to),
-                'barangay_cases' => $this->barangayCases($from, $to),
-                'complaint_distribution' => $this->complaintDistribution($from, $to),
-                'risk_summary' => $this->riskSummary($from, $to),
+                'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date', $rhuId),
+                'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to, 'created_at', $rhuId),
+                'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at', $rhuId),
+                'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to, 'created_at', $rhuId),
+                ...$this->operationsOverview($from, $to, $rhuId),
+                'barangay_cases' => $this->barangayCases($from, $to, '', $rhuId),
+                'complaint_distribution' => $this->complaintDistribution($from, $to, $rhuId),
+                'risk_summary' => $this->riskSummary($from, $to, $rhuId),
             ],
         ]);
     }
@@ -164,12 +168,13 @@ class AnalyticsController extends Controller
     public function queuePerformance(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
+        $rhuId = $this->resolveRhuId($request);
 
         if (!Schema::hasTable('queue_tickets')) {
             return $this->empty('queue_performance');
         }
 
-        $queue = $this->queueOperations($from, $to);
+        $queue = $this->queueOperations($from, $to, $rhuId);
 
         return response()->json([
             'status' => 'success',
@@ -396,6 +401,7 @@ class AnalyticsController extends Controller
         }
 
         [$from, $to] = $this->dateRange($request);
+        $rhuId = $this->resolveRhuId($request);
 
         $dateColumn = $this->dateColumnWithValues(
             'queue_tickets',
@@ -407,6 +413,7 @@ class AnalyticsController extends Controller
         $rows = DB::table('queue_tickets')
             ->selectRaw("COALESCE(service_type, 'unspecified') as service_type, status, COUNT(*) as total")
             ->whereDate($dateColumn, today())
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->groupByRaw("COALESCE(service_type, 'unspecified'), status")
             ->orderByDesc('total')
             ->get();
@@ -466,6 +473,7 @@ class AnalyticsController extends Controller
     public function priorityDashboard(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
+        $rhuId = $this->resolveRhuId($request);
 
         if (!Schema::hasTable('queue_tickets')) {
             return $this->empty('priority_dashboard');
@@ -474,7 +482,7 @@ class AnalyticsController extends Controller
         return response()->json([
             'status' => 'success',
             'generated_at' => now()->toIso8601String(),
-            'data' => $this->queuePriorityBreakdown($from, $to),
+            'data' => $this->queuePriorityBreakdown($from, $to, $rhuId),
         ]);
     }
 
@@ -553,20 +561,59 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    private function operationsOverview(Carbon $from, Carbon $to): array
+    /**
+     * Resolve the facility RHU a request may operate on. Global staff
+     * (super_admin / MHO) may pass ?rhu_id= to focus one facility or omit it to
+     * see all; every other role is HARD-LOCKED to their own RHU regardless of
+     * the param. Returns null only for global staff who asked for "all".
+     */
+    private function resolveRhuId(Request $request): ?int
     {
-        $attendance = $this->attendanceOverview($from, $to);
-        $queue = $this->queueOperations($from, $to);
+        $requested = $request->query('rhu_id');
+        $requested = ($requested === null || $requested === '' || $requested === 'all')
+            ? null
+            : (int) $requested;
+
+        return Rhu::filterRhuId($request->user(), $requested);
+    }
+
+    /**
+     * Scope a query to a facility RHU. null => all RHUs (no filter). RHU 1 also
+     * owns legacy / null / unmapped rhu_id rows from the pre-RHU2 era, matching
+     * how AppointmentController resolves the default facility.
+     */
+    private function scopeRhu($query, ?int $rhuId, string $column = 'rhu_id')
+    {
+        if ($rhuId === null) {
+            return $query;
+        }
+
+        if ($rhuId === Rhu::DEFAULT_ID) {
+            return $query->where(function ($q) use ($column) {
+                $q->where($column, Rhu::DEFAULT_ID)
+                    ->orWhereNull($column)
+                    ->orWhereNotIn($column, Rhu::IDS);
+            });
+        }
+
+        return $query->where($column, $rhuId);
+    }
+
+    private function operationsOverview(Carbon $from, Carbon $to, ?int $rhuId = null): array
+    {
+        $attendance = $this->attendanceOverview($from, $to, $rhuId);
+        $queue = $this->queueOperations($from, $to, $rhuId);
         $appointments = $this->statusBreakdown(
             'appointments',
             $from,
             $to,
             ['appointment_date', 'scheduled_at', 'approved_at', 'created_at'],
-            'appointment'
+            'appointment',
+            $rhuId
         );
-        $telemedicine = $this->telemedicineStatusDistribution($from, $to);
+        $telemedicine = $this->telemedicineStatusDistribution($from, $to, $rhuId);
         $programs = $this->programParticipation($from, $to);
-        $aiTriage = $this->aiTriageDistribution($from, $to);
+        $aiTriage = $this->aiTriageDistribution($from, $to, $rhuId);
 
         return [
             ...$attendance,
@@ -607,14 +654,14 @@ class AnalyticsController extends Controller
         ];
     }
 
-    private function attendanceOverview(Carbon $from, Carbon $to): array
+    private function attendanceOverview(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         $source = 'completed_consultations';
-        $timestamps = $this->consultationAttendanceTimestamps($from, $to);
+        $timestamps = $this->consultationAttendanceTimestamps($from, $to, $rhuId);
 
         if ($timestamps->isEmpty()) {
             $source = 'queue_tickets';
-            $timestamps = $this->tableTimestamps('queue_tickets', $from, $to, 'issued_at');
+            $timestamps = $this->tableTimestamps('queue_tickets', $from, $to, 'issued_at', [], $rhuId);
         }
 
         if ($timestamps->isEmpty()) {
@@ -624,7 +671,8 @@ class AnalyticsController extends Controller
                 $from,
                 $to,
                 'appointment_date',
-                ['completed', 'done', 'served']
+                ['completed', 'done', 'served'],
+                $rhuId
             );
         }
 
@@ -691,7 +739,7 @@ class AnalyticsController extends Controller
         ];
     }
 
-    private function consultationAttendanceTimestamps(Carbon $from, Carbon $to)
+    private function consultationAttendanceTimestamps(Carbon $from, Carbon $to, ?int $rhuId = null)
     {
         if (!Schema::hasTable('consultations')) {
             return collect();
@@ -712,10 +760,8 @@ class AnalyticsController extends Controller
             Schema::hasColumn('consultations', 'appointment_id') &&
             Schema::hasColumn('appointments', 'rhu_id')
         ) {
-            $query->leftJoin('appointments as a', 'a.id', '=', 'c.appointment_id')
-                ->where(function ($q) {
-                    $q->where('a.rhu_id', 1)->orWhereNull('a.rhu_id');
-                });
+            $query->leftJoin('appointments as a', 'a.id', '=', 'c.appointment_id');
+            $this->scopeRhu($query, $rhuId, 'a.rhu_id');
         }
 
         return $query->pluck("c.{$dateColumn}");
@@ -726,7 +772,8 @@ class AnalyticsController extends Controller
         Carbon $from,
         Carbon $to,
         string $preferredColumn = 'created_at',
-        array $statuses = []
+        array $statuses = [],
+        ?int $rhuId = null
     ) {
         if (!Schema::hasTable($table)) {
             return collect();
@@ -745,12 +792,12 @@ class AnalyticsController extends Controller
 
         return DB::table($table)
             ->whereBetween($dateColumn, [$from, $to])
-            ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
+            ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->when($statuses && Schema::hasColumn($table, 'status'), fn ($q) => $q->whereIn('status', $statuses))
             ->pluck($dateColumn);
     }
 
-    private function queueOperations(Carbon $from, Carbon $to): array
+    private function queueOperations(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         $empty = [
             'queue_by_hour' => [],
@@ -788,7 +835,7 @@ class AnalyticsController extends Controller
 
         $base = DB::table('queue_tickets')
             ->whereBetween($dateColumn, [$from, $to])
-            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('deleted_at'));
 
         $timestamps = (clone $base)
@@ -816,13 +863,13 @@ class AnalyticsController extends Controller
             ->values()
             ->all();
 
-        $queueByStatus = $this->queuePerformanceFromCounters($from, $to);
+        $queueByStatus = $this->queuePerformanceFromCounters($from, $to, $rhuId);
 
         if (array_sum(array_column($queueByStatus, 'count')) <= 0) {
             $queueByStatus = $this->queuePerformanceFromTickets($base);
         }
 
-        $priorityBreakdown = $this->queuePriorityBreakdown($from, $to);
+        $priorityBreakdown = $this->queuePriorityBreakdown($from, $to, $rhuId);
         $peak = collect($queueByHour)->sortByDesc('count')->first();
 
         $waiting = $this->statusTotal($queueByStatus, 'waiting');
@@ -867,7 +914,8 @@ class AnalyticsController extends Controller
         Carbon $from,
         Carbon $to,
         array|string $preferredColumns = 'created_at',
-        string $statusType = 'generic'
+        string $statusType = 'generic',
+        ?int $rhuId = null
     ): array {
         if (!Schema::hasTable($table) || !Schema::hasColumn($table, 'status')) {
             return [];
@@ -883,7 +931,7 @@ class AnalyticsController extends Controller
         $rawRows = DB::table($table)
             ->selectRaw("COALESCE(status, 'unknown') as raw_status, COUNT(*) as count")
             ->whereBetween($dateColumn, [$from, $to])
-            ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
+            ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->groupByRaw("COALESCE(status, 'unknown')")
             ->get();
 
@@ -916,14 +964,15 @@ class AnalyticsController extends Controller
             ->all();
     }
 
-    private function telemedicineStatusDistribution(Carbon $from, Carbon $to): array
+    private function telemedicineStatusDistribution(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         $requests = $this->statusBreakdown(
             'telemedicine_requests',
             $from,
             $to,
             ['created_at', 'screened_at', 'cancelled_at'],
-            'telemedicine'
+            'telemedicine',
+            $rhuId
         );
 
         if (array_sum(array_column($requests, 'count')) > 0) {
@@ -935,7 +984,8 @@ class AnalyticsController extends Controller
             $from,
             $to,
             ['scheduled_date', 'started_at', 'ended_at', 'created_at'],
-            'telemedicine'
+            'telemedicine',
+            $rhuId
         );
     }
 
@@ -1046,7 +1096,7 @@ class AnalyticsController extends Controller
             ->all();
     }
 
-    private function aiTriageDistribution(Carbon $from, Carbon $to): array
+    private function aiTriageDistribution(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         $counts = $this->emptyTriageCounts();
 
@@ -1090,7 +1140,7 @@ class AnalyticsController extends Controller
 
         $query = DB::table('queue_tickets as q')
             ->whereBetween("q.{$dateColumn}", [$from, $to])
-            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('q.rhu_id', 1))
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'q.rhu_id'))
             ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('q.deleted_at'));
 
         $hasProfileJoin = Schema::hasTable('resident_profiles')
@@ -1160,7 +1210,7 @@ class AnalyticsController extends Controller
         return $this->triageCountsToRows($counts);
     }
 
-    private function queuePerformanceFromCounters(Carbon $from, Carbon $to): array
+    private function queuePerformanceFromCounters(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         $empty = collect([
             'waiting' => 'Waiting',
@@ -1190,7 +1240,7 @@ class AnalyticsController extends Controller
 
         $rows = DB::table('queue_counters')
             ->whereBetween($dateColumn, [$from, $to])
-            ->when(Schema::hasColumn('queue_counters', 'rhu_id'), fn ($q) => $q->where('rhu_id', 1))
+            ->when(Schema::hasColumn('queue_counters', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->get();
 
         if ($rows->isEmpty()) {
@@ -1245,7 +1295,7 @@ class AnalyticsController extends Controller
             ->all();
     }
 
-    private function queuePriorityBreakdown(Carbon $from, Carbon $to): array
+    private function queuePriorityBreakdown(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         $counts = [
             'senior_citizen' => 0,
@@ -1273,7 +1323,7 @@ class AnalyticsController extends Controller
 
         $query = DB::table('queue_tickets as q')
             ->whereBetween("q.{$dateColumn}", [$from, $to])
-            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $q->where('q.rhu_id', 1))
+            ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'q.rhu_id'))
             ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('q.deleted_at'));
 
         $hasProfileJoin = Schema::hasTable('resident_profiles')
@@ -1613,24 +1663,30 @@ class AnalyticsController extends Controller
         string $table,
         Carbon $from,
         Carbon $to,
-        string $preferredColumn = 'created_at'
+        string $preferredColumn = 'created_at',
+        ?int $rhuId = null
     ): int {
         if (!Schema::hasTable($table)) {
             return 0;
         }
 
+        $scoped = Schema::hasColumn($table, 'rhu_id');
+
         $column = $this->dateColumnWithValues($table, $from, $to, [$preferredColumn, 'created_at']);
 
         if (!$column) {
-            return (int) DB::table($table)->count();
+            return (int) DB::table($table)
+                ->when($scoped, fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
+                ->count();
         }
 
         return (int) DB::table($table)
             ->whereBetween($column, [$from, $to])
+            ->when($scoped, fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->count();
     }
 
-    private function barangayCases(Carbon $from, Carbon $to, string $disease = ''): array
+    private function barangayCases(Carbon $from, Carbon $to, string $disease = '', ?int $rhuId = null): array
     {
         if (!Schema::hasTable('consultations') || !Schema::hasTable('users')) {
             return [];
@@ -1682,6 +1738,10 @@ class AnalyticsController extends Controller
             ->selectRaw("COUNT(*) as total_cases")
             ->selectRaw("{$complaintExpr} as top_complaint")
             ->whereBetween("c.{$dateColumn}", [$from, $to])
+            ->when(
+                $rhuId !== null && $hasBarangays && Schema::hasColumn('barangays', 'rhu_id'),
+                fn ($q) => $this->scopeRhu($q, $rhuId, 'b.rhu_id')
+            )
             ->when($disease !== '', function ($q) use ($disease) {
                 $q->where(function ($inner) use ($disease) {
                     if (Schema::hasColumn('consultations', 'chief_complaint')) {
@@ -1702,7 +1762,7 @@ class AnalyticsController extends Controller
             ->limit(100)
             ->get();
 
-        $queue = $this->queueByBarangay();
+        $queue = $this->queueByBarangay($rhuId);
 
         return $query
             ->map(function ($row) use ($queue) {
@@ -1716,7 +1776,7 @@ class AnalyticsController extends Controller
             ->all();
     }
 
-    private function queueByBarangay(): array
+    private function queueByBarangay(?int $rhuId = null): array
     {
         if (!Schema::hasTable('queue_tickets')) {
             return [];
@@ -1739,6 +1799,7 @@ class AnalyticsController extends Controller
                 ->selectRaw("COUNT(*) as total")
                 ->whereIn('q.status', ['waiting', 'called', 'in_service'])
                 ->whereDate("q.{$dateColumn}", today())
+                ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'q.rhu_id'))
                 ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), function ($q) {
                     $q->whereNull('q.deleted_at');
                 })
@@ -1751,7 +1812,7 @@ class AnalyticsController extends Controller
         return [];
     }
 
-    private function complaintDistribution(Carbon $from, Carbon $to): array
+    private function complaintDistribution(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
         if (!Schema::hasTable('consultations')) {
             return [];
@@ -1783,6 +1844,18 @@ class AnalyticsController extends Controller
             ->selectRaw("{$complaintExpr} as complaint")
             ->selectRaw("COUNT(*) as total")
             ->whereBetween($dateColumn, [$from, $to])
+            ->when(
+                $rhuId !== null
+                    && Schema::hasTable('barangays')
+                    && Schema::hasColumn('barangays', 'rhu_id')
+                    && Schema::hasColumn('users', 'barangay_id'),
+                fn ($q) => $q->whereIn('user_id', function ($sub) use ($rhuId) {
+                    $sub->from('users')
+                        ->join('barangays as b', 'b.barangay_id', '=', 'users.barangay_id')
+                        ->select('users.user_id');
+                    $this->scopeRhu($sub, $rhuId, 'b.rhu_id');
+                })
+            )
             ->groupByRaw($complaintExpr)
             ->orderByDesc('total')
             ->limit(20)
@@ -1794,9 +1867,9 @@ class AnalyticsController extends Controller
             ->all();
     }
 
-    private function riskSummary(Carbon $from, Carbon $to): array
+    private function riskSummary(Carbon $from, Carbon $to, ?int $rhuId = null): array
     {
-        return collect($this->barangayCases($from, $to))
+        return collect($this->barangayCases($from, $to, '', $rhuId))
             ->map(function ($row) {
                 $score = min(
                     100,

@@ -443,8 +443,10 @@ class AuthController extends Controller
         $validated = $request->validate([
             'first_name' => ['required', 'string', 'max:100'],
             'last_name' => ['required', 'string', 'max:100'],
-            'email' => ['nullable', 'email', 'unique:users,email', 'max:255'],
-            'mobile_number' => ['required', 'string', 'regex:/^09\d{9}$/', 'unique:users,mobile_number'],
+            // Ignore archived (soft-deleted) accounts — a released number/email
+            // must be reusable (Part 6 archive-not-delete premise).
+            'email' => ['nullable', 'email', Rule::unique('users', 'email')->whereNull('deleted_at'), 'max:255'],
+            'mobile_number' => ['required', 'string', 'regex:/^09\d{9}$/', Rule::unique('users', 'mobile_number')->whereNull('deleted_at')],
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()->symbols()],
             'password_confirmation' => ['required'],
 

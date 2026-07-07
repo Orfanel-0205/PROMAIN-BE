@@ -84,14 +84,14 @@ class ProfileController extends Controller
                 'nullable',
                 'email',
                 'max:180',
-                Rule::unique('users', 'email')->ignore($user->user_id, 'user_id'),
+                Rule::unique('users', 'email')->ignore($user->user_id, 'user_id')->whereNull('deleted_at'),
             ],
 
             'mobile_number' => [
                 'nullable',
                 'string',
                 'max:30',
-                Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id'),
+                Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id')->whereNull('deleted_at'),
             ],
 
             'phone' => ['nullable', 'string', 'max:30'],

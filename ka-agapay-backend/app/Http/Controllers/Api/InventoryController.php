@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
+use App\Support\Rhu;
 use App\Services\Audit\AuditService;
 use App\Services\Inventory\InventoryService;
 use Illuminate\Database\QueryException;
@@ -47,10 +48,14 @@ class InventoryController extends Controller
             'per_page'  => ['nullable', 'integer', 'min:5', 'max:100'],
         ]);
 
+        // RHU isolation: non-global staff are hard-locked to their own facility
+        // even if a different rhu_id is requested.
+        $rhuId = Rhu::scopeRhuId($request->user(), (int) $validated['rhu_id']);
+
         $items = InventoryItem::with([
                 'transactions' => fn ($q) => $q->latest('created_at')->limit(3),
             ])
-            ->forRhu((int) $validated['rhu_id'])
+            ->forRhu($rhuId)
             ->active()
             ->when($request->filled('category'), function ($q) use ($request) {
                 $q->where('category', $request->category);
@@ -87,11 +92,10 @@ class InventoryController extends Controller
         ]);
 
         $queryText = trim((string) ($validated['q'] ?? ''));
-        $rhuId = (int) (
-            $validated['rhu_id']
-            ?? $request->user()?->effectiveRhuId()
-            ?? $request->user()?->barangay_id
-            ?? 1
+        // RHU isolation: non-global staff are hard-locked to their own facility.
+        $rhuId = Rhu::scopeRhuId(
+            $request->user(),
+            isset($validated['rhu_id']) ? (int) $validated['rhu_id'] : null
         );
 
         $items = InventoryItem::query()
@@ -474,7 +478,7 @@ class InventoryController extends Controller
             'rhu_id' => ['required', 'integer'],
         ]);
 
-        $rhuId = $request->integer('rhu_id');
+        $rhuId = Rhu::scopeRhuId($request->user(), $request->integer('rhu_id'));
 
         return response()->json([
             'low_stock' => $this->service->getLowStockItems($rhuId),

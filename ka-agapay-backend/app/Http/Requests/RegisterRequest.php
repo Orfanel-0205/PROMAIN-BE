@@ -19,12 +19,21 @@ class RegisterRequest extends FormRequest
         return [
             'first_name'            => ['required', 'string', 'max:100', new FilipinoName()],
             'last_name'             => ['required', 'string', 'max:100', new FilipinoName()],
-            'email'                 => ['nullable', 'email', 'max:255', 'unique:users,email'],
+            // Uniqueness must ignore archived (soft-deleted) accounts, otherwise a
+            // real person is permanently locked out of a number/email that a
+            // since-archived account once used — which contradicts Part 6's
+            // "nothing is truly gone, but nobody is locked out" premise.
+            'email'                 => [
+                'nullable',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->whereNull('deleted_at'),
+            ],
             'mobile_number'         => [
                 'required',
                 'string',
                 'regex:/^09\d{9}$/',
-                'unique:users,mobile_number',
+                Rule::unique('users', 'mobile_number')->whereNull('deleted_at'),
             ],
             'password'              => [
                 'required',
