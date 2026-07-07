@@ -9,12 +9,22 @@ use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class OcrController extends Controller
 {
+    // OCR.space engines behave differently on hard images (e.g. an ID with a
+    // patterned watermark): try the stronger engine first, then fall back.
+    private const OCR_PRIMARY_ENGINE = 2;
+    private const OCR_FALLBACK_ENGINE = 1;
+
+    // OCR.space's free tier rejects files above ~1 MB. Uploads are allowed up to
+    // 5 MB, so oversized photos are downscaled below this before being sent.
+    private const OCR_MAX_UPLOAD_BYTES = 1024 * 1024;
+
     private array $staffRoles = [
         'doctor',
         'nurse',
@@ -644,6 +654,41 @@ class OcrController extends Controller
             ];
         }
 
+        // Shrink oversized photos so OCR.space does not silently reject them for
+        // exceeding its file-size limit (best-effort, never fatal).
+        [$ocrPath, $ocrMime, $cleanup] = $this->prepareImageForOcr($fullPath, $mimeType);
+
+        try {
+            // Try the primary engine, then the alternate one if it returns no
+            // text — some watermarked / low-contrast IDs only read on one engine.
+            $last = ['text' => '', 'confidence' => 0, 'raw' => ['provider' => 'ocr.space']];
+
+            foreach ([self::OCR_PRIMARY_ENGINE, self::OCR_FALLBACK_ENGINE] as $engine) {
+                $result = $this->callOcrSpace($ocrPath, $ocrMime, (string) $apiKey, $engine);
+                $last = $result;
+
+                if (trim((string) ($result['text'] ?? '')) !== '') {
+                    return $result;
+                }
+            }
+
+            return $last;
+        } finally {
+            if ($cleanup && is_file($ocrPath)) {
+                @unlink($ocrPath);
+            }
+        }
+    }
+
+    /**
+     * Single OCR.space call for one engine. Surfaces the provider's own error
+     * signals (IsErroredOnProcessing / OCRExitCode / ErrorMessage) instead of
+     * silently returning empty text — that silent discard is what made every
+     * failure (size limit, engine timeout, unreadable photo) collapse into the
+     * same generic "could not read" message.
+     */
+    private function callOcrSpace(string $fullPath, string $mimeType, string $apiKey, int $engine): array
+    {
         try {
             $handle = fopen($fullPath, 'r');
 
@@ -651,10 +696,7 @@ class OcrController extends Controller
                 return [
                     'text' => '',
                     'confidence' => 0,
-                    'raw' => [
-                        'provider' => 'ocr.space',
-                        'error' => 'Could not open uploaded file for OCR.',
-                    ],
+                    'raw' => ['provider' => 'ocr.space', 'engine' => $engine, 'error' => 'Could not open uploaded file for OCR.'],
                 ];
             }
 
@@ -666,10 +708,12 @@ class OcrController extends Controller
                     'isOverlayRequired' => 'false',
                     'scale' => 'true',
                     'detectOrientation' => 'true',
-                    'OCREngine' => '2',
+                    'OCREngine' => (string) $engine,
                 ]);
 
-            fclose($handle);
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
 
             if (!$response->successful()) {
                 return [
@@ -677,6 +721,7 @@ class OcrController extends Controller
                     'confidence' => 0,
                     'raw' => [
                         'provider' => 'ocr.space',
+                        'engine' => $engine,
                         'error' => 'OCR provider returned HTTP ' . $response->status(),
                         'body' => Str::limit($response->body(), 1000),
                     ],
@@ -685,28 +730,91 @@ class OcrController extends Controller
 
             $payload = $response->json();
 
+            $errored = (bool) ($payload['IsErroredOnProcessing'] ?? false);
+            $errorMessage = $payload['ErrorMessage'] ?? ($payload['ErrorDetails'] ?? null);
+            if (is_array($errorMessage)) {
+                $errorMessage = trim(implode(' ', array_filter($errorMessage)));
+            }
+
             $parsed = collect($payload['ParsedResults'] ?? [])
                 ->pluck('ParsedText')
                 ->filter()
                 ->implode("\n");
 
+            $text = trim($parsed);
+
+            if ($text === '' && ($errored || $errorMessage)) {
+                Log::warning('[OCR] ocr.space returned no text.', [
+                    'engine' => $engine,
+                    'exit_code' => $payload['OCRExitCode'] ?? null,
+                    'message' => $errorMessage,
+                ]);
+            }
+
             return [
-                'text' => trim($parsed),
-                'confidence' => trim($parsed) !== '' ? 85 : 0,
+                'text' => $text,
+                'confidence' => $text !== '' ? 85 : 0,
                 'raw' => array_merge($payload ?: [], [
                     'provider' => 'ocr.space',
+                    'engine' => $engine,
+                    'errored' => $errored,
+                    'error_message' => $errorMessage,
                 ]),
             ];
         } catch (\Throwable $e) {
             return [
                 'text' => '',
                 'confidence' => 0,
-                'raw' => [
-                    'provider' => 'ocr.space',
-                    'error' => $e->getMessage(),
-                ],
+                'raw' => ['provider' => 'ocr.space', 'engine' => $engine, 'error' => $e->getMessage()],
             ];
         }
+    }
+
+    /**
+     * Downscale + recompress an oversized image so it fits under OCR.space's
+     * free-tier size limit before upload. Best-effort only: returns the original
+     * path untouched when the file is already small enough, when no image driver
+     * (GD / Imagick) is installed, or if preprocessing throws — so it can never
+     * break OCR, only help it.
+     *
+     * @return array{0:string,1:string,2:bool} [pathToSend, mimeType, isTempFile]
+     */
+    private function prepareImageForOcr(string $fullPath, string $mimeType): array
+    {
+        if (!is_file($fullPath) || filesize($fullPath) <= self::OCR_MAX_UPLOAD_BYTES) {
+            return [$fullPath, $mimeType, false];
+        }
+
+        if (!extension_loaded('gd') && !extension_loaded('imagick')) {
+            return [$fullPath, $mimeType, false];
+        }
+
+        try {
+            $manager = extension_loaded('imagick')
+                ? \Intervention\Image\ImageManager::imagick()
+                : \Intervention\Image\ImageManager::gd();
+
+            $image = $manager->read($fullPath);
+            // Cap the long edge — big phone photos shrink a lot with little OCR
+            // loss, and smaller pixels help the provider stay under its limit.
+            $image->scaleDown(2000, 2000);
+
+            foreach ([80, 65, 50, 40] as $quality) {
+                $binary = (string) $image->toJpeg($quality);
+
+                if (strlen($binary) <= self::OCR_MAX_UPLOAD_BYTES || $quality === 40) {
+                    $tmp = tempnam(sys_get_temp_dir(), 'ocr_') . '.jpg';
+                    file_put_contents($tmp, $binary);
+                    return [$tmp, 'image/jpeg', true];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[OCR] image preprocessing failed; sending original.', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return [$fullPath, $mimeType, false];
     }
 
     // =========================================================================

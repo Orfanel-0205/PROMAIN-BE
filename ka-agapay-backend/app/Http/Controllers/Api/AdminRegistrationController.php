@@ -21,6 +21,13 @@ use Illuminate\Validation\Rules\Password;
 
 class AdminRegistrationController extends Controller
 {
+    // Name-match threshold for the Employee-ID gate ONLY. Kept separate from the
+    // shared resident/PhilHealth 0.65 (OcrController::nameMatchScore callers) so
+    // real-world phone photos of staff IDs — flagged as a risk in the Part 8 OCR
+    // hardening — get a slightly more forgiving bar without weakening the
+    // resident verification flow. Tune this single number if needed.
+    private const EMPLOYEE_ID_NAME_MATCH_THRESHOLD = 0.60;
+
     private array $staffRoles = [
         'doctor',
         'nurse',
@@ -335,7 +342,7 @@ class AdminRegistrationController extends Controller
 
         $score = app(OcrController::class)->nameMatchScore($typedName, $extractedName, $text);
 
-        if ($score < 0.65) {
+        if ($score < self::EMPLOYEE_ID_NAME_MATCH_THRESHOLD) {
             throw ValidationException::withMessages([
                 'employee_id' => ['The name on your Employee ID does not match the name you entered. Please check your name or upload the correct ID.'],
             ]);
