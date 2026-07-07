@@ -785,7 +785,17 @@ class OcrController extends Controller
             return [$fullPath, $mimeType, false];
         }
 
+        // The image exceeds the provider limit but no image driver is available
+        // to shrink it — OCR.space will likely reject it for size and return no
+        // text. Log loudly so the fix (enable php-gd / php-imagick) is obvious
+        // instead of surfacing as a generic "could not read" to the user.
         if (!extension_loaded('gd') && !extension_loaded('imagick')) {
+            Log::warning('[OCR] Oversized image cannot be downscaled: no GD/Imagick extension installed. '
+                . 'OCR.space may reject it for exceeding its size limit. Enable php-gd (or php-imagick) to resolve.', [
+                'bytes' => filesize($fullPath),
+                'limit_bytes' => self::OCR_MAX_UPLOAD_BYTES,
+            ]);
+
             return [$fullPath, $mimeType, false];
         }
 
@@ -795,15 +805,17 @@ class OcrController extends Controller
                 : \Intervention\Image\ImageManager::gd();
 
             $image = $manager->read($fullPath);
+
             // Cap the long edge — big phone photos shrink a lot with little OCR
             // loss, and smaller pixels help the provider stay under its limit.
+            // scaleDown() only ever shrinks and preserves the aspect ratio.
             $image->scaleDown(2000, 2000);
 
             foreach ([80, 65, 50, 40] as $quality) {
                 $binary = (string) $image->toJpeg($quality);
 
                 if (strlen($binary) <= self::OCR_MAX_UPLOAD_BYTES || $quality === 40) {
-                    $tmp = tempnam(sys_get_temp_dir(), 'ocr_') . '.jpg';
+                    $tmp = sys_get_temp_dir() . '/' . uniqid('ocr_', true) . '.jpg';
                     file_put_contents($tmp, $binary);
                     return [$tmp, 'image/jpeg', true];
                 }
