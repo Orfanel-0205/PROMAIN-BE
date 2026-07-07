@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\OcrController;
 use App\Models\User;
 use App\Models\UserRole;
 use App\Rules\FilipinoName;
+use App\Services\Notification\AccountSmsService;
 use App\Services\Notification\NotificationService;
 use App\Services\PasswordPolicyService;
 use Illuminate\Validation\ValidationException;
@@ -150,6 +151,11 @@ class AdminRegistrationController extends Controller
         // waiting: the MHO for clinical roles, the Super Admin otherwise. Reuses
         // the existing NotificationService (in-app row) — no new pipeline.
         $this->notifyApprovers($user, (string) $validated['role']);
+
+        // Tell the applicant their submission was received and is pending review
+        // (SMS via the existing account-lifecycle service; logged to sms_logs,
+        // never blocks the registration response).
+        app(AccountSmsService::class)->sendRegistrationPending($user);
 
         return response()->json([
             'message' => 'Registration submitted successfully. Your Employee ID was uploaded. Your account will remain pending until reviewed by the assigned approver.',

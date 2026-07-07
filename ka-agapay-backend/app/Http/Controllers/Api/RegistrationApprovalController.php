@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\User;
+use App\Models\UserRole;
 use App\Services\Notification\AccountSmsService;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
@@ -278,6 +279,10 @@ class RegistrationApprovalController extends Controller
     {
         $this->authorizeQueueAccess($request);
 
+        $validated = $request->validate([
+            'role' => ['nullable', 'string', 'max:50'],
+        ]);
+
         $user = User::with('role')->findOrFail($id);
 
         // Defense in depth: an MHO can only approve clinical-role registrations.
@@ -287,6 +292,35 @@ class RegistrationApprovalController extends Controller
             return response()->json([
                 'message' => 'This account is not part of the approval queue.',
             ], 422);
+        }
+
+        // Optional FINAL-ROLE assignment (approval modal). The applicant's
+        // self-selected role is only a "position applied for" — the decider may
+        // confirm or correct it here. Authority mirrors canApprove(): a Super
+        // Admin may assign any staff role, the MHO only clinical ones. Residents
+        // keep their role; only the MHO / Super Admin ever reach this code path.
+        $finalRoleId = null;
+        $requestedRole = $this->normalizeRole($validated['role'] ?? null);
+
+        if ($requestedRole !== '' && $requestedRole !== $this->userRole($user)) {
+            abort_unless(
+                $this->isStaff($user),
+                422,
+                'A role can only be assigned to staff registrations.'
+            );
+
+            $assignable = $request->user()?->hasAnyRole(self::SUPER_ROLES)
+                ? self::STAFF_ROLES
+                : self::CLINICAL_ROLES;
+
+            abort_unless(
+                in_array($requestedRole, $assignable, true),
+                403,
+                'The MHO may only assign clinical roles (doctor, nurse, midwife, BHW); other roles need a Super Admin.'
+            );
+
+            $finalRoleId = $this->resolveRoleId($requestedRole);
+            abort_unless($finalRoleId, 422, "Role '{$requestedRole}' was not found.");
         }
 
         // FINAL RULE: do not approve without a submitted ID / Employee ID.
@@ -304,12 +338,16 @@ class RegistrationApprovalController extends Controller
         $reviewerId = (int) ($request->user()->user_id ?? 0);
         $isStaff = $this->isStaff($user);
 
-        DB::transaction(function () use ($user, $reviewerId, $isStaff) {
+        DB::transaction(function () use ($user, $reviewerId, $isStaff, $finalRoleId) {
             $updates = [
                 'account_status'   => 'active',
                 'id_verified'      => true,
                 'rejection_reason' => null,
             ];
+
+            if ($finalRoleId !== null) {
+                $updates['role_id'] = $finalRoleId;
+            }
 
             $columns = [
                 'approved_by' => $reviewerId,
@@ -334,6 +372,7 @@ class RegistrationApprovalController extends Controller
 
         $this->audit($request, 'REGISTRATION_APPROVED', $user, [
             'document_type' => $ocr->id_type ?? null,
+            'assigned_role' => $finalRoleId !== null ? $requestedRole : null,
         ]);
 
         // PART 3b — tell the resident their self-registration was approved so they
@@ -440,6 +479,23 @@ class RegistrationApprovalController extends Controller
     private function userRole(User $user): string
     {
         return $this->normalizeRole($user->role_name ?? $user->role?->name);
+    }
+
+    /** Map a normalized role name to its user_roles id (null when unknown). */
+    private function resolveRoleId(string $roleName): ?int
+    {
+        foreach (UserRole::query()->get() as $role) {
+            foreach (['name', 'role_name', 'slug', 'role'] as $field) {
+                if (
+                    isset($role->{$field}) &&
+                    $this->normalizeRole((string) $role->{$field}) === $roleName
+                ) {
+                    return (int) $role->role_id;
+                }
+            }
+        }
+
+        return null;
     }
 
     private function isApprovable(User $user): bool

@@ -76,6 +76,27 @@ class AccountSmsService
     }
 
     /**
+     * Registration received — account pending review. Sent right after a
+     * successful self-registration so the applicant knows the submission worked
+     * and does not need to re-register or visit the RHU to ask.
+     */
+    public function sendRegistrationPending(User $user): ?SmsLog
+    {
+        $mobile = $this->recipientMobile($user);
+        if ($mobile === null) {
+            return null;
+        }
+
+        $first = $this->firstName($user);
+
+        $message = "Hi {$first}, we received your Ka-Agapay registration. "
+            . "Your account is pending review by the RHU — please wait for approval. "
+            . "We will text you once it is decided. No need to register again.";
+
+        return $this->dispatch($user, $mobile, $message, 'registration_pending');
+    }
+
+    /**
      * 3b — self-registration rejected. Keeps the reason brief and non-stigmatizing
      * and always tells the resident the concrete next step (resubmit a clearer ID).
      */
