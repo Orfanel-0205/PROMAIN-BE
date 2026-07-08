@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\SmsLog;
 use App\Models\User;
 use App\Services\Sms\SemaphoreSmsService;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -100,8 +101,8 @@ class AdminSmsController extends Controller
         $this->authorizeSms($request);
 
         try {
-            $validated = $this->validateSmsPayload($request);
-            $recipients = $this->resolveRecipients($validated);
+            $validated = $this->validateSmsPayload($request, true);
+            $recipients = $this->resolveRecipients($validated, $request->user());
 
             return response()->json([
                 'mode' => $validated['mode'],
@@ -126,7 +127,7 @@ class AdminSmsController extends Controller
 
         try {
             $validated = $this->validateSmsPayload($request);
-            $recipients = $this->resolveRecipients($validated);
+            $recipients = $this->resolveRecipients($validated, $request->user());
         } catch (Throwable $e) {
             return response()->json([
                 'message' => 'Invalid SMS request.',
@@ -233,7 +234,7 @@ class AdminSmsController extends Controller
         }
     }
 
-    private function validateSmsPayload(Request $request): array
+    private function validateSmsPayload(Request $request, bool $previewOnly = false): array
     {
         $validated = $request->validate([
             'mode' => ['nullable', 'string', 'max:50'],
@@ -244,7 +245,9 @@ class AdminSmsController extends Controller
             'phone' => ['nullable', 'string', 'max:30'],
             'recipient' => ['nullable', 'string', 'max:30'],
 
-            'message' => ['required', 'string', 'min:1', 'max:1000'],
+            'message' => $previewOnly
+                ? ['nullable', 'string', 'max:1000']
+                : ['required', 'string', 'min:1', 'max:1000'],
             'notification_type' => ['nullable', 'string', 'max:100'],
 
             'role' => ['nullable', 'string', 'max:50'],
@@ -258,6 +261,7 @@ class AdminSmsController extends Controller
 
             'account_status' => ['nullable', 'string', 'max:50'],
             'id_verified' => ['nullable', 'boolean'],
+            'rhu_id' => ['nullable', 'integer'],
 
             'limit' => ['nullable', 'integer', 'min:1', 'max:1000'],
 
@@ -266,21 +270,24 @@ class AdminSmsController extends Controller
         ]);
 
         $validated['mode'] = $this->normalizeMode($validated['mode'] ?? null);
-        $validated['message'] = trim((string) $validated['message']);
+        $validated['message'] = trim((string) ($validated['message'] ?? ''));
 
-        if ($validated['message'] === '') {
+        if (!$previewOnly && $validated['message'] === '') {
             throw new RuntimeException('SMS message is empty.');
         }
 
-        if (str_starts_with(strtoupper($validated['message']), 'TEST')) {
+        if ($validated['message'] !== '' && str_starts_with(strtoupper($validated['message']), 'TEST')) {
             throw new RuntimeException('Do not start SMS messages with TEST. Semaphore may silently ignore them.');
         }
 
         if (
-            stripos($validated['message'], 'diagnosed with') !== false ||
-            stripos($validated['message'], 'positive for') !== false ||
-            stripos($validated['message'], 'hiv') !== false ||
-            stripos($validated['message'], 'std') !== false
+            $validated['message'] !== '' &&
+            (
+                stripos($validated['message'], 'diagnosed with') !== false ||
+                stripos($validated['message'], 'positive for') !== false ||
+                stripos($validated['message'], 'hiv') !== false ||
+                stripos($validated['message'], 'std') !== false
+            )
         ) {
             throw new RuntimeException('Avoid sensitive diagnosis details in SMS. Use a neutral reminder instead.');
         }
@@ -295,7 +302,7 @@ class AdminSmsController extends Controller
         return $validated;
     }
 
-    private function resolveRecipients(array $validated): array
+    private function resolveRecipients(array $validated, ?User $requester = null): array
     {
         $mode = $validated['mode'];
 
@@ -319,6 +326,7 @@ class AdminSmsController extends Controller
                 'barangay' => null,
                 'gender' => null,
                 'age' => null,
+                'role' => null,
                 'account_status' => null,
                 'id_verified' => null,
             ]];
@@ -338,6 +346,7 @@ class AdminSmsController extends Controller
         $primaryKey = Schema::hasColumn('users', 'user_id') ? 'user_id' : 'id';
 
         $query = User::query()
+            ->with('role')
             ->whereNotNull($mobileColumn)
             ->where($mobileColumn, '!=', '');
 
@@ -351,19 +360,29 @@ class AdminSmsController extends Controller
             throw new RuntimeException('Barangay is required for barangay SMS mode.');
         }
 
+        $this->applyEligibleResidentScope($query);
+
+        if (Schema::hasColumn('users', 'account_status')) {
+            $query->where('account_status', 'active');
+        } elseif (Schema::hasColumn('users', 'status')) {
+            $query->where('status', 'active');
+        } elseif (!empty($filters['account_status']) && $filters['account_status'] !== 'all') {
+            $query->whereRaw('1 = 0');
+        }
+
         if (!empty($filters['account_status']) && $filters['account_status'] !== 'all') {
             if (Schema::hasColumn('users', 'account_status')) {
                 $query->where('account_status', $filters['account_status']);
             } elseif (Schema::hasColumn('users', 'status')) {
                 $query->where('status', $filters['account_status']);
             }
-        } else {
-            if (Schema::hasColumn('users', 'account_status')) {
-                $query->where(function ($q) {
-                    $q->whereNull('account_status')
-                        ->orWhereNotIn('account_status', ['deleted', 'inactive', 'suspended']);
-                });
-            }
+        }
+
+        $requestedRhu = isset($filters['rhu_id']) ? (int) $filters['rhu_id'] : null;
+        $effectiveRhu = Rhu::filterRhuId($requester, $requestedRhu);
+
+        if ($effectiveRhu !== null) {
+            $this->applyRhuScope($query, $effectiveRhu, $primaryKey);
         }
 
         $role = $filters['role'] ?? null;
@@ -432,6 +451,7 @@ class AdminSmsController extends Controller
                     'barangay' => $user->barangay ?? $user->barangay_name ?? null,
                     'gender' => $user->gender ?? $user->sex ?? null,
                     'age' => $user->age ?? null,
+                    'role' => $user->role?->name ?? $user->role_name ?? null,
                     'account_status' => $user->account_status ?? $user->status ?? null,
                     'id_verified' => $user->id_verified ?? $user->is_verified ?? $user->verified ?? null,
                 ];
@@ -461,6 +481,38 @@ class AdminSmsController extends Controller
         foreach (['role', 'role_name', 'account_type', 'user_role'] as $column) {
             if (Schema::hasColumn('users', $column)) {
                 $query->whereRaw("LOWER(REPLACE({$column}, ' ', '_')) = ?", [$role]);
+                return;
+            }
+        }
+    }
+
+    private function applyEligibleResidentScope($query): void
+    {
+        $residentRoles = ['resident', 'patient'];
+
+        if (Schema::hasColumn('users', 'role_id')) {
+            $roleIds = collect($residentRoles)
+                ->map(fn (string $role) => $this->resolveRoleId($role))
+                ->filter()
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
+
+            if (count($roleIds) > 0) {
+                $query->whereIn('role_id', $roleIds);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+
+            return;
+        }
+
+        foreach (['role', 'role_name', 'account_type', 'user_role'] as $column) {
+            if (Schema::hasColumn('users', $column)) {
+                $query->whereIn(
+                    DB::raw("LOWER(REPLACE(REPLACE({$column}, ' ', '_'), '-', '_'))"),
+                    $residentRoles
+                );
                 return;
             }
         }
@@ -520,6 +572,71 @@ class AdminSmsController extends Controller
                 $query->whereRaw('1 = 0');
             }
         }
+    }
+
+    private function applyRhuScope($query, int $rhuId, string $primaryKey): void
+    {
+        if (!Schema::hasTable('barangays') || !Schema::hasColumn('barangays', 'rhu_id')) {
+            if ($rhuId !== Rhu::DEFAULT_ID) {
+                $query->whereRaw('1 = 0');
+            }
+
+            return;
+        }
+
+        $barangayKey = Schema::hasColumn('barangays', 'barangay_id') ? 'barangay_id' : 'id';
+        $hasAnyPath = false;
+
+        $hasResidentProfilePath =
+            Schema::hasTable('resident_profiles') &&
+            Schema::hasColumn('resident_profiles', 'user_id') &&
+            Schema::hasColumn('resident_profiles', 'barangay_id');
+
+        $query->where(function ($outer) use ($barangayKey, $rhuId, $primaryKey, $hasResidentProfilePath, &$hasAnyPath) {
+            if (Schema::hasColumn('users', 'barangay_id')) {
+                $hasAnyPath = true;
+                $outer->orWhereIn('barangay_id', function ($sub) use ($barangayKey, $rhuId) {
+                    $sub->select($barangayKey)
+                        ->from('barangays')
+                        ->where('rhu_id', $rhuId);
+                });
+            }
+
+            if (Schema::hasColumn('users', 'barangay')) {
+                $hasAnyPath = true;
+                $outer->orWhereIn('barangay', function ($sub) use ($rhuId) {
+                    $sub->select('name')
+                        ->from('barangays')
+                        ->where('rhu_id', $rhuId);
+                });
+            }
+
+            if (Schema::hasColumn('users', 'barangay_name')) {
+                $hasAnyPath = true;
+                $outer->orWhereIn('barangay_name', function ($sub) use ($rhuId) {
+                    $sub->select('name')
+                        ->from('barangays')
+                        ->where('rhu_id', $rhuId);
+                });
+            }
+
+            if ($hasResidentProfilePath) {
+                $hasAnyPath = true;
+                $outer->orWhereIn($primaryKey, function ($sub) use ($barangayKey, $rhuId) {
+                    $sub->select('user_id')
+                        ->from('resident_profiles')
+                        ->whereIn('barangay_id', function ($inner) use ($barangayKey, $rhuId) {
+                            $inner->select($barangayKey)
+                                ->from('barangays')
+                                ->where('rhu_id', $rhuId);
+                        });
+                });
+            }
+
+            if (!$hasAnyPath) {
+                $outer->whereRaw('1 = 0');
+            }
+        });
     }
 
     private function applyGenderFilter($query, string $gender, string $primaryKey): void
@@ -725,6 +842,10 @@ class AdminSmsController extends Controller
 
     private function estimateCredits(string $message, int $recipientCount): int
     {
+        if (trim($message) === '') {
+            return 0;
+        }
+
         $segments = max(1, (int) ceil(max(strlen($message), 1) / 160));
 
         return $segments * max(0, $recipientCount);
@@ -735,6 +856,7 @@ class AdminSmsController extends Controller
         return [
             'mode' => $validated['mode'] ?? 'single',
             'provider' => $this->semaphore->providerName(),
+            'rhu_id' => $validated['rhu_id'] ?? null,
             'role' => $validated['role'] ?? null,
             'barangay' => $validated['barangay'] ?? null,
             'gender' => $validated['gender'] ?? $validated['sex'] ?? null,

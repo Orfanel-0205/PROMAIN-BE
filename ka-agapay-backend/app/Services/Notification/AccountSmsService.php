@@ -90,7 +90,7 @@ class AccountSmsService
         $first = $this->firstName($user);
 
         $message = "Hi {$first}, we received your Ka-Agapay registration. "
-            . "Your account is pending review by the RHU — please wait for approval. "
+            . "Your account is pending review by the Super Admin — please wait for approval. "
             . "We will text you once it is decided. No need to register again.";
 
         return $this->dispatch($user, $mobile, $message, 'registration_pending');
