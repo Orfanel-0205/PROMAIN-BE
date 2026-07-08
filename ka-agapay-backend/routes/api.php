@@ -168,6 +168,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/',                    [AdminUserController::class, 'index']);
                 // Declared BEFORE /{id} so "roles" is not treated as a user id.
                 Route::get('/roles',               [AdminUserController::class, 'roles']);
+                Route::get('/{id}',                [AdminUserController::class, 'show']);
                 Route::post('/',                   [AdminUserController::class, 'store']);
                 Route::patch('/{id}',              [AdminUserController::class, 'update']);
                 Route::put('/{id}',                [AdminUserController::class, 'update']);

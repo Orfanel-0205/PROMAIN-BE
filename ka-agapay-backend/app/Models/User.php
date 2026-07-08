@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Rhu;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -153,8 +154,6 @@ class User extends Authenticatable
      */
     public function effectiveRhuId(): ?int
     {
-        $rhu = $this->assigned_rhu_id ?? $this->barangay_id ?? null;
-
-        return $rhu ? (int) $rhu : null;
+        return Rhu::resolveRhuIdFromUser($this);
     }
 }

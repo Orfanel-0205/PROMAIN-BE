@@ -4,10 +4,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Barangay;
 use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
 use App\Services\PasswordPolicyService;
+use App\Support\Rhu;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -192,6 +194,8 @@ class AdminUserController extends Controller
             'phone' => ['nullable', 'string', 'max:30'],
 
             'barangay' => ['nullable', 'string', 'max:150'],
+            'barangay_id' => ['nullable', 'integer', 'exists:barangays,barangay_id'],
+            'assigned_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::IDS)],
 
             'role' => ['required', 'string', 'max:50'],
 
@@ -268,6 +272,15 @@ class AdminUserController extends Controller
             $this->authorizeStaffApprover($request);
         }
 
+        if (array_key_exists('assigned_rhu_id', $validated)) {
+            $this->authorizeRhuAssignment($request);
+        }
+
+        [$barangayId, $barangayName] = $this->resolveBarangayAssignment(
+            $validated['barangay_id'] ?? null,
+            $validated['barangay'] ?? null
+        );
+
         try {
             $user = DB::transaction(function () use (
                 $request,
@@ -278,15 +291,19 @@ class AdminUserController extends Controller
                 $lastName,
                 $email,
                 $mobile,
-                $status
+                $status,
+                $barangayId,
+                $barangayName
             ) {
                 $user = User::create([
                     'role_id' => $roleId,
+                    'barangay_id' => $barangayId,
+                    'assigned_rhu_id' => $validated['assigned_rhu_id'] ?? null,
                     'first_name' => $firstName,
                     'last_name' => $lastName,
                     'email' => $email,
                     'mobile_number' => $mobile,
-                    'barangay' => $validated['barangay'] ?? null,
+                    'barangay' => $barangayName,
                     'password' => Hash::make($validated['password'] ?? self::DEFAULT_RESIDENT_PASSWORD),
                     'account_status' => $status,
 
@@ -336,6 +353,17 @@ class AdminUserController extends Controller
             'message' => 'User created successfully.',
             'data' => $this->userPayload($user->fresh()->load('role')),
         ], 201);
+    }
+
+    public function show(Request $request, int $id): JsonResponse
+    {
+        $this->authorizeUserManagement($request);
+
+        $user = User::with('role')->findOrFail($id);
+
+        return response()->json([
+            'data' => $this->userPayload($user),
+        ]);
     }
 
     /**
@@ -460,6 +488,8 @@ class AdminUserController extends Controller
             'phone' => ['nullable', 'string', 'max:30'],
 
             'barangay' => ['nullable', 'string', 'max:150'],
+            'barangay_id' => ['nullable', 'integer', 'exists:barangays,barangay_id'],
+            'assigned_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::IDS)],
 
             'role' => ['nullable', 'string', 'max:50'],
 
@@ -541,7 +571,31 @@ class AdminUserController extends Controller
         }
 
         if (array_key_exists('barangay', $validated)) {
-            $updates['barangay'] = $validated['barangay'];
+            [$barangayId, $barangayName] = $this->resolveBarangayAssignment(
+                $validated['barangay_id'] ?? null,
+                $validated['barangay'] ?? null
+            );
+
+            $updates['barangay_id'] = $barangayId;
+            $updates['barangay'] = $barangayName;
+        } elseif (array_key_exists('barangay_id', $validated)) {
+            [$barangayId, $barangayName] = $this->resolveBarangayAssignment(
+                $validated['barangay_id'] ?? null,
+                null
+            );
+
+            $updates['barangay_id'] = $barangayId;
+            $updates['barangay'] = $barangayName;
+        }
+
+        if (array_key_exists('assigned_rhu_id', $validated)) {
+            $newAssignedRhuId = $validated['assigned_rhu_id'] ?? null;
+
+            if ((int) ($user->assigned_rhu_id ?? 0) !== (int) ($newAssignedRhuId ?? 0)) {
+                $this->authorizeRhuAssignment($request);
+            }
+
+            $updates['assigned_rhu_id'] = $newAssignedRhuId;
         }
 
         if (!empty($validated['password'])) {
@@ -1143,6 +1197,15 @@ class AdminUserController extends Controller
         return (bool) $request->user()?->hasAnyRole(['super_admin', 'superadmin']);
     }
 
+    private function authorizeRhuAssignment(Request $request): void
+    {
+        abort_unless(
+            $this->currentUserIsSuperAdmin($request),
+            403,
+            'Only the Super Admin can assign or change a staff RHU.'
+        );
+    }
+
     private function likeOperator(): string
     {
         return DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
@@ -1151,6 +1214,9 @@ class AdminUserController extends Controller
     private function userPayload(User $user): array
     {
         $user->loadMissing('role');
+        $effectiveRhuId = Rhu::resolveRhuIdFromUser($user);
+        $rawAssignedRhuId = $user->assigned_rhu_id ? (int) $user->assigned_rhu_id : null;
+        $assignedRhuId = Rhu::normalizeRhuId($rawAssignedRhuId);
 
         return [
             'id' => $user->user_id,
@@ -1173,6 +1239,13 @@ class AdminUserController extends Controller
             'account_status' => $user->account_status,
 
             'barangay' => $user->barangay,
+            'barangay_id' => $user->barangay_id ? (int) $user->barangay_id : null,
+            'assigned_rhu_id' => $assignedRhuId,
+            'raw_assigned_rhu_id' => $rawAssignedRhuId,
+            'assigned_rhu_label' => Rhu::rhuLabel($assignedRhuId),
+            'effective_rhu_id' => $effectiveRhuId,
+            'rhu_id' => $effectiveRhuId,
+            'rhu_label' => Rhu::rhuLabel($effectiveRhuId),
 
             'id_verified' => (bool) $user->id_verified,
 
@@ -1186,6 +1259,34 @@ class AdminUserController extends Controller
             'created_at' => optional($user->created_at)->toISOString(),
             'updated_at' => optional($user->updated_at)->toISOString(),
         ];
+    }
+
+    private function resolveBarangayAssignment(mixed $barangayId, mixed $barangayName): array
+    {
+        $id = is_numeric($barangayId) ? (int) $barangayId : null;
+        $name = trim((string) ($barangayName ?? ''));
+
+        if (Schema::hasTable('barangays')) {
+            if ($id !== null && $id > 0) {
+                $barangay = Barangay::query()->find($id);
+
+                abort_unless($barangay, 422, 'Selected barangay was not found.');
+
+                return [(int) $barangay->barangay_id, (string) $barangay->name];
+            }
+
+            if ($name !== '') {
+                $barangay = Barangay::query()
+                    ->whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+                    ->first();
+
+                if ($barangay) {
+                    return [(int) $barangay->barangay_id, (string) $barangay->name];
+                }
+            }
+        }
+
+        return [$id, $name !== '' ? $name : null];
     }
 
     private function logUserDeleteHistory(Request $request, User $user, array $oldValues, string $reason): void
