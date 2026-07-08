@@ -30,7 +30,7 @@ class HeatmapAnalyticsService
     $to = now()->endOfDay();
 
     $rhuId = Rhu::normalizeRhuId($rhuId);
-    $barangays = $this->barangays($rhuId);
+    $barangays = $this->barangays();
 
     $signals = collect()
         ->merge($this->sourceSignals('consultations', 'c', 'consultation', ['consultation_date', 'created_at'], [
@@ -84,7 +84,7 @@ class HeatmapAnalyticsService
         });
 
     $points = $barangays
-        ->map(function ($barangay) use ($signalsByBarangay, $queueDensity, $diseaseFilter, $activeOnly) {
+        ->map(function ($barangay) use ($signalsByBarangay, $queueDensity, $diseaseFilter, $activeOnly, $rhuId) {
             $barangayId = (int) $barangay->barangay_id;
 
             $data = $signalsByBarangay->get($barangayId, [
@@ -134,13 +134,21 @@ class HeatmapAnalyticsService
 
             $topCase = trim((string) ($data['top_case_type'] ?? 'Unspecified')) ?: 'Unspecified';
 
-            $rhuId = Rhu::normalizeRhuId((int) ($barangay->rhu_id ?? 0) ?: null);
+            $homeRhuId = Rhu::normalizeRhuId((int) ($barangay->rhu_id ?? 0) ?: null);
+
+            if ($rhuId !== null && !$activeOnly && $caseCount <= 0 && $homeRhuId !== $rhuId) {
+                return null;
+            }
+
+            $signalRhuId = $rhuId ?? $homeRhuId;
 
             $point = [
                 'barangay_id' => $barangayId,
                 'barangay' => $barangay->barangay,
-                'rhu_id' => $rhuId,
-                'rhu_label' => Rhu::rhuLabel($rhuId),
+                'rhu_id' => $signalRhuId,
+                'rhu_label' => Rhu::rhuLabel($signalRhuId),
+                'home_rhu_id' => $homeRhuId,
+                'home_rhu_label' => Rhu::rhuLabel($homeRhuId),
                 'latitude' => (float) $barangay->latitude,
                 'longitude' => (float) $barangay->longitude,
                 'coordinate_source' => 'database',
@@ -240,7 +248,7 @@ class HeatmapAnalyticsService
             return collect();
         }
 
-        $this->scopeByBarangayRhu($query, $barangayExpr, $rhuId);
+        $this->scopeSignalSource($query, $table, $alias, $barangayExpr, $rhuId);
 
         $textExpr = $this->concatTextExpression($alias, $textColumns);
         $like = DB::connection()->getDriverName() === 'pgsql' ? 'ILIKE' : 'LIKE';
@@ -424,6 +432,22 @@ class HeatmapAnalyticsService
         }
 
         return [];
+    }
+
+    private function scopeSignalSource($query, string $table, string $alias, string $barangayExpr, ?int $rhuId): void
+    {
+        $rhuId = Rhu::normalizeRhuId($rhuId);
+
+        if ($rhuId === null) {
+            return;
+        }
+
+        if (Schema::hasColumn($table, 'rhu_id')) {
+            $this->scopeFacilityRhuColumn($query, "{$alias}.rhu_id", $rhuId);
+            return;
+        }
+
+        $this->scopeByBarangayRhu($query, $barangayExpr, $rhuId);
     }
 
     private function scopeFacilityRhuColumn($query, string $column, int $rhuId): void
