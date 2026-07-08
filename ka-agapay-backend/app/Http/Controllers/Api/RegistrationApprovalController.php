@@ -81,9 +81,8 @@ class RegistrationApprovalController extends Controller
     }
 
     /**
-     * Read access to the queue: Super Admin OR MHO. Both can SEE every pending
-     * row (so the MHO knows what is clinical vs administrative); the per-row
-     * decision is separately gated by canApprove().
+     * Read access to the queue: Super Admin OR MHO. The pending() query still
+     * scopes rows by approver role so MHO never receives Super-Admin-only rows.
      */
     private function authorizeQueueAccess(Request $request): void
     {
@@ -135,8 +134,8 @@ class RegistrationApprovalController extends Controller
      * GET /api/v1/admin/registrations/pending
      * status = pending (default) | rejected | all
      *
-     * Lists every registrant awaiting approval — residents and staff/admin —
-     * except Super Admin accounts.
+     * Lists registrants awaiting approval. Super Admin sees every non-Super
+     * Admin row; MHO sees only clinical-role rows assigned to the MHO lane.
      */
     public function pending(Request $request): JsonResponse
     {
@@ -151,17 +150,29 @@ class RegistrationApprovalController extends Controller
         $status = $validated['status'] ?? 'pending';
 
         $superRolesSql = "'" . implode("','", self::SUPER_ROLES) . "'";
+        $normalizedRoleSql = "LOWER(REPLACE(REPLACE(name, ' ', '_'), '-', '_'))";
 
         $query = User::with('role')
             // Everyone who requires approval = everyone except Super Admin.
-            ->whereHas('role', function ($q) use ($superRolesSql) {
+            ->whereHas('role', function ($q) use ($superRolesSql, $normalizedRoleSql) {
                 $q->whereRaw(
-                    "LOWER(REPLACE(REPLACE(name, ' ', '_'), '-', '_')) NOT IN ({$superRolesSql})"
+                    "{$normalizedRoleSql} NOT IN ({$superRolesSql})"
                 );
             })
             ->when($status === 'pending', fn ($q) => $q->where('account_status', 'pending'))
             ->when($status === 'rejected', fn ($q) => $q->where('account_status', 'rejected'))
             ->when($status === 'all', fn ($q) => $q->whereIn('account_status', ['pending', 'rejected']));
+
+        $requester = $request->user();
+
+        if (
+            !$requester?->hasAnyRole(self::SUPER_ROLES)
+            && $requester?->hasAnyRole(['mho', 'mho_admin'])
+        ) {
+            $query->whereHas('role', function ($q) use ($normalizedRoleSql) {
+                $q->whereIn(DB::raw($normalizedRoleSql), self::CLINICAL_ROLES);
+            });
+        }
 
         if (!empty($validated['search'])) {
             $search = trim((string) $validated['search']);
