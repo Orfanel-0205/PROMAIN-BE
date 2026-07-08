@@ -141,16 +141,19 @@ class AnalyticsController extends Controller
             'disease' => ['nullable', 'string', 'max:100'],
             'range' => ['nullable', 'in:week,month'],
             'active_only' => ['nullable', 'boolean'],
+            'rhu_id' => ['nullable'],
         ]);
 
         $disease = trim((string) ($validated['disease'] ?? ''));
         $range = $validated['range'] ?? 'week';
         $activeOnly = $request->boolean('active_only', true);
+        $rhuId = $this->resolveRhuId($request);
 
         $points = $service->generateHeatmapData(
             $disease !== '' ? $disease : null,
             $range,
-            $activeOnly
+            $activeOnly,
+            $rhuId
         );
 
         return response()->json([
@@ -160,6 +163,7 @@ class AnalyticsController extends Controller
                 'disease' => $disease !== '' ? $disease : null,
                 'range' => $range,
                 'active_only' => $activeOnly,
+                'rhu_id' => $rhuId,
             ],
             'data' => $points,
         ]);
@@ -335,16 +339,19 @@ class AnalyticsController extends Controller
             'disease' => ['nullable', 'string', 'max:100'],
             'range' => ['nullable', 'in:week,month'],
             'active_only' => ['nullable', 'boolean'],
+            'rhu_id' => ['nullable'],
         ]);
 
         $disease = trim((string) ($validated['disease'] ?? ''));
         $range = $validated['range'] ?? 'week';
         $activeOnly = $request->boolean('active_only', true);
+        $rhuId = $this->resolveRhuId($request);
 
         $points = $service->generateHeatmapData(
             $disease !== '' ? $disease : null,
             $range,
-            $activeOnly
+            $activeOnly,
+            $rhuId
         );
 
         return response()->json([
@@ -354,6 +361,7 @@ class AnalyticsController extends Controller
                 'disease' => $disease !== '' ? $disease : null,
                 'range' => $range,
                 'active_only' => $activeOnly,
+                'rhu_id' => $rhuId,
             ],
             'data' => $points,
         ]);
@@ -365,17 +373,20 @@ class AnalyticsController extends Controller
             'disease' => ['nullable', 'string', 'max:100'],
             'range' => ['nullable', 'in:week,month'],
             'active_only' => ['nullable', 'boolean'],
+            'rhu_id' => ['nullable'],
         ]);
 
         $disease = trim((string) ($validated['disease'] ?? ''));
         $range = $validated['range'] ?? 'week';
         $activeOnly = $request->boolean('active_only', true);
+        $rhuId = $this->resolveRhuId($request);
 
         $items = collect(
             $service->generateHeatmapData(
                 $disease !== '' ? $disease : null,
                 $range,
-                $activeOnly
+                $activeOnly,
+                $rhuId
             )
         )
             ->sortByDesc('risk_score')
@@ -388,6 +399,7 @@ class AnalyticsController extends Controller
                 'disease' => $disease !== '' ? $disease : null,
                 'range' => $range,
                 'active_only' => $activeOnly,
+                'rhu_id' => $rhuId,
             ],
             'summary' => $items->countBy('risk_level'),
             'data' => $items,

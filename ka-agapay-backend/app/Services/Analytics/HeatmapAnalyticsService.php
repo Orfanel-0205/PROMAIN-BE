@@ -18,7 +18,8 @@ class HeatmapAnalyticsService
     public function generateHeatmapData(
     ?string $diseaseFilter = null,
     string $range = 'week',
-    bool $activeOnly = false
+    bool $activeOnly = false,
+    ?int $rhuId = null
 ): array {
     if (!Schema::hasTable('barangays')) {
         return [];
@@ -28,7 +29,8 @@ class HeatmapAnalyticsService
     $from = now()->subDays($days)->startOfDay();
     $to = now()->endOfDay();
 
-    $barangays = $this->barangays();
+    $rhuId = Rhu::normalizeRhuId($rhuId);
+    $barangays = $this->barangays($rhuId);
 
     $signals = collect()
         ->merge($this->sourceSignals('consultations', 'c', 'consultation', ['consultation_date', 'created_at'], [
@@ -39,23 +41,23 @@ class HeatmapAnalyticsService
             'objective',
             'notes',
             'treatment',
-        ], $from, $to, $diseaseFilter))
+        ], $from, $to, $diseaseFilter, $rhuId))
         ->merge($this->sourceSignals('appointments', 'a', 'appointment', ['appointment_date', 'scheduled_at', 'created_at'], [
             'reason',
             'symptoms',
             'purpose',
             'notes',
             'description',
-        ], $from, $to, $diseaseFilter))
+        ], $from, $to, $diseaseFilter, $rhuId))
         ->merge($this->sourceSignals('telemedicine_requests', 'tr', 'telemedicine', ['created_at', 'screened_at'], [
             'chief_complaint',
             'symptoms',
             'additional_notes',
             'screening_notes',
-        ], $from, $to, $diseaseFilter))
-        ->merge($this->chatSignals($from, $to, $diseaseFilter, $barangays));
+        ], $from, $to, $diseaseFilter, $rhuId))
+        ->merge($this->chatSignals($from, $to, $diseaseFilter, $barangays, $rhuId));
 
-    $queueDensity = $this->queueDensityByBarangay();
+    $queueDensity = $this->queueDensityByBarangay($rhuId);
 
     $signalsByBarangay = $signals
         ->filter(fn ($row) => (int) ($row->barangay_id ?? 0) > 0)
@@ -175,7 +177,7 @@ class HeatmapAnalyticsService
     return $points;
 }
 
-    private function barangays(): Collection
+    private function barangays(?int $rhuId = null): Collection
     {
         $lat = Schema::hasColumn('barangays', 'latitude') ? 'latitude' : DB::raw(self::DEFAULT_LAT . ' as latitude');
         $lng = Schema::hasColumn('barangays', 'longitude') ? 'longitude' : DB::raw(self::DEFAULT_LNG . ' as longitude');
@@ -191,6 +193,16 @@ class HeatmapAnalyticsService
             ->addSelect($lng)
             ->addSelect($pop)
             ->addSelect($rhu)
+            ->when($rhuId !== null, function ($query) use ($rhuId) {
+                if (Schema::hasColumn('barangays', 'rhu_id')) {
+                    $query->where('rhu_id', $rhuId);
+                    return;
+                }
+
+                if ($rhuId !== Rhu::DEFAULT_ID) {
+                    $query->whereRaw('1 = 0');
+                }
+            })
             ->orderBy('name')
             ->get();
     }
@@ -203,7 +215,8 @@ class HeatmapAnalyticsService
         array $textCandidates,
         Carbon $from,
         Carbon $to,
-        ?string $diseaseFilter
+        ?string $diseaseFilter,
+        ?int $rhuId = null
     ): Collection {
         if (!Schema::hasTable($table)) {
             return collect();
@@ -226,6 +239,8 @@ class HeatmapAnalyticsService
         if (!$barangayExpr) {
             return collect();
         }
+
+        $this->scopeByBarangayRhu($query, $barangayExpr, $rhuId);
 
         $textExpr = $this->concatTextExpression($alias, $textColumns);
         $like = DB::connection()->getDriverName() === 'pgsql' ? 'ILIKE' : 'LIKE';
@@ -302,7 +317,13 @@ class HeatmapAnalyticsService
         return count($parts) === 1 ? $parts[0] : 'COALESCE(' . implode(', ', $parts) . ')';
     }
 
-    private function chatSignals(Carbon $from, Carbon $to, ?string $diseaseFilter, Collection $barangays): Collection
+    private function chatSignals(
+        Carbon $from,
+        Carbon $to,
+        ?string $diseaseFilter,
+        Collection $barangays,
+        ?int $rhuId = null
+    ): Collection
     {
         $table = Schema::hasTable('chat_messages')
             ? 'chat_messages'
@@ -322,6 +343,8 @@ class HeatmapAnalyticsService
 
         $query = DB::table("{$table} as cm");
         $barangayExpr = $this->attachBarangayMapping($query, $table, 'cm') ?: 'NULL';
+
+        $this->scopeByBarangayRhu($query, $barangayExpr, $rhuId);
 
         $textExpr = $this->safeText('cm', $contentColumn);
         $like = DB::connection()->getDriverName() === 'pgsql' ? 'ILIKE' : 'LIKE';
@@ -366,7 +389,7 @@ class HeatmapAnalyticsService
             ->values();
     }
 
-    private function queueDensityByBarangay(): array
+    private function queueDensityByBarangay(?int $rhuId = null): array
     {
         if (!Schema::hasTable('queue_tickets')) {
             return [];
@@ -385,6 +408,14 @@ class HeatmapAnalyticsService
                 ->selectRaw('rp.barangay_id, COUNT(qt.id) as total')
                 ->whereIn('qt.status', ['waiting', 'called', 'in_service'])
                 ->whereDate("qt.{$dateColumn}", today())
+                ->when($rhuId !== null, function ($query) use ($rhuId) {
+                    if (Schema::hasColumn('queue_tickets', 'rhu_id')) {
+                        $this->scopeFacilityRhuColumn($query, 'qt.rhu_id', $rhuId);
+                        return;
+                    }
+
+                    $this->scopeByBarangayRhu($query, 'rp.barangay_id', $rhuId);
+                })
                 ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('qt.deleted_at'))
                 ->groupBy('rp.barangay_id')
                 ->pluck('total', 'barangay_id')
@@ -393,6 +424,43 @@ class HeatmapAnalyticsService
         }
 
         return [];
+    }
+
+    private function scopeFacilityRhuColumn($query, string $column, int $rhuId): void
+    {
+        if ($rhuId === Rhu::DEFAULT_ID) {
+            $query->where(function ($inner) use ($column) {
+                $inner->where($column, Rhu::DEFAULT_ID)
+                    ->orWhereNull($column)
+                    ->orWhereNotIn($column, Rhu::IDS);
+            });
+
+            return;
+        }
+
+        $query->where($column, $rhuId);
+    }
+
+    private function scopeByBarangayRhu($query, string $barangayExpr, ?int $rhuId): void
+    {
+        $rhuId = Rhu::normalizeRhuId($rhuId);
+
+        if ($rhuId === null) {
+            return;
+        }
+
+        if (!Schema::hasTable('barangays') || !Schema::hasColumn('barangays', 'rhu_id')) {
+            if ($rhuId !== Rhu::DEFAULT_ID) {
+                $query->whereRaw('1 = 0');
+            }
+
+            return;
+        }
+
+        $query->whereRaw(
+            "{$barangayExpr} IN (SELECT barangay_id FROM barangays WHERE rhu_id = ?)",
+            [$rhuId]
+        );
     }
 
     private function storeSnapshot(array $point, ?string $diseaseFilter): void
