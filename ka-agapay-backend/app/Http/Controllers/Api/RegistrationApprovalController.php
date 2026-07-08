@@ -43,6 +43,15 @@ class RegistrationApprovalController extends Controller
      */
     private const CLINICAL_ROLES = ['doctor', 'nurse', 'midwife', 'bhw'];
 
+    /*
+     * Self-registrations are created with this neutral placeholder role
+     * (AdminRegistrationController::DEFAULT_REGISTRATION_ROLE) — registrants no
+     * longer pick their own role. A row still holding it is "unassigned": only
+     * the Super Admin may decide it, because the intended clinical/admin role
+     * is not knowable until approval.
+     */
+    private const UNASSIGNED_ROLE = 'staff';
+
     /** Roles whose required document is an Employee Identification Card. */
     private const STAFF_ROLES = [
         'doctor',
@@ -102,6 +111,9 @@ class RegistrationApprovalController extends Controller
         }
 
         if ($approver->hasAnyRole(['mho', 'mho_admin'])) {
+            // Clinical rows are the MHO's lane. Unassigned rows must stay with
+            // Super Admin because the applicant no longer declares the intended
+            // clinical/admin role at registration time.
             return $this->isClinical($target);
         }
 
@@ -323,6 +335,15 @@ class RegistrationApprovalController extends Controller
             abort_unless($finalRoleId, 422, "Role '{$requestedRole}' was not found.");
         }
 
+        // Registrants no longer self-declare a role, so a row still holding the
+        // neutral registration placeholder MUST be given its final role here —
+        // an account may never activate as "unassigned".
+        abort_if(
+            $this->isUnassigned($user) && $finalRoleId === null,
+            422,
+            'Choose the final role before approving — this registrant has not been assigned one yet.'
+        );
+
         // FINAL RULE: do not approve without a submitted ID / Employee ID.
         $ocr = $this->latestIdOcr($id);
 
@@ -513,9 +534,19 @@ class RegistrationApprovalController extends Controller
         return in_array($this->userRole($user), self::CLINICAL_ROLES, true);
     }
 
+    /** Still holding the neutral registration placeholder — no role assigned yet. */
+    private function isUnassigned(User $user): bool
+    {
+        return $this->userRole($user) === self::UNASSIGNED_ROLE;
+    }
+
     /** Human label of who should decide this row (drives the UI badge). */
     private function awaitingApprover(User $user): string
     {
+        if ($this->isUnassigned($user)) {
+            return 'Super Admin';
+        }
+
         return $this->isClinical($user) ? 'MHO' : 'Super Admin';
     }
 
@@ -552,7 +583,12 @@ class RegistrationApprovalController extends Controller
             'is_staff'          => $this->isStaff($user),
             'is_clinical'       => $this->isClinical($user),
             'awaiting_approver'     => $this->awaitingApprover($user),
-            'awaiting_approver_key' => $this->isClinical($user) ? 'mho' : 'super_admin',
+            'awaiting_approver_key' => $this->isUnassigned($user)
+                ? 'super_admin'
+                : ($this->isClinical($user) ? 'mho' : 'super_admin'),
+            // True while the row still holds the neutral registration role —
+            // the approver MUST pick the final role before approving.
+            'role_unassigned'       => $this->isUnassigned($user),
 
             'assigned_rhu_id'   => $rhuId,
             'rhu_label'         => $raw['rhu_label'] ?? Rhu::rhuLabel($rhuId),

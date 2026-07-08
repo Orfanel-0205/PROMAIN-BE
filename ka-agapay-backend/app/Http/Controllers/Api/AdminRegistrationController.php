@@ -29,21 +29,19 @@ class AdminRegistrationController extends Controller
     // resident verification flow. Tune this single number if needed.
     private const EMPLOYEE_ID_NAME_MATCH_THRESHOLD = 0.60;
 
-    private array $staffRoles = [
-        'doctor',
-        'nurse',
-        'midwife',
-        'bhw',
-        'staff',
-        'staff_admin',
-        'rhu_admin',
-    ];
+    /*
+     * Registrants do NOT choose their own role. Every self-registration is
+     * created with this neutral placeholder; the FINAL role is assigned by the
+     * Super Admin on the Registration Approval screen.
+     * Any `role` value a client sends here is ignored server-side.
+     */
+    private const DEFAULT_REGISTRATION_ROLE = 'staff';
+
 
     public function store(Request $request): JsonResponse
     {
         $request->merge([
             'mobile_number' => $this->normalizeMobile($request->input('mobile_number')),
-            'role' => $this->normalizeRole($request->input('role', 'staff')),
         ]);
 
         $validated = $request->validate([
@@ -60,7 +58,8 @@ class AdminRegistrationController extends Controller
             // free text (BarangayList's own guidance: use Rule::exists, not the const).
             'barangay' => ['required', 'string', Rule::exists('barangays', 'name')],
             'birthday' => ['nullable', 'date', 'before:today'],
-            'role' => ['required', Rule::in($this->staffRoles)],
+            // NOTE: no 'role' rule on purpose — the payload's role (if any) is
+            // ignored. See DEFAULT_REGISTRATION_ROLE above.
             'password' => ['required', 'confirmed', PasswordPolicyService::standard()],
             'password_confirmation' => ['required'],
 
@@ -80,11 +79,11 @@ class AdminRegistrationController extends Controller
             'employee_id.max' => 'That image is too large. Please upload a photo up to 5 MB.',
         ]);
 
-        $role = UserRole::where('name', $validated['role'])->first();
+        $role = UserRole::where('name', self::DEFAULT_REGISTRATION_ROLE)->first();
 
         if (!$role) {
             return response()->json([
-                'message' => "Role '{$validated['role']}' does not exist. Run UserRoleSeeder first.",
+                'message' => "Role '" . self::DEFAULT_REGISTRATION_ROLE . "' does not exist. Run UserRoleSeeder first.",
             ], 422);
         }
 
@@ -142,7 +141,7 @@ class AdminRegistrationController extends Controller
             // an OCR/document record so the Super Admin's "View OCR" + the
             // approve-requires-document gate work. OCR matching is NOT run and
             // this NEVER auto-approves the account.
-            $this->storeEmployeeIdDocument($request, $user, (string) $validated['role'], $ocrFields);
+            $this->storeEmployeeIdDocument($request, $user, self::DEFAULT_REGISTRATION_ROLE, $ocrFields);
 
             return $user->fresh()->load('role');
         });
@@ -150,7 +149,7 @@ class AdminRegistrationController extends Controller
         // Part 1 — alert the CORRECT approver that a new staff registration is
         // waiting: the MHO for clinical roles, the Super Admin otherwise. Reuses
         // the existing NotificationService (in-app row) — no new pipeline.
-        $this->notifyApprovers($user, (string) $validated['role']);
+        $this->notifyApprovers($user);
 
         // Tell the applicant their submission was received and is pending review
         // (SMS via the existing account-lifecycle service; logged to sms_logs,
@@ -530,23 +529,15 @@ class AdminRegistrationController extends Controller
     }
 
     /**
-     * Notify the role-appropriate approver(s) that a new staff registration is
-     * awaiting review (Part 1). Clinical roles -> MHO (+ Super Admin as safety
-     * net / override); administrative roles -> Super Admin. Calls the existing
-     * NotificationService only; never blocks registration.
+     * Notify the approvers that a new staff registration is awaiting review.
+     * Registrants no longer self-declare a role, so the intended role is
+     * unknown here — only Super Admin can decide these unassigned rows. Calls
+     * the existing NotificationService only; never blocks registration.
      */
-    private function notifyApprovers(User $applicant, string $role): void
+    private function notifyApprovers(User $applicant): void
     {
         try {
-            $clinical = in_array(
-                $this->normalizeRole($role),
-                ['doctor', 'nurse', 'midwife', 'bhw'],
-                true
-            );
-
-            $approverRoles = $clinical
-                ? ['mho', 'mho_admin', 'super_admin', 'superadmin']
-                : ['super_admin', 'superadmin'];
+            $approverRoles = ['super_admin', 'superadmin'];
 
             $approvers = User::query()
                 ->whereHas('role', function ($q) use ($approverRoles) {
@@ -567,11 +558,8 @@ class AdminRegistrationController extends Controller
                 $applicant->last_name,
             ]))) ?: ('User #' . $applicant->user_id);
 
-            $roleLabel = ucwords(str_replace('_', ' ', $this->normalizeRole($role)));
-            $awaiting = $clinical ? 'MHO' : 'Super Admin';
-
             $title = 'New staff registration to review';
-            $message = "{$name} registered as {$roleLabel} and is awaiting {$awaiting} approval.";
+            $message = "{$name} registered and is awaiting approval. Assign their role when approving.";
 
             $notifier = app(NotificationService::class);
 
@@ -582,11 +570,11 @@ class AdminRegistrationController extends Controller
                     $title,
                     $message,
                     [
-                        'related_type'    => 'registration',
-                        'related_id'      => $applicant->user_id,
-                        'applicant_role'  => $this->normalizeRole($role),
-                        'awaiting_approver' => $awaiting,
-                        'screen'          => 'registrations',
+                        'related_type'      => 'registration',
+                        'related_id'        => $applicant->user_id,
+                        'applicant_role'    => self::DEFAULT_REGISTRATION_ROLE,
+                        'awaiting_approver' => 'Super Admin',
+                        'screen'            => 'registrations',
                     ],
                     '/registrations'
                 );
@@ -614,8 +602,4 @@ class AdminRegistrationController extends Controller
         return $mobile;
     }
 
-    private function normalizeRole(mixed $value): string
-    {
-        return strtolower(str_replace([' ', '-'], '_', trim((string) $value)));
-    }
 }
