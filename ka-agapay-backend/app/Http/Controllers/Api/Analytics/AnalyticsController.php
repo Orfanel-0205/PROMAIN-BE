@@ -526,10 +526,13 @@ class AnalyticsController extends Controller
             'disease' => ['nullable', 'string', 'max:150'],
         ]);
 
+        // Echo the RESOLVED facility scope (post Rhu::filterRhuId), never the raw
+        // request param — a scoped staffer spoofing ?rhu_id= must see their own
+        // RHU here, matching heatmap / queue-heatmap / barangay-risk.
         $filters = [
             'date_from' => $validated['date_from'] ?? $validated['from'] ?? null,
             'date_to' => $validated['date_to'] ?? $validated['to'] ?? null,
-            'rhu_id' => $validated['rhu_id'] ?? null,
+            'rhu_id' => $this->resolveRhuId($request),
             'barangay_id' => $validated['barangay_id'] ?? null,
             'diagnosis' => trim((string) ($validated['diagnosis'] ?? $validated['disease'] ?? '')) ?: null,
         ];
@@ -557,10 +560,12 @@ class AnalyticsController extends Controller
             'disease' => ['nullable', 'string', 'max:150'],
         ]);
 
+        // Same rule as diagnosisItrSummary: echo the resolved facility scope,
+        // not the raw request param.
         $filters = [
             'date_from' => $validated['date_from'] ?? $validated['from'] ?? null,
             'date_to' => $validated['date_to'] ?? $validated['to'] ?? null,
-            'rhu_id' => $validated['rhu_id'] ?? null,
+            'rhu_id' => $this->resolveRhuId($request),
             'barangay_id' => $validated['barangay_id'] ?? null,
             'diagnosis' => trim((string) ($validated['diagnosis'] ?? $validated['disease'] ?? '')) ?: null,
         ];
