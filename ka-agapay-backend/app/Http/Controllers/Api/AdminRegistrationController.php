@@ -6,10 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Api\OcrController;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Models\RegistrationInvite;
 use App\Rules\FilipinoName;
 use App\Services\Notification\AccountSmsService;
 use App\Services\Notification\NotificationService;
 use App\Services\PasswordPolicyService;
+use App\Services\RegistrationInviteService;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -40,9 +42,46 @@ class AdminRegistrationController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        // SIR AYCO — the signed invitation link is verified BEFORE any business
+        // logic runs: (1) signature, (2) expiry, (3) exists/revoked, (4) not
+        // already used — each with its own honest error. Frontend checks are
+        // advisory only; THIS is the authoritative gate. Guarded by
+        // isEnabled() so deploying code before the migration cannot brick
+        // registration in production.
+        $inviteService = app(RegistrationInviteService::class);
+        $invite = null;
+
+        if ($inviteService->isEnabled()) {
+            $inviteCheck = $inviteService->validateParams([
+                'token' => $request->input('invite_token'),
+                'expires' => $request->input('invite_expires'),
+                'signature' => $request->input('invite_signature'),
+            ]);
+
+            if (!$inviteCheck['ok']) {
+                return response()->json([
+                    'message' => $inviteCheck['message'],
+                    'code' => $inviteCheck['code'],
+                ], $inviteCheck['status']);
+            }
+
+            /** @var RegistrationInvite $invite */
+            $invite = $inviteCheck['invite'];
+        }
+
         $request->merge([
             'mobile_number' => $this->normalizeMobile($request->input('mobile_number')),
         ]);
+
+        // Optional mobile lock — an invite issued for a specific person cannot
+        // be completed with a different mobile number.
+        if ($invite && $invite->mobile_number !== null
+            && $invite->mobile_number !== $request->input('mobile_number')) {
+            return response()->json([
+                'message' => 'This registration link was issued for a different mobile number. Please register with the number the link was sent to.',
+                'code' => 'mobile_mismatch',
+            ], 403);
+        }
 
         $validated = $request->validate([
             // Reuse the SAME realistic-name rule as resident registration (Pass 1)
@@ -94,7 +133,7 @@ class AdminRegistrationController extends Controller
         // file. The extracted fields are reused below so OCR runs only once.
         $ocrFields = $this->verifyEmployeeIdNameMatch($request, $validated);
 
-        $user = DB::transaction(function () use ($request, $validated, $role, $ocrFields) {
+        $user = DB::transaction(function () use ($request, $validated, $role, $ocrFields, $invite, $inviteService) {
             $user = new User();
             $user->role_id = $role->role_id;
             $user->first_name = trim($validated['first_name']);
@@ -142,6 +181,15 @@ class AdminRegistrationController extends Controller
             // approve-requires-document gate work. OCR matching is NOT run and
             // this NEVER auto-approves the account.
             $this->storeEmployeeIdDocument($request, $user, self::DEFAULT_REGISTRATION_ROLE, $ocrFields);
+
+            // ONE-TIME USE (Sir Ayco): burn the invite inside this transaction,
+            // under a row lock. If a concurrent request already consumed it,
+            // roll everything back — the same link can never register twice.
+            if ($invite !== null && !$inviteService->consume($invite, $user)) {
+                throw ValidationException::withMessages([
+                    'invite' => ['This registration link has already been used. Each link works exactly once.'],
+                ]);
+            }
 
             return $user->fresh()->load('role');
         });

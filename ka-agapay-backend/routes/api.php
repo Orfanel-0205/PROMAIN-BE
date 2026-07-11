@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use App\Http\Controllers\Api\Telemedicine\SessionController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\RegistrationApprovalController;
+use App\Http\Controllers\Api\RegistrationInviteController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
 use App\Http\Controllers\Api\AiSettingsController;
@@ -96,6 +97,15 @@ Route::prefix('v1')->group(function () {
     Route::post('/admin/register/extract-employee-id', [AdminRegistrationController::class, 'extractEmployeeId'])
         ->middleware('throttle:20,1');
 
+    // Signed registration-invite verification (Sir Ayco). The /register SPA
+    // page replays its ?token=…&expires=…&signature=… query here BEFORE the
+    // form is shown; POST /admin/register re-verifies the same three params
+    // server-side (signature → expiry → one-time-use) before any business
+    // logic. Route NAME is what URL::temporarySignedRoute() signs against.
+    Route::get('/admin/register/validate-invite', [RegistrationInviteController::class, 'verify'])
+        ->name('admin.register.invite.verify')
+        ->middleware('throttle:20,1');
+
     // =========================================================================
     // AUTHENTICATED ROUTES
     // =========================================================================
@@ -160,6 +170,21 @@ Route::prefix('v1')->group(function () {
                 Route::get('/{id}/ocr/file',    [RegistrationApprovalController::class, 'ocrFile']);
                 Route::post('/{id}/approve',    [RegistrationApprovalController::class, 'approve']);
                 Route::post('/{id}/reject',     [RegistrationApprovalController::class, 'reject']);
+            });
+
+        // =====================================================================
+        // SUPER ADMIN — STAFF REGISTRATION INVITE LINKS (Sir Ayco)
+        // POST  /api/v1/admin/registration-invites          generate signed link
+        // GET   /api/v1/admin/registration-invites          list recent invites
+        // PATCH /api/v1/admin/registration-invites/{id}/revoke
+        // =====================================================================
+
+        Route::prefix('admin/registration-invites')
+            ->middleware('role:super_admin,superadmin')
+            ->group(function () {
+                Route::get('/',              [RegistrationInviteController::class, 'index']);
+                Route::post('/',             [RegistrationInviteController::class, 'store']);
+                Route::patch('/{id}/revoke', [RegistrationInviteController::class, 'revoke']);
             });
 
         Route::prefix('admin/users')

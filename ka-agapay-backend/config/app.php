@@ -57,6 +57,13 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    /*
+    | Public origin of the RHU web-admin SPA. Signed staff-registration
+    | invitation links point here (/register?token=…&expires=…&signature=…);
+    | the SPA replays the query string against the API verification route.
+    */
+    'admin_app_url' => env('ADMIN_APP_URL', 'http://localhost:5173'),
+
     'asset_url' => env('ASSET_URL'),
 
     /*
