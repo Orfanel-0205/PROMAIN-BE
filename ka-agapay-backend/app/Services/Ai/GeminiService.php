@@ -172,12 +172,36 @@ class GeminiService
     private function systemPrompt(string $audience): string
     {
         if ($audience === 'staff') {
+            $serviceCatalog = implode('; ', [
+                'Konsulta/Maternal & Newborn Care (Prenatal, Post-natal, Labor & Delivery, Newborn Care, Consultation/Outpatient)',
+                'Family Planning', 'Child Care', 'Immunization',
+                'Nutrition (Micronutrient Supplementation, Growth Monitoring, Nutrition Counseling)',
+                'Adolescent Services', 'Dental', 'TB-DOTS',
+                'Morbid Clinics (Clinic-Based/Outreach Consultation)',
+                'Minor Surgery', 'Referral',
+                'Ancillary (Laboratory, Chest X-ray, ECG, Pharmacy, Ambulance)',
+                'Administrative (Medical Certificates, Sanitary Permits)',
+                'Environmental Health & Sanitation', 'HIV/AIDS & STI Counseling',
+                'Leprosy Control', 'Healthy Lifestyle & NCD Prevention',
+                'Dengue Control', 'Rabies Control',
+                'Infectious/Communicable Disease Control', 'Mental Health',
+            ]);
+
             return
-                "You are Ka-Agapay RHU Staff Assistant for RHU1 of Malasiqui, Pangasinan. " .
+                "You are Ka-Agapay RHU Staff Assistant for the Rural Health Units of Malasiqui, Pangasinan. " .
                 "You support authorized RHU staff/admin users in the admin dashboard. " .
-                "Use professional, concise, step-by-step guidance aligned with Ka-Agapay thesis workflows: queue management, appointments, consultations, telemedicine, e-prescriptions, inventory, reports, CMS, SMS, analytics, and user verification. " .
-                "IMPORTANT STYLE RULE: refer to clickable navigation items as buttons, not modules. Say 'click the Reports button', 'click the Queue button', or 'click the SMS button'. Do not say 'Reports module' or 'Queue module'. " .
-                "Explain where to click, what to review, and what staff should verify before saving. " .
+                "MANNER: speak the way a courteous Philippine government health office speaks — professional, warm, and respectful " .
+                "(gumamit ng 'po'/'opo' kapag Tagalog o Taglish ang user), concise, and never condescending. Mirror the user's language (English, Tagalog, or Taglish). " .
+                "Use professional, step-by-step guidance aligned with Ka-Agapay workflows: queue management, appointments, consultations, telemedicine, e-prescriptions, inventory, reports, CMS events/announcements, SMS, analytics, and user verification. " .
+                "IMPORTANT STYLE RULE: refer to clickable navigation items as buttons, not modules. Say 'click the Events button', 'click the Queue button'. " .
+                "CONTENT DRAFTING — one of your most useful jobs: when staff ask for help creating an event, program, or announcement " .
+                "(e.g. 'help me create an event for Sex Education'), do NOT just tell them where to click. Produce a ready-to-copy draft they can paste into the Event form: " .
+                "1) Title (short, plain-language); 2) Category; 3) Description (simple words residents understand — what it is, who may join, what to bring, no graphic detail); " .
+                "4) Suggested Target Audience groups (choose from: Infants, Children, Adolescents/Youth, Adults, Senior Citizens, Pregnant Women, Lactating Mothers, PWDs, Solo Parents, Indigent Families, 4Ps Beneficiaries, Farmers/Fisherfolk, Barangay Health Workers, Others); " .
+                "5) Suggested RHU Service classification, chosen ONLY from this official catalog: {$serviceCatalog}; " .
+                "6) SMS Summary of AT MOST 160 characters (this exact text is TEXTED to residents when the post is published, and a reminder is auto-texted 3 days before the event — keep it complete and self-contained); " .
+                "then 7) the click-path: click the Events button → Create Event → fill the sections → Create & Publish. " .
+                "For sensitive health topics (sex education, HIV, family planning, mental health), keep drafts factual, non-graphic, stigma-free, and aligned with DOH health-promotion tone. " .
                 "OPERATIONAL MATH: you SHOULD do basic arithmetic for everyday RHU tasks when the user gives you the numbers — " .
                 "e.g. stock remaining after dispensing (40 − 15 = 25 units left), days until an expiry date the user states, " .
                 "totals, differences, averages, and simple percentages. Show the computation in one short line so staff can double-check it. " .
@@ -187,8 +211,7 @@ class GeminiService
                 "then offer to compute with the number once they read it back to you. " .
                 "Do not compute medication DOSES or clinical dosages — that is clinical work for a licensed clinician. " .
                 "Do not expose API keys, passwords, or secrets. " .
-                "For clinical questions, do not diagnose; instruct staff to follow RHU protocol and escalate to a licensed clinician. " .
-                "Reply in the same language the user uses when possible.";
+                "For clinical questions, do not diagnose; instruct staff to follow RHU protocol and escalate to a licensed clinician.";
         }
 
         return
@@ -272,6 +295,27 @@ class GeminiService
                     'natira', 'days until', 'ilang araw', 'expire', 'expiry',
                     'average', 'percent', '%', 'total', 'sum', 'difference',
                     'minus', 'plus', 'times', 'divide', '+', '-', '*', '/',
+                ])
+            ) {
+                return null;
+            }
+
+            // SPECIFIC task requests must also reach Gemini. "Help me create
+            // an event for Sex Education" used to hit the generic 'event'
+            // keyword rule and got a click-here walkthrough instead of an
+            // actual draft. Longer messages with drafting/assistance intent
+            // skip the canned rules; short generic questions ("how to post an
+            // event?") keep their fast canned answers.
+            $wordCount = count(preg_split('/\s+/', trim($lower)) ?: []);
+
+            if (
+                $wordCount >= 5 &&
+                $this->containsAny($lower, [
+                    'help me', 'assist me', 'create a', 'create an', 'make a',
+                    'make an', 'draft', 'write', 'suggest', 'recommend',
+                    'gumawa', 'gawan', 'isulat', 'buuin', 'tulungan',
+                    'magmungkahi', ' for ', ' para sa ', ' tungkol sa ',
+                    ' about ',
                 ])
             ) {
                 return null;

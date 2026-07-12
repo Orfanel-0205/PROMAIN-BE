@@ -28,6 +28,13 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping()
             ->description('Send follow-up reminder push notifications');
 
+        // 3-days-before SMS reminder for published events, scoped to each
+        // event's barangay/facility audience. Idempotent (reminder_sms_sent_at).
+        $schedule->command('events:send-reminders')
+            ->dailyAt('08:15')
+            ->withoutOverlapping()
+            ->description('Send 3-days-before event SMS reminders to target audiences');
+
         // Part 2 (trigger #4) — daily staff alerts for low/out/expiring inventory
         // so alerts are not limited to items that had a stock movement. Deduped.
         $schedule->call(function () {

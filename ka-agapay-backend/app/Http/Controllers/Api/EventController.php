@@ -372,6 +372,8 @@ class EventController extends Controller
 
         // Notify residents (push + stored notification) when an event/announcement
         // is published. Only the public title is sent — no sensitive data.
+        $smsSent = 0;
+
         if ($publish) {
             try {
                 $isEvent = ($validated['event_type'] ?? 'event') !== 'announcement';
@@ -385,13 +387,21 @@ class EventController extends Controller
             } catch (\Throwable $e) {
                 report($e);
             }
+
+            // SMS blast to the post's target audience (barangay + facility
+            // scoped; once per post). Never blocks or fails the publish.
+            $smsSent = app(\App\Services\Notification\EventSmsService::class)
+                ->sendPublishSms($event->fresh());
         }
 
         return response()->json([
             'message' => $publish
-                ? 'Post published and visible to residents.'
+                ? ($smsSent > 0
+                    ? "Post published and visible to residents. SMS sent to {$smsSent} recipient(s)."
+                    : 'Post published and visible to residents.')
                 : 'Draft saved successfully.',
             'data' => $this->formatEvent($event->fresh(), null),
+            'sms_sent' => $smsSent,
         ], 201);
     }
 
@@ -427,6 +437,8 @@ class EventController extends Controller
             $validated['slots_available'] = $validated['max_slots'];
         }
 
+        $wasPublished = (bool) $event->is_published;
+
         if (array_key_exists('is_published', $validated)) {
             $publish = (bool) $validated['is_published'];
             $validated['published_at'] = $publish
@@ -436,9 +448,21 @@ class EventController extends Controller
 
         $event->update($validated);
 
+        // Draft → published transition: same audience-scoped SMS blast as a
+        // fresh publish (idempotent — sms_sent_at guards a re-blast).
+        $smsSent = 0;
+
+        if (!$wasPublished && (bool) $event->fresh()->is_published) {
+            $smsSent = app(\App\Services\Notification\EventSmsService::class)
+                ->sendPublishSms($event->fresh());
+        }
+
         return response()->json([
-            'message' => 'Post updated successfully.',
+            'message' => $smsSent > 0
+                ? "Post updated successfully. SMS sent to {$smsSent} recipient(s)."
+                : 'Post updated successfully.',
             'data' => $this->formatEvent($event->fresh(), null),
+            'sms_sent' => $smsSent,
         ]);
     }
 
@@ -454,17 +478,30 @@ class EventController extends Controller
 
         $event = Event::findOrFail($id);
         $publish = (bool) $request->boolean('publish');
+        $wasPublished = (bool) $event->is_published;
 
         $event->update([
             'is_published' => $publish,
             'published_at' => $publish ? ($event->published_at ?? now()) : null,
         ]);
 
+        // First-time publish from the card toggle blasts the same audience-
+        // scoped SMS (sms_sent_at keeps re-publishes from texting twice).
+        $smsSent = 0;
+
+        if ($publish && !$wasPublished) {
+            $smsSent = app(\App\Services\Notification\EventSmsService::class)
+                ->sendPublishSms($event->fresh());
+        }
+
         return response()->json([
             'message' => $publish
-                ? 'Post published and now visible on mobile.'
+                ? ($smsSent > 0
+                    ? "Post published and now visible on mobile. SMS sent to {$smsSent} recipient(s)."
+                    : 'Post published and now visible on mobile.')
                 : 'Post moved back to draft.',
             'data' => $this->formatEvent($event->fresh(), null),
+            'sms_sent' => $smsSent,
         ]);
     }
 

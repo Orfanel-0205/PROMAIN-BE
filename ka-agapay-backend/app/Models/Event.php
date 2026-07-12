@@ -48,6 +48,9 @@ class Event extends Model
         'is_published',
         'published_at',
 
+        'sms_sent_at',
+        'reminder_sms_sent_at',
+
         'created_by',
 
         // Delete / archive tracking
@@ -63,6 +66,8 @@ class Event extends Model
         'starts_at' => 'datetime',
         'ends_at' => 'datetime',
         'published_at' => 'datetime',
+        'sms_sent_at' => 'datetime',
+        'reminder_sms_sent_at' => 'datetime',
 
         'deleted_at' => 'datetime',
         'archived_at' => 'datetime',
