@@ -17,7 +17,11 @@ class SmsService
             'message'           => $message,
             'notification_type' => $notificationType,
             'provider'          => $this->providerName(),
-            'status'            => 'pending',
+            // "queued" = created, provider not yet confirmed — the SAME
+            // vocabulary AdminSmsController uses, so the SMS Center shows one
+            // honest state instead of the ambiguous "pending"/"queued" split
+            // (panelist follow-up round).
+            'status'            => 'queued',
         ]);
 
         try {
@@ -122,17 +126,17 @@ class SmsService
 
     /**
      * Maps the Semaphore status string to our sms_logs status vocabulary.
-     * Unknown values fall back to "pending" so we never falsely claim "sent".
+     * Unknown values fall back to "queued" so we never falsely claim "sent".
      */
     private function mapStatus(mixed $status): string
     {
         $value = strtolower(trim((string) $status));
 
         return match ($value) {
-            'pending', 'queued' => 'pending',
+            'pending', 'queued' => 'queued',
             'sent', 'delivered', 'success', 'successful' => 'sent',
             'failed', 'error', 'undelivered', 'refunded', 'rejected' => 'failed',
-            default => 'pending', // pending, queued, processing, empty, or anything unexpected
+            default => 'queued', // pending, queued, processing, empty, or anything unexpected
         };
     }
 

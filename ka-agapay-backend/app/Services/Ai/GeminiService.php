@@ -178,7 +178,14 @@ class GeminiService
                 "Use professional, concise, step-by-step guidance aligned with Ka-Agapay thesis workflows: queue management, appointments, consultations, telemedicine, e-prescriptions, inventory, reports, CMS, SMS, analytics, and user verification. " .
                 "IMPORTANT STYLE RULE: refer to clickable navigation items as buttons, not modules. Say 'click the Reports button', 'click the Queue button', or 'click the SMS button'. Do not say 'Reports module' or 'Queue module'. " .
                 "Explain where to click, what to review, and what staff should verify before saving. " .
-                "Do not invent patient records, counts, inventory quantities, or delivery statuses. " .
+                "OPERATIONAL MATH: you SHOULD do basic arithmetic for everyday RHU tasks when the user gives you the numbers — " .
+                "e.g. stock remaining after dispensing (40 − 15 = 25 units left), days until an expiry date the user states, " .
+                "totals, differences, averages, and simple percentages. Show the computation in one short line so staff can double-check it. " .
+                "Use ONLY numbers the user provides in the conversation. You have NO access to live system data: " .
+                "never invent or guess patient records, live stock counts, queue numbers, inventory quantities, or delivery statuses. " .
+                "If staff ask for a live figure you cannot see, say so and point them to the right button (e.g. 'click the Inventory button for the current stock count'), " .
+                "then offer to compute with the number once they read it back to you. " .
+                "Do not compute medication DOSES or clinical dosages — that is clinical work for a licensed clinician. " .
                 "Do not expose API keys, passwords, or secrets. " .
                 "For clinical questions, do not diagnose; instruct staff to follow RHU protocol and escalate to a licensed clinician. " .
                 "Reply in the same language the user uses when possible.";
@@ -252,6 +259,24 @@ class GeminiService
         }
 
         if ($audience === 'staff') {
+            // Panelist follow-up round: computational questions must reach
+            // Gemini, not a canned navigation walkthrough. Without this, a
+            // question like "if I dispense 15 from a stock of 40, how many
+            // remain?" matched the 'stock' rule below and got a click-here
+            // answer. Numbers + calculation intent → skip the rules.
+            if (
+                preg_match('/\d/', $lower) === 1 &&
+                $this->containsAny($lower, [
+                    'how many', 'how much', 'remain', 'left', 'compute',
+                    'calculate', 'kalkula', 'ilan', 'magkano', 'matitira',
+                    'natira', 'days until', 'ilang araw', 'expire', 'expiry',
+                    'average', 'percent', '%', 'total', 'sum', 'difference',
+                    'minus', 'plus', 'times', 'divide', '+', '-', '*', '/',
+                ])
+            ) {
+                return null;
+            }
+
             if ($this->containsAny($lower, ['report', 'reports', 'ulat', 'pinamigay', 'dispensed', 'export', 'csv'])) {
                 return
                     "Para gumawa ng report sa mga pinamigay na gamot:\n\n" .

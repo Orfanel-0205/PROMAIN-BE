@@ -49,6 +49,11 @@ class AdminSmsController extends Controller
             'status' => ['nullable', 'string', 'max:50'],
             'provider' => ['nullable', 'string', 'max:50'],
             'per_page' => ['nullable', 'integer', 'min:5', 'max:200'],
+            // ADDITIVE date-range filters (panelist follow-up round): the SMS
+            // Center defaults to today's messages. Omitting both keeps the
+            // original unbounded behavior — no existing caller changes.
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date'],
         ]);
 
         $operator = $this->textOperator();
@@ -78,7 +83,16 @@ class AdminSmsController extends Controller
         }
 
         if ($request->filled('status') && $request->status !== 'all') {
-            $query->where('status', $this->normalizeProviderStatus($request->status));
+            $normalized = $this->normalizeProviderStatus($request->status);
+
+            // "queued" is a BUCKET: historical rows written before the
+            // vocabulary was unified may carry 'pending'/'processing'. Match
+            // the whole bucket so old rows stay reachable under the filter.
+            if ($normalized === 'queued') {
+                $query->whereIn('status', ['queued', 'pending', 'processing']);
+            } else {
+                $query->where('status', $normalized);
+            }
         }
 
         if ($request->filled('provider') && $request->provider !== 'all') {
@@ -88,6 +102,16 @@ class AdminSmsController extends Controller
         $orderColumn = Schema::hasColumn('sms_logs', 'created_at')
             ? 'created_at'
             : 'id';
+
+        if (Schema::hasColumn('sms_logs', 'created_at')) {
+            if ($request->filled('date_from')) {
+                $query->whereDate('created_at', '>=', $request->date('date_from'));
+            }
+
+            if ($request->filled('date_to')) {
+                $query->whereDate('created_at', '<=', $request->date('date_to'));
+            }
+        }
 
         $logs = $query
             ->orderByDesc($orderColumn)
