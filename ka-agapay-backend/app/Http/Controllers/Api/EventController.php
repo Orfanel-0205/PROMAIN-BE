@@ -59,8 +59,16 @@ class EventController extends Controller
             $barangay = $request->query('barangay');
 
             $query->where(function ($q) use ($barangay) {
+                // barangay_target is 'all', ONE name (legacy rows), or a
+                // comma-separated list from the multi-select. The wrapped
+                // ",list," LIKE ",name," check matches exact members of the
+                // list without false-positives on partial names.
                 $q->where('barangay_target', 'all')
-                    ->orWhere('barangay_target', $barangay);
+                    ->orWhere('barangay_target', $barangay)
+                    ->orWhereRaw(
+                        "(',' || REPLACE(barangay_target, ', ', ',') || ',') LIKE ?",
+                        ['%,' . $barangay . ',%']
+                    );
             });
         }
 
@@ -344,6 +352,7 @@ class EventController extends Controller
             'target_audience' => $validated['target_audience'] ?? null,
 
             'tags' => $validated['tags'] ?? [],
+            'services' => $this->cleanServices($validated['services'] ?? []),
 
             'max_slots' => $maxSlots,
             'slots_available' => $validated['slots_available'] ?? $maxSlots,
@@ -408,6 +417,10 @@ class EventController extends Controller
 
         if (array_key_exists('event_date', $validated)) {
             $validated['starts_at'] = $validated['event_date'];
+        }
+
+        if (array_key_exists('services', $validated)) {
+            $validated['services'] = $this->cleanServices($validated['services'] ?? []);
         }
 
         if (array_key_exists('max_slots', $validated) && !array_key_exists('slots_available', $validated)) {
@@ -617,6 +630,19 @@ class EventController extends Controller
         });
     }
 
+    /**
+     * Trim + drop blank entries. The admin form sends one empty services[]
+     * marker when the user clears every service, so an explicit "no services"
+     * update reaches the model as [] instead of the key being absent.
+     */
+    private function cleanServices(array $services): array
+    {
+        return array_values(array_filter(
+            array_map(fn ($service) => trim((string) $service), $services),
+            fn (string $service) => $service !== ''
+        ));
+    }
+
     private function validatePayload(Request $request, bool $partial = false): array
     {
         $required = $partial ? 'sometimes' : 'required';
@@ -636,11 +662,18 @@ class EventController extends Controller
             'latitude' => ['nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['nullable', 'numeric', 'between:-180,180'],
 
-            'barangay_target' => ['nullable', 'string', 'max:150'],
+            // Multi-select barangay targeting: 'all' or a comma-separated
+            // list of barangay names (column widened to TEXT).
+            'barangay_target' => ['nullable', 'string', 'max:2000'],
             'target_audience' => ['nullable', 'string', 'max:255'],
 
             'tags' => ['nullable', 'array'],
             'tags.*' => ['string', 'max:50'],
+
+            // "RHU Service Offered" classification — one event may belong to
+            // multiple RHU program services (additive field).
+            'services' => ['nullable', 'array', 'max:60'],
+            'services.*' => ['string', 'max:120'],
 
             'max_slots' => ['nullable', 'integer', 'min:1'],
             'slots_available' => ['nullable', 'integer', 'min:0'],
@@ -681,6 +714,7 @@ class EventController extends Controller
             'target_audience' => $event->target_audience,
 
             'tags' => $event->tags ?? [],
+            'services' => $event->services ?? [],
 
             'max_slots' => $event->max_slots,
             'slots_available' => $event->slots_available,

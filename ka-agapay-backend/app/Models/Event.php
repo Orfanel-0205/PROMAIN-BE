@@ -32,6 +32,7 @@ class Event extends Model
         'target_audience',
 
         'tags',
+        'services',
 
         'max_slots',
         'slots_available',
@@ -70,6 +71,7 @@ class Event extends Model
         'longitude' => 'decimal:7',
 
         'tags' => 'array',
+        'services' => 'array',
 
         'max_slots' => 'integer',
         'slots_available' => 'integer',
