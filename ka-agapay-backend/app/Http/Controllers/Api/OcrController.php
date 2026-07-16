@@ -1258,6 +1258,30 @@ class OcrController extends Controller
         $registered = $this->normalizeName($registeredName);
         $candidate = $this->normalizeName($extractedName ?: $fullText);
 
+        /*
+         * BUSINESS RULE (panelist round): if the name the resident typed is
+         * visible anywhere in the OCR output, the upload must NOT be rejected —
+         * regardless of token order (SURNAME, FIRST vs FIRST SURNAME), middle
+         * name vs initial, suffixes, case, or diacritics (normalizeName strips
+         * all of those already).
+         *
+         * This rule checks the extracted name AND the raw text together. The
+         * old code compared against $extractedName ?: $fullText — so whenever
+         * OCR.space mis-parsed a header line (e.g. "REPUBLIC OF THE
+         * PHILIPPINES") into extracted_name, the real name sitting in the full
+         * text was never consulted and the upload was falsely rejected. The
+         * staff flow already worked around this by calling the scorer twice;
+         * the resident and PhilHealth flows did not.
+         */
+        $haystack = trim(
+            $this->normalizeName($extractedName) . ' ' . $this->normalizeName($fullText)
+        );
+
+        if ($registered !== '' && $haystack !== ''
+            && $this->typedNameVisibleInText($registered, $haystack)) {
+            return 1.0;
+        }
+
         if ($registered === '' || $candidate === '') {
             return 0.0;
         }
@@ -1301,6 +1325,61 @@ class OcrController extends Controller
             : 0;
 
         return max($tokenScore, $levenshteinScore);
+    }
+
+    /**
+     * True when the typed name is visible in the OCR text: the FIRST and LAST
+     * significant tokens (first name + surname — the minimum identity anchor)
+     * must both be present; middle names/initials are never required because
+     * many IDs omit or abbreviate them. A token is "present" when it appears
+     * as a substring of the normalized text (order-independent, survives OCR
+     * word-merging) or, for tokens of 5+ characters, within one edit of some
+     * OCR token (absorbs a single character misread like RAM0N/RAMON).
+     *
+     * Genuinely absent names still fail here and fall through to the original
+     * scoring, so legitimate rejections are unchanged.
+     */
+    private function typedNameVisibleInText(string $registered, string $haystack): bool
+    {
+        $tokens = array_values(array_filter(
+            explode(' ', $registered),
+            static fn (string $token): bool => strlen($token) >= 2
+        ));
+
+        if (count($tokens) < 2) {
+            // A single usable token (or none) is too weak an anchor to
+            // auto-pass on — let the original scoring decide.
+            return false;
+        }
+
+        $required = [$tokens[0], $tokens[count($tokens) - 1]];
+        $haystackTokens = array_values(array_filter(explode(' ', $haystack)));
+
+        foreach ($required as $token) {
+            if (str_contains($haystack, $token)) {
+                continue;
+            }
+
+            $fuzzyFound = false;
+
+            if (strlen($token) >= 5) {
+                foreach ($haystackTokens as $ocrToken) {
+                    if (
+                        abs(strlen($ocrToken) - strlen($token)) <= 1
+                        && levenshtein($ocrToken, $token) <= 1
+                    ) {
+                        $fuzzyFound = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!$fuzzyFound) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function dateMatchScore($registeredBirthday, ?string $extractedBirthdate): ?float

@@ -576,6 +576,13 @@ class AuthController extends Controller
             'barangay_id' => (int) $barangay->barangay_id,
         ], $request);
 
+        // Resident self-registration lands in 'pending' — tell them so by SMS,
+        // reusing the same account-lifecycle sender the staff registration path
+        // already uses (dispatch() is fire-and-forget: it logs to sms_logs and
+        // never throws into the registration response).
+        app(\App\Services\Notification\AccountSmsService::class)
+            ->sendRegistrationPending($user);
+
         return response()->json([
             'message' => 'Registration submitted successfully. Please complete ID verification. Your account will remain pending until reviewed by the Super Admin.',
             'user' => $this->formatUser($user),

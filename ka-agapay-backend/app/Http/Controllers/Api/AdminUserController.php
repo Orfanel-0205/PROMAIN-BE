@@ -680,6 +680,7 @@ class AdminUserController extends Controller
 
         $user = User::with('role')->findOrFail($id);
         $newStatus = $this->normalizeStatus((string) $validated['status']);
+        $previousStatus = $this->normalizeStatus((string) $user->account_status);
 
         $this->assertSafeStatusChange($request, $user, $newStatus);
 
@@ -712,6 +713,14 @@ class AdminUserController extends Controller
         DB::transaction(function () use ($user, $updates) {
             $user->update($updates);
         });
+
+        // Notify the account owner when the web admin moves them INTO pending.
+        // Guarded on the actual transition (previous !== pending) so re-saving
+        // the same status never sends a duplicate SMS.
+        if ($newStatus === 'pending' && $previousStatus !== 'pending') {
+            app(\App\Services\Notification\AccountSmsService::class)
+                ->sendRegistrationPending($user->fresh());
+        }
 
         return response()->json([
             'message' => 'User status updated.',
