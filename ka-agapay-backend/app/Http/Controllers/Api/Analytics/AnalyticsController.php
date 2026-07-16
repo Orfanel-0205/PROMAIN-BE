@@ -95,7 +95,7 @@ class AnalyticsController extends Controller
                     'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date', $rhuId),
                     'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to, 'created_at', $rhuId),
                     'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at', $rhuId),
-                    'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to, 'created_at', $rhuId),
+                    'total_chat_messages' => $this->residentChatMessagesCount($from, $to),
                     ...$this->operationsOverview($from, $to, $rhuId),
                     'barangay_cases' => $barangayCases,
                     'complaint_distribution' => $clusters,
@@ -126,7 +126,7 @@ class AnalyticsController extends Controller
                 'total_consultations' => $this->safeCountBetween('consultations', $from, $to, 'consultation_date', $rhuId),
                 'total_telemedicine_requests' => $this->safeCountBetween('telemedicine_requests', $from, $to, 'created_at', $rhuId),
                 'total_queue_tickets' => $this->safeCountBetween('queue_tickets', $from, $to, 'issued_at', $rhuId),
-                'total_chat_messages' => $this->safeCountBetween('chat_messages', $from, $to, 'created_at', $rhuId),
+                'total_chat_messages' => $this->residentChatMessagesCount($from, $to),
                 ...$this->operationsOverview($from, $to, $rhuId),
                 'barangay_cases' => $this->barangayCases($from, $to, '', $rhuId),
                 'complaint_distribution' => $this->complaintDistribution($from, $to, $rhuId),
@@ -283,6 +283,35 @@ class AnalyticsController extends Controller
         ]);
     }
 
+    /**
+     * Chat-message count for reports — RESIDENT sessions only. Staff/admin
+     * assistant chats are excluded from every analytics figure.
+     */
+    private function residentChatMessagesCount($from, $to): int
+    {
+        if (!Schema::hasTable('chat_messages')) {
+            return 0;
+        }
+
+        $query = DB::table('chat_messages')->whereBetween('created_at', [$from, $to]);
+
+        if (
+            Schema::hasColumn('chat_messages', 'chat_session_id') &&
+            Schema::hasTable('chat_sessions') &&
+            Schema::hasColumn('chat_sessions', 'audience')
+        ) {
+            $query->whereIn('chat_session_id', function ($sub) {
+                $sub->select('id')
+                    ->from('chat_sessions')
+                    ->where(function ($inner) {
+                        $inner->where('audience', 'resident')->orWhereNull('audience');
+                    });
+            });
+        }
+
+        return (int) $query->count();
+    }
+
     public function chatbotUsage(Request $request): JsonResponse
     {
         [$from, $to] = $this->dateRange($request);
@@ -304,6 +333,26 @@ class AnalyticsController extends Controller
             : (Schema::hasColumn($messagesTable, 'message') ? 'message' : null);
 
         $query = DB::table($messagesTable)->whereBetween('created_at', [$from, $to]);
+
+        // Chatbot reports collect RESIDENT chats/prompts ONLY. Staff/admin
+        // assistant conversations (audience = 'staff' on the session) must
+        // never leak into analytics, dashboards, or exports. Legacy sessions
+        // without an audience default to resident (same rule the chat API
+        // itself applies). Schema-guarded for older deployments.
+        if (
+            $messagesTable === 'chat_messages' &&
+            Schema::hasColumn('chat_messages', 'chat_session_id') &&
+            Schema::hasTable('chat_sessions') &&
+            Schema::hasColumn('chat_sessions', 'audience')
+        ) {
+            $query->whereIn('chat_session_id', function ($sub) {
+                $sub->select('id')
+                    ->from('chat_sessions')
+                    ->where(function ($inner) {
+                        $inner->where('audience', 'resident')->orWhereNull('audience');
+                    });
+            });
+        }
 
         $byDay = (clone $query)
             ->selectRaw('DATE(created_at) as date, COUNT(*) as total')
