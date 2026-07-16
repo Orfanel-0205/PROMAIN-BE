@@ -349,6 +349,16 @@ class AdminUserController extends Controller
                 ->sendWelcome($user->fresh(), $temporaryPassword);
         }
 
+        // Employee account created from the admin panel that still needs a
+        // Super Admin decision → in-app alert to the Super Admin(s). Fires
+        // after the creation transaction committed; skipped when the creator
+        // is a Super Admin themselves (they just did the action); try/caught
+        // inside the notifier so it can never fail this response.
+        if ($status === 'pending' && $this->isStaffRole($roleName)) {
+            app(\App\Services\Notification\RegistrationReviewNotifier::class)
+                ->newEmployeeAccountPending($user->fresh(), $request->user());
+        }
+
         return response()->json([
             'message' => 'User created successfully.',
             'data' => $this->userPayload($user->fresh()->load('role')),

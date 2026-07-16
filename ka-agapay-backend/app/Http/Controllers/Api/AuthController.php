@@ -583,6 +583,13 @@ class AuthController extends Controller
         app(\App\Services\Notification\AccountSmsService::class)
             ->sendRegistrationPending($user);
 
+        // Alert the Super Admin(s) that a registration is waiting for review —
+        // in-app notification row only, fired after the creation transaction
+        // committed; internally try/caught so it can never block or fail this
+        // response.
+        app(\App\Services\Notification\RegistrationReviewNotifier::class)
+            ->newResidentRegistration($user);
+
         return response()->json([
             'message' => 'Registration submitted successfully. Please complete ID verification. Your account will remain pending until reviewed by the Super Admin.',
             'user' => $this->formatUser($user),
