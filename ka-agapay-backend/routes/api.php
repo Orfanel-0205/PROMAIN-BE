@@ -46,6 +46,7 @@ use App\Http\Controllers\Api\HomeVisitController;
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\FollowUpReminderController;
 use App\Http\Controllers\Api\ReportController;
+use App\Http\Controllers\Api\TeamChatController;
 
 // =============================================================================
 // API V1
@@ -735,6 +736,33 @@ Route::prefix('v1')->group(function () {
                 ]);
 
                 Route::post('/programs', [EventController::class, 'store']);
+            });
+
+        // =====================================================================
+        // TEAM CHAT — internal staff-to-staff messaging (web admin only)
+        // All routes are staff-role gated; the message-send endpoint carries an
+        // additional per-user throttle so a runaway client cannot flood sends.
+        // =====================================================================
+
+        Route::prefix('team-chat')
+            ->middleware('role:doctor,nurse,midwife,bhw,head_nurse,rhu_staff,staff,staff_admin,rhu_admin,admin,mho,it_staff,super_admin')
+            ->group(function () {
+                Route::get('/contacts',      [TeamChatController::class, 'contacts']);
+                Route::get('/conversations', [TeamChatController::class, 'index']);
+                Route::get('/updates',       [TeamChatController::class, 'updates']);
+                Route::get('/search',        [TeamChatController::class, 'search']);
+                Route::post('/conversations', [TeamChatController::class, 'store']);
+                Route::post('/attachments',  [TeamChatController::class, 'uploadAttachment'])
+                    ->middleware('throttle:30,1');
+
+                Route::get('/conversations/{conversation}',            [TeamChatController::class, 'show']);
+                Route::post('/conversations/{conversation}/read',      [TeamChatController::class, 'markRead']);
+                Route::post('/conversations/{conversation}/participants', [TeamChatController::class, 'addParticipants']);
+                Route::post('/conversations/{conversation}/leave',     [TeamChatController::class, 'leave']);
+
+                // Tighter throttle on send specifically (Part 1.4).
+                Route::post('/conversations/{conversation}/messages',  [TeamChatController::class, 'sendMessage'])
+                    ->middleware('throttle:30,1');
             });
 
         // =====================================================================
