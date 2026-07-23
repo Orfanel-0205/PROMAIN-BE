@@ -750,6 +750,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/contacts',      [TeamChatController::class, 'contacts']);
                 Route::get('/conversations', [TeamChatController::class, 'index']);
                 Route::get('/updates',       [TeamChatController::class, 'updates']);
+                Route::get('/unread-count',  [TeamChatController::class, 'unreadCount']);
                 Route::get('/search',        [TeamChatController::class, 'search']);
                 Route::post('/conversations', [TeamChatController::class, 'store']);
                 Route::post('/attachments',  [TeamChatController::class, 'uploadAttachment'])

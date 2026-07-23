@@ -305,6 +305,15 @@ class TeamChatController extends Controller
     // MARK READ
     // =====================================================================
 
+    /**
+     * Lightweight global unread total for the sidebar badge. One indexed
+     * aggregate — safe to poll app-wide alongside the existing count refresh.
+     */
+    public function unreadCount(Request $request): JsonResponse
+    {
+        return response()->json(['unread_count' => $this->totalUnread($request->user())]);
+    }
+
     public function markRead(Request $request, int $conversation): JsonResponse
     {
         $me = $request->user();
@@ -570,8 +579,26 @@ class TeamChatController extends Controller
             'id' => (int) $u->user_id,
             'name' => $name !== '' ? $name : ('User #' . $u->user_id),
             'role' => $u->role_name,
-            'avatar' => $u->avatar ?? null,
+            'avatar' => $this->avatarUrl($u),
             'rhu_id' => Rhu::resolveRhuIdFromUser($u),
         ];
+    }
+
+    /**
+     * Resolve a staff member's profile picture to a full URL so the chat can
+     * render it directly (the column stores a 'public' disk path, not a URL).
+     * Falls through avatar → profile_picture and passes absolute URLs untouched.
+     */
+    private function avatarUrl(User $u): ?string
+    {
+        $path = $u->avatar ?: ($u->profile_picture ?? null);
+
+        if (!$path) {
+            return null;
+        }
+
+        return str_starts_with((string) $path, 'http')
+            ? (string) $path
+            : Storage::disk('public')->url($path);
     }
 }

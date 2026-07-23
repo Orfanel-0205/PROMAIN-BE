@@ -90,10 +90,19 @@ class AdminProfileController extends Controller
     {
         $role = $user->role?->name ?? 'staff';
 
+        $avatarPath = $user->avatar ?: ($user->profile_picture ?? null);
+        $avatarUrl = $avatarPath
+            ? (str_starts_with((string) $avatarPath, 'http')
+                ? (string) $avatarPath
+                : \Illuminate\Support\Facades\Storage::disk('public')->url($avatarPath))
+            : null;
+
         return [
             'id' => $user->user_id,
             'user_id' => $user->user_id,
             'name' => trim($user->first_name . ' ' . $user->last_name),
+            'avatar' => $avatarPath,
+            'avatar_url' => $avatarUrl,
             'first_name' => $user->first_name,
             'last_name' => $user->last_name,
             'email' => $user->email,
