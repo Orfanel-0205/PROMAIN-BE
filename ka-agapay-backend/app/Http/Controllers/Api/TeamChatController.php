@@ -113,11 +113,39 @@ class TeamChatController extends Controller
             ->get()
             ->map(fn (Conversation $c) => $this->conversationSummary($c, $me));
 
-        return response()->json([
+        $payload = [
             'data' => $conversations,
             'total_unread' => $this->totalUnread($me),
             'server_time' => now()->toISOString(),
-        ]);
+        ];
+
+        // Piggyback the OPEN conversation's new-message tail onto this same
+        // response, so the client makes ONE request per poll tick instead of two
+        // — the difference between staying under and blowing past the per-user
+        // rate limit. Only returns messages the participant is entitled to see.
+        $activeId = (int) $request->query('active_id', 0);
+        $activeAfterId = (int) $request->query('active_after_id', 0);
+        if ($activeId > 0) {
+            $participant = ConversationParticipant::query()
+                ->where('conversation_id', $activeId)
+                ->where('user_id', $me->user_id)
+                ->whereNull('left_at')
+                ->first();
+
+            if ($participant) {
+                $tail = Message::query()
+                    ->where('conversation_id', $activeId)
+                    ->where('id', '>', $activeAfterId)
+                    ->orderBy('id')
+                    ->limit(100)
+                    ->get();
+
+                $payload['active_conversation_id'] = $activeId;
+                $payload['active_messages'] = $tail->map(fn (Message $m) => $this->messagePayload($m));
+            }
+        }
+
+        return response()->json($payload);
     }
 
     // =====================================================================
