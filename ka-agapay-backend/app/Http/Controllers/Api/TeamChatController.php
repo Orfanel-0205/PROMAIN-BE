@@ -130,6 +130,25 @@ class TeamChatController extends Controller
         $convo = Conversation::findOrFail($conversation);
         $this->ensureParticipant($convo, $me);
 
+        // Real-time tail: return ONLY messages newer than what the client already
+        // has. This is the query the open thread polls — a cheap indexed scan on
+        // (conversation_id, id) that returns an empty array when nothing is new,
+        // instead of re-fetching the whole visible history every tick.
+        $afterId = (int) $request->query('after_id', 0);
+        if ($afterId > 0) {
+            $rows = Message::query()
+                ->where('conversation_id', $convo->id)
+                ->where('id', '>', $afterId)
+                ->orderBy('id')
+                ->limit(100)
+                ->get();
+
+            return response()->json([
+                'data' => $rows->map(fn (Message $m) => $this->messagePayload($m)),
+                'has_more' => false,
+            ]);
+        }
+
         $limit = min(50, max(10, (int) $request->query('limit', 30)));
         $beforeId = (int) $request->query('before_id', 0);
 
