@@ -123,6 +123,74 @@ class PatientController extends Controller
     // Resident reads their own profile
     // =========================================================================
 
+    // =========================================================================
+    // GET /api/v1/patients/{userId}/profile
+    //
+    // Per-patient health profile: identity + summary + full completed-consultation
+    // history with the SAME ITR/SOAP field set used by the Reports module (it
+    // reuses DiagnosisItrReportService, so nothing is redefined here). The service
+    // RHU-scopes by the viewer, so a patient's records are only ever visible to
+    // staff in their accessible RHU — a patient outside it is not revealed.
+    // =========================================================================
+
+    public function profile(Request $request, int $userId): JsonResponse
+    {
+        $viewer = $request->user();
+
+        $service = app(\App\Services\Reports\DiagnosisItrReportService::class);
+        $rows = $service->rows(['user_id' => $userId], $viewer); // RHU-scoped by viewer
+
+        $user = DB::table('users')->where('user_id', $userId)->first();
+
+        if (!$user) {
+            return response()->json(['message' => 'Patient not found.'], 404);
+        }
+
+        $patientRhu = \App\Support\Rhu::resolveRhuIdFromUser(\App\Models\User::find($userId));
+
+        // If there is no history the viewer may see AND the patient is outside the
+        // viewer's RHU, do not reveal them at all.
+        if ($rows->isEmpty() && !\App\Support\Rhu::canAccessRhu($viewer, $patientRhu)) {
+            return response()->json(['message' => 'This patient is not in your RHU.'], 403);
+        }
+
+        $mostRecent = $rows->first();
+
+        $recentDiagnosis = $rows
+            ->first(fn ($r) => trim((string) ($r['diagnosis'] ?? '')) !== '');
+
+        $identity = [
+            'user_id' => (int) $userId,
+            'name' => $mostRecent['patient_name']
+                ?? trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''))
+                ?: ('Patient #' . $userId),
+            'age' => $mostRecent['age'] ?? null,
+            'sex' => $mostRecent['sex_gender'] ?? null,
+            'barangay' => $mostRecent['barangay'] ?? ($user->barangay ?? null),
+            'mobile_number' => $mostRecent['mobile_number'] ?? ($user->mobile_number ?? null),
+            'philhealth_id' => $mostRecent['philhealth_id'] ?? null,
+            'rhu_id' => $patientRhu,
+        ];
+
+        return response()->json([
+            'data' => [
+                'patient' => $identity,
+                'summary' => [
+                    'total_visits' => $rows->count(),
+                    'last_visit' => $mostRecent['consultation_date']
+                        ?? ($mostRecent['completed_at'] ?? null),
+                    'recent_diagnosis' => $recentDiagnosis['diagnosis'] ?? null,
+                    'follow_ups' => $rows
+                        ->filter(fn ($r) => (bool) ($r['follow_up_needed'] ?? false))
+                        ->count(),
+                ],
+                // Already date-descending from the service; each row carries the
+                // full ITR/SOAP field set the Reports module exposes.
+                'consultations' => $rows->values(),
+            ],
+        ]);
+    }
+
     public function me(Request $request): JsonResponse
     {
         $user = $request->user()->load('residentProfile');

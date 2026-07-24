@@ -578,6 +578,14 @@ class AppointmentController extends Controller
                 });
             }
 
+            // Completed board reads newest-first (most recent visit at the top),
+            // overriding the actionable-status ordering used by the Active board.
+            $query->reorder();
+            if ($hasCompletedAt) {
+                $query->orderByRaw('completed_at DESC NULLS LAST');
+            }
+            $query->orderByDesc('appointment_date')->orderByDesc('appointment_time');
+
             return;
         }
 
@@ -593,9 +601,23 @@ class AppointmentController extends Controller
             return;
         }
 
-        // Default: ACTIVE board — only actionable statuses. Closed records are
-        // excluded by status, immediately, regardless of follow-ups.
+        // Default: ACTIVE board — genuinely actionable-and-due-TODAY only.
+        //  1) actionable status (pending/approved/confirmed/scheduled/ongoing)
+        //  2) scheduled for the current date (no stale past/future rows)
+        //  3) NOT already clinically resolved — a completed consultation means the
+        //     visit is done even if the appointment row still reads 'ongoing'
+        //     (that is exactly what surfaced 'Completed' / 'Record saved to
+        //     History' rows on the Active board).
         $query->whereIn('status', self::ACTIVE_STATUSES);
+
+        if (! $request->filled('date')) {
+            // Respect an explicit ?date= override; otherwise lock Active to today.
+            $query->whereDate('appointment_date', now()->toDateString());
+        }
+
+        $query->whereDoesntHave('consultation', function ($q) {
+            $q->where('status', 'completed');
+        });
 
         if ($hasArchived && !$includeArchived) {
             $query->whereNull('archived_at');

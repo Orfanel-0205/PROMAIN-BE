@@ -643,6 +643,12 @@ Route::prefix('v1')->group(function () {
         // CLINICAL STAFF
         // =====================================================================
 
+        // Per-patient health profile (identity + summary + ITR/SOAP history).
+        // Declared BEFORE the apiResource so the {userId}/profile path wins, and
+        // open to the same staff who can view Reports/Consultations.
+        Route::get('/patients/{userId}/profile', [PatientController::class, 'profile'])
+            ->middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife');
+
         Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')
             ->group(function () {
                 Route::apiResource('patients', PatientController::class);

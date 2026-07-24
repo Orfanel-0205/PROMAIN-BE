@@ -38,6 +38,12 @@ class DiagnosisItrReportService
             })
             ->when($filters['date_to'] ?? $filters['to'] ?? null, function ($q, $to) use ($dateColumn) {
                 $q->where("c.{$dateColumn}", '<=', Carbon::parse($to)->endOfDay());
+            })
+            // Per-patient view (Patient Profile) reuses this exact ITR field set
+            // by scoping to one patient's consultations. Additive — the report
+            // paths never pass user_id, so their behaviour is unchanged.
+            ->when($filters['user_id'] ?? null, function ($q, $userId) {
+                $q->where('c.user_id', (int) $userId);
             });
 
         $this->applyRhuScope($query, $filters, $viewer);
