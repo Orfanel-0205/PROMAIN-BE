@@ -149,6 +149,15 @@ class ConsultationController extends Controller
             $this->recentConsultationsFor($consultation)
         );
 
+        // Expose the patient's resident_profile_id directly (additive) so
+        // consumers that need it — e.g. auto-filling the prescription patient
+        // from an active consultation — don't have to dig through the nested
+        // resident.resident_profile relation.
+        $consultation->setAttribute(
+            'resident_profile_id',
+            optional(optional($consultation->resident)->residentProfile)->id
+        );
+
         return response()->json([
             'consultation' => $consultation,
         ]);

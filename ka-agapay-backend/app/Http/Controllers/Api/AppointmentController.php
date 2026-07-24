@@ -611,10 +611,26 @@ class AppointmentController extends Controller
         $query->whereIn('status', self::ACTIVE_STATUSES);
 
         if (! $request->filled('date')) {
-            // Respect an explicit ?date= override; otherwise lock Active to today.
-            $query->whereDate('appointment_date', now()->toDateString());
+            // Onsite appointments are single-day slots, so the Active board locks
+            // them to today. Online / telemedicine requests are NOT bound to one
+            // calendar day (a doctor may reschedule them to any future date and
+            // they run across a 24-hour window), so they stay visible in Active
+            // regardless of their scheduled date. An explicit ?date= still wins.
+            $query->where(function ($scope) {
+                $scope->where(function ($onsite) {
+                    // Onsite = anything that is not online/telemedicine (null
+                    // consultation_type defaults to onsite) → today only.
+                    $onsite->where(function ($t) {
+                        $t->whereNull('consultation_type')
+                            ->orWhereNotIn('consultation_type', ['online', 'telemedicine']);
+                    })->whereDate('appointment_date', now()->toDateString());
+                })->orWhereIn('consultation_type', ['online', 'telemedicine']);
+            });
         }
 
+        // Still exclude genuinely-resolved rows (completed consultation) for BOTH
+        // types, so lifting the telemedicine date restriction does NOT reopen the
+        // 'Completed'/'Ended' rows leaking into Active bug.
         $query->whereDoesntHave('consultation', function ($q) {
             $q->where('status', 'completed');
         });
