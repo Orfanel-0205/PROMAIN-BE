@@ -13,6 +13,7 @@ class Conversation extends Model
     protected $fillable = [
         'type',
         'title',
+        'image_path',
         'rhu_id',
         'dm_key',
         'created_by',

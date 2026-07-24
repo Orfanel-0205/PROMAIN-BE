@@ -211,7 +211,15 @@ class TeamChatController extends Controller
             'title' => ['required_if:type,group', 'nullable', 'string', 'max:150'],
             'participant_ids' => ['required_if:type,group', 'array'],
             'participant_ids.*' => ['integer'],
+            // Optional group avatar — a path this app's uploader already issued.
+            'image_path' => ['nullable', 'string', 'max:500'],
         ]);
+
+        $groupImage = null;
+        if (($validated['image_path'] ?? null)
+            && str_starts_with((string) $validated['image_path'], 'chat/')) {
+            $groupImage = $validated['image_path'];
+        }
 
         if ($validated['type'] === 'dm') {
             $target = User::findOrFail($validated['target_id']);
@@ -263,10 +271,11 @@ class TeamChatController extends Controller
             abort_unless($this->canMessage($me, $member), 403, 'All group members must be in your RHU.');
         }
 
-        $convo = DB::transaction(function () use ($me, $members, $validated) {
+        $convo = DB::transaction(function () use ($me, $members, $validated, $groupImage) {
             $c = Conversation::create([
                 'type' => 'group',
                 'title' => $validated['title'],
+                'image_path' => $groupImage,
                 'rhu_id' => Rhu::resolveRhuIdFromUser($me),
                 'created_by' => $me->user_id,
             ]);
@@ -322,6 +331,12 @@ class TeamChatController extends Controller
             ConversationParticipant::where('conversation_id', $convo->id)
                 ->where('user_id', $me->user_id)
                 ->update(['last_read_message_id' => $msg->id]);
+
+            // A new message un-hides the conversation for anyone who had deleted
+            // (soft-left) it — so a deleted thread reappears when someone replies.
+            ConversationParticipant::where('conversation_id', $convo->id)
+                ->whereNotNull('left_at')
+                ->update(['left_at' => null]);
 
             return $msg;
         });
@@ -558,13 +573,20 @@ class TeamChatController extends Controller
             $other = $otherRow?->user ? $this->userBrief($otherRow->user) : null;
         }
 
+        // Group avatar = its uploaded image (full URL); DM avatar = the other person's.
+        $groupAvatar = $convo->image_path
+            ? (str_starts_with((string) $convo->image_path, 'http')
+                ? $convo->image_path
+                : Storage::disk('public')->url($convo->image_path))
+            : null;
+
         return [
             'id' => $convo->id,
             'type' => $convo->type,
             'title' => $convo->type === 'group'
                 ? $convo->title
                 : ($other['name'] ?? 'Direct message'),
-            'avatar' => $other['avatar'] ?? null,
+            'avatar' => $convo->type === 'group' ? $groupAvatar : ($other['avatar'] ?? null),
             'rhu_id' => $convo->rhu_id,
             'participants' => $participants
                 ->filter(fn ($p) => $p->user)
