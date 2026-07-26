@@ -643,9 +643,12 @@ Route::prefix('v1')->group(function () {
         // CLINICAL STAFF
         // =====================================================================
 
-        // Per-patient health profile (identity + summary + ITR/SOAP history).
-        // Declared BEFORE the apiResource so the {userId}/profile path wins, and
-        // open to the same staff who can view Reports/Consultations.
+        // Patient Registry (browsable roster) + per-patient health profile.
+        // Declared BEFORE the apiResource so these specific paths win, and open
+        // to the same staff who can view Reports/Consultations.
+        Route::get('/patients/registry', [PatientController::class, 'registry'])
+            ->middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife');
+
         Route::get('/patients/{userId}/profile', [PatientController::class, 'profile'])
             ->middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife');
 
@@ -763,6 +766,7 @@ Route::prefix('v1')->group(function () {
                     ->middleware('throttle:30,1');
 
                 Route::get('/conversations/{conversation}',            [TeamChatController::class, 'show']);
+                Route::patch('/conversations/{conversation}',          [TeamChatController::class, 'updateGroup']);
                 Route::post('/conversations/{conversation}/read',      [TeamChatController::class, 'markRead']);
                 Route::post('/conversations/{conversation}/participants', [TeamChatController::class, 'addParticipants']);
                 Route::post('/conversations/{conversation}/leave',     [TeamChatController::class, 'leave']);
@@ -770,6 +774,9 @@ Route::prefix('v1')->group(function () {
                 // Tighter throttle on send specifically (Part 1.4).
                 Route::post('/conversations/{conversation}/messages',  [TeamChatController::class, 'sendMessage'])
                     ->middleware('throttle:30,1');
+
+                // Soft-delete (content-redact) a single message — sender or Super Admin.
+                Route::delete('/conversations/{conversation}/messages/{message}', [TeamChatController::class, 'deleteMessage']);
             });
 
         // =====================================================================

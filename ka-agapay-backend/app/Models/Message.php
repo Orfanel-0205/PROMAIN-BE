@@ -16,10 +16,13 @@ class Message extends Model
         'body',
         'attachment_path',
         'attachment_meta',
+        'content_deleted_at',
+        'content_deleted_by',
     ];
 
     protected $casts = [
         'attachment_meta' => 'array',
+        'content_deleted_at' => 'datetime',
     ];
 
     public function conversation(): BelongsTo

@@ -357,6 +357,34 @@ class TeamChatController extends Controller
         return response()->json(['unread_count' => $this->totalUnread($request->user())]);
     }
 
+    // =====================================================================
+    // DELETE MESSAGE (soft content-redaction; sender or Super Admin)
+    // =====================================================================
+
+    public function deleteMessage(Request $request, int $conversation, int $message): JsonResponse
+    {
+        $me = $request->user();
+        $convo = Conversation::findOrFail($conversation);
+        $this->ensureParticipant($convo, $me);
+
+        $msg = Message::where('conversation_id', $convo->id)->findOrFail($message);
+
+        $isSuperAdmin = $me->hasAnyRole(['super_admin', 'superadmin']);
+        $isSender = (int) $msg->sender_id === (int) $me->user_id;
+
+        abort_unless($isSender || $isSuperAdmin, 403, 'You can only delete your own messages.');
+
+        // Soft content-redaction: keep the row + original body, hide the content.
+        if ($msg->content_deleted_at === null) {
+            $msg->forceFill([
+                'content_deleted_at' => now(),
+                'content_deleted_by' => $me->user_id,
+            ])->save();
+        }
+
+        return response()->json(['data' => $this->messagePayload($msg->fresh())]);
+    }
+
     public function markRead(Request $request, int $conversation): JsonResponse
     {
         $me = $request->user();
@@ -393,6 +421,7 @@ class TeamChatController extends Controller
 
         $results = Message::query()
             ->whereIn('conversation_id', $myConversationIds)
+            ->whereNull('content_deleted_at') // never surface deleted content
             ->whereNotNull('body')
             ->where('body', 'ILIKE', '%' . $term . '%')
             ->orderByDesc('id')
@@ -483,6 +512,49 @@ class TeamChatController extends Controller
             ->update(['left_at' => now()]);
 
         return response()->json(['data' => ['left' => true]]);
+    }
+
+    // =====================================================================
+    // GROUP SETTINGS — rename + change icon (group creator, or Super Admin)
+    // =====================================================================
+
+    public function updateGroup(Request $request, int $conversation): JsonResponse
+    {
+        $me = $request->user();
+        $convo = Conversation::findOrFail($conversation);
+        $this->ensureParticipant($convo, $me);
+
+        abort_unless($convo->type === 'group', 422, 'Only group conversations can be edited.');
+
+        // Group admin = its creator; Super Admin may also manage any group.
+        $isCreator = (int) $convo->created_by === (int) $me->user_id;
+        $isSuperAdmin = $me->hasAnyRole(['super_admin', 'superadmin']);
+        abort_unless($isCreator || $isSuperAdmin, 403, 'Only the group creator can change the group.');
+
+        $validated = $request->validate([
+            'title' => ['nullable', 'string', 'max:150'],
+            'image_path' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $updates = [];
+        if (array_key_exists('title', $validated) && trim((string) $validated['title']) !== '') {
+            $updates['title'] = trim($validated['title']);
+        }
+        if (array_key_exists('image_path', $validated)) {
+            $path = $validated['image_path'];
+            // Accept a new uploaded image (chat/ path) or null to clear it.
+            if ($path === null || $path === '') {
+                $updates['image_path'] = null;
+            } elseif (str_starts_with((string) $path, 'chat/')) {
+                $updates['image_path'] = $path;
+            }
+        }
+
+        if (!empty($updates)) {
+            $convo->forceFill($updates)->save();
+        }
+
+        return response()->json(['data' => $this->conversationSummary($convo->fresh(), $me)]);
     }
 
     // =====================================================================
@@ -588,6 +660,11 @@ class TeamChatController extends Controller
                 : ($other['name'] ?? 'Direct message'),
             'avatar' => $convo->type === 'group' ? $groupAvatar : ($other['avatar'] ?? null),
             'rhu_id' => $convo->rhu_id,
+            'created_by' => $convo->created_by !== null ? (int) $convo->created_by : null,
+            // Whether the viewer may rename / change this group's icon.
+            'can_manage' => $convo->type === 'group'
+                && ((int) $convo->created_by === (int) $me->user_id
+                    || $me->hasAnyRole(['super_admin', 'superadmin'])),
             'participants' => $participants
                 ->filter(fn ($p) => $p->user)
                 ->map(fn ($p) => $this->userBrief($p->user))
@@ -595,9 +672,11 @@ class TeamChatController extends Controller
             'participant_count' => $participants->whereNull('left_at')->count(),
             'last_message' => $lastMessage ? [
                 'id' => $lastMessage->id,
-                'preview' => $lastMessage->body
-                    ? \Illuminate\Support\Str::limit($lastMessage->body, 60)
-                    : '📷 Photo',
+                'preview' => $lastMessage->content_deleted_at !== null
+                    ? 'This message was deleted'
+                    : ($lastMessage->body
+                        ? \Illuminate\Support\Str::limit($lastMessage->body, 60)
+                        : '📷 Photo'),
                 'sender_id' => $lastMessage->sender_id,
                 'created_at' => optional($lastMessage->created_at)->toISOString(),
             ] : null,
@@ -608,15 +687,21 @@ class TeamChatController extends Controller
 
     private function messagePayload(Message $m): array
     {
+        // A content-deleted message keeps its row (and original body) in the DB
+        // but is never returned to the client — only a placeholder — so it shows
+        // as "This message was deleted" in the thread.
+        $isDeleted = $m->content_deleted_at !== null;
+
         return [
             'id' => $m->id,
             'conversation_id' => $m->conversation_id,
             'sender_id' => $m->sender_id,
-            'body' => $m->body,
-            'attachment_url' => $m->attachment_path
+            'body' => $isDeleted ? null : $m->body,
+            'attachment_url' => (!$isDeleted && $m->attachment_path)
                 ? Storage::disk('public')->url($m->attachment_path)
                 : null,
-            'attachment_meta' => $m->attachment_meta,
+            'attachment_meta' => $isDeleted ? null : $m->attachment_meta,
+            'deleted' => $isDeleted,
             'created_at' => optional($m->created_at)->toISOString(),
         ];
     }
