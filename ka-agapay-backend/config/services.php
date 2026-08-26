@@ -54,15 +54,42 @@ return [
     | falls back to the 5-minute demo embed.
     */
 
+    /*
+     * Jitsi / JaaS (8x8) video provider.
+     *
+     * Canonical variable names are the first env() in each chain below. The
+     * extra names are accepted aliases: production was provisioned with
+     * JITSI_API_KEY_ID for the JaaS key id and kept the PEM path in
+     * JITSI_APP_SECRET, which silently resolved api_key/private_key to NULL and
+     * left JaaS unauthenticated. Reading both spellings makes the deployed box
+     * work as-is while the canonical names are adopted.
+     *
+     * 'private_key' may hold EITHER an inline PEM or a filesystem path to one;
+     * JitsiTokenService resolves and validates it (and never logs its contents).
+     */
     'jitsi' => [
         'provider'     => env('JITSI_PROVIDER', 'self_hosted'),
         'domain'       => env('JITSI_DOMAIN', 'meet.kaagapay.local'),
+
+        // JaaS tenant / AppID (e.g. vpaas-magic-cookie-xxxxxxxx).
         'app_id'       => env('JITSI_APP_ID'),
+
+        // self_hosted HS256 shared secret. NOTE: on the current production box
+        // this also carries the JaaS PEM path, so it is used as a last-resort
+        // private-key fallback when provider=jaas (see JitsiTokenService).
         'app_secret'   => env('JITSI_APP_SECRET'),
-        'api_key'      => env('JITSI_API_KEY'),       // JaaS kid (key id)
-        'private_key'  => env('JITSI_PRIVATE_KEY'),   // JaaS RS256 PEM (optional)
+
+        // JaaS API key id -> becomes the JWT "kid" header.
+        'api_key'      => env('JITSI_API_KEY') ?: env('JITSI_API_KEY_ID'),
+
+        // JaaS RS256 private key: inline PEM or a path to the .pem file.
+        'private_key'  => env('JITSI_PRIVATE_KEY') ?: env('JITSI_PRIVATE_KEY_PATH'),
+
         'jwt_enabled'  => env('JITSI_JWT_ENABLED', false),
         'room_prefix'  => env('JITSI_ROOM_PREFIX', 'kaagapay-rhu1'),
+
+        // Minutes a minted room token stays valid.
+        'jwt_ttl_minutes' => (int) env('JITSI_JWT_TTL_MINUTES', 120),
     ],
 
     'sms_provider' => env('SMS_PROVIDER', 'semaphore'),

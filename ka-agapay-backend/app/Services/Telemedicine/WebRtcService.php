@@ -4,6 +4,7 @@
 namespace App\Services\Telemedicine;
 
 use App\Models\ConversationCall;
+use App\Services\Video\JitsiTokenService;
 use App\Models\TelemedicineSession;
 use App\Models\User;
 use App\Models\WebrtcSignal;
@@ -41,37 +42,52 @@ class WebRtcService
      * Room names are stable + privacy-safe: they never contain patient name,
      * diagnosis or complaint.
      */
-    public function buildRoomConfig(TelemedicineSession $session): array
+    public function buildRoomConfig(TelemedicineSession $session, ?User $viewer = null): array
     {
-        $provider = (string) config('services.jitsi.provider', 'self_hosted');
-        $configuredDomain = (string) config('services.jitsi.domain', 'meet.kaagapay.local');
-        $prefix = (string) config('services.jitsi.room_prefix', 'kaagapay-rhu1');
-        $appId = (string) config('services.jitsi.app_id', '');
-        $jwtEnabled = (bool) config('services.jitsi.jwt_enabled', false);
+        $tokens = app(JitsiTokenService::class);
 
+        $provider = $tokens->provider();
         $isDemo = $provider === 'meet_public_demo';
-        $domain = $isDemo ? 'meet.jit.si' : $configuredDomain;
+        $domain = $isDemo ? 'meet.jit.si' : $tokens->domain();
 
         // Stable, non-PII room name: kaagapay-rhu1-session-{id}-{safeToken}
         $safeSeed = ($session->session_token ?: $session->room_token ?: 'room')
             . ':' . $session->id . ':' . config('app.key');
         $safeToken = substr(hash('sha256', $safeSeed), 0, 12);
 
-        $roomName = $prefix . '-session-' . $session->id . '-' . $safeToken;
+        $roomName = $tokens->roomPrefix() . '-session-' . $session->id . '-' . $safeToken;
         $roomName = preg_replace('/[^a-zA-Z0-9_-]/', '', $roomName);
 
-        // JaaS namespaces rooms under the tenant/app id.
-        $fullRoom = ($provider === 'jaas' && $appId !== '')
-            ? $appId . '/' . $roomName
-            : $roomName;
+        // JaaS namespaces rooms under the tenant/app id (unchanged).
+        $fullRoom = $tokens->qualifyRoom($roomName);
 
-        $joinUrl = 'https://' . $domain . '/' . $fullRoom
-            . '#config.prejoinPageEnabled=false&config.disableDeepLinking=true';
+        $hashParams = [
+            'config.prejoinPageEnabled=false',
+            'config.disableDeepLinking=true',
+        ];
 
+        /*
+         * The token now represents WHOEVER is joining, not always the assigned
+         * doctor. Previously a resident opening the session got a token that
+         * claimed to be the clinician, so everyone showed up under the doctor's
+         * name. Falls back to the assigned doctor only when there is no
+         * authenticated viewer to name.
+         *
+         * moderator stays true for every telemedicine participant, matching the
+         * previous behaviour — demoting residents would leave them stuck in a
+         * JaaS lobby whenever they join before the clinician.
+         */
         $jwt = null;
 
-        if ($jwtEnabled && !$isDemo) {
-            $jwt = $this->buildJitsiJwt($session, $roomName, $provider);
+        if (!$isDemo && $tokens->jwtEnabled()) {
+            $viewer = $viewer ?: (auth()->user() instanceof User ? auth()->user() : null);
+
+            if (!$viewer) {
+                $session->loadMissing(['assignedDoctor']);
+                $viewer = $session->assignedDoctor;
+            }
+
+            $jwt = $tokens->issueToken($roomName, $tokens->identityForUser($viewer, true));
         }
 
         return [
@@ -79,15 +95,17 @@ class WebRtcService
             'domain'       => $domain,
             'room_name'    => $fullRoom,
             'room'         => $fullRoom,
-            'room_url'     => $joinUrl,
-            'join_url'     => $joinUrl,
+            // room_url stays token-free (safe to display/log); join_url is the
+            // one to actually open and carries the JWT in the right position.
+            'room_url'     => $tokens->buildJoinUrl($domain, $fullRoom, null, $hashParams),
+            'join_url'     => $tokens->buildJoinUrl($domain, $fullRoom, $jwt, $hashParams),
             'jwt'          => $jwt,
-            'jwt_enabled'  => $jwtEnabled,
+            'jwt_enabled'  => $tokens->jwtEnabled(),
             'is_demo'      => $isDemo,
             'demo_warning' => $isDemo
                 ? 'Demo video provider: meetings may disconnect after 5 minutes.'
                 : null,
-            'configured'   => $this->isProviderConfigured($provider, $domain, $jwtEnabled, $jwt, $appId),
+            'configured'   => $tokens->isUsable($jwt),
         ];
     }
 
@@ -100,46 +118,63 @@ class WebRtcService
      * telemedicine room, so it is stable for everyone joining the same call and
      * still carries no staff name, patient name or conversation title.
      */
-    public function buildConversationRoomConfig(ConversationCall $call): array
+    public function buildConversationRoomConfig(ConversationCall $call, ?User $joiner = null): array
     {
-        $provider = (string) config('services.jitsi.provider', 'self_hosted');
-        $configuredDomain = (string) config('services.jitsi.domain', 'meet.kaagapay.local');
-        $prefix = (string) config('services.jitsi.room_prefix', 'kaagapay-rhu1');
-        $appId = (string) config('services.jitsi.app_id', '');
-        $jwtEnabled = (bool) config('services.jitsi.jwt_enabled', false);
+        $tokens = app(JitsiTokenService::class);
 
+        $provider = $tokens->provider();
         $isDemo = $provider === 'meet_public_demo';
-        $domain = $isDemo ? 'meet.jit.si' : $configuredDomain;
+        $domain = $isDemo ? 'meet.jit.si' : $tokens->domain();
 
         $roomName = $call->room_name !== ''
             ? $call->room_name
             : self::conversationRoomName($call->conversation_id, $call->id);
 
-        $fullRoom = ($provider === 'jaas' && $appId !== '')
-            ? $appId . '/' . $roomName
-            : $roomName;
+        $fullRoom = $tokens->qualifyRoom($roomName);
 
-        $joinUrl = 'https://' . $domain . '/' . $fullRoom
-            . '#config.prejoinPageEnabled=false&config.disableDeepLinking=true'
-            . ($call->mode === 'audio' ? '&config.startWithVideoMuted=true' : '');
+        $hashParams = [
+            'config.prejoinPageEnabled=false',
+            'config.disableDeepLinking=true',
+        ];
+
+        if ($call->mode === 'audio') {
+            $hashParams[] = 'config.startWithVideoMuted=true';
+        }
+
+        /*
+         * A Team Chat call is now a REAL authenticated JaaS join: the token
+         * identifies the staff member who is joining. This used to be a
+         * hardcoded 'jwt' => null, which is why an authenticated JaaS tenant
+         * refused the call.
+         *
+         * $joiner is only ever passed after the caller has been authorised as
+         * an active participant of the conversation (TeamChatController::
+         * ensureParticipant), so a token is never minted for an outsider.
+         * With no $joiner (e.g. the ringing entry in a poll payload) no token is
+         * minted at all — the client fetches one via join/start.
+         */
+        $jwt = ($joiner && !$isDemo && $tokens->jwtEnabled())
+            ? $tokens->issueToken($roomName, $tokens->identityForUser($joiner, true))
+            : null;
 
         return [
             'provider'     => $provider,
             'domain'       => $domain,
             'room_name'    => $fullRoom,
             'room'         => $fullRoom,
-            'room_url'     => $joinUrl,
-            'join_url'     => $joinUrl,
-            // JWT is only wired for telemedicine sessions today; a staff-to-staff
-            // call joins the same way an unauthenticated-room deployment does.
-            // Flagged rather than silently pretending the room is token-secured.
-            'jwt'          => null,
-            'jwt_enabled'  => $jwtEnabled,
+            'room_url'     => $tokens->buildJoinUrl($domain, $fullRoom, null, $hashParams),
+            'join_url'     => $tokens->buildJoinUrl($domain, $fullRoom, $jwt, $hashParams),
+            'jwt'          => $jwt,
+            'jwt_enabled'  => $tokens->jwtEnabled(),
             'is_demo'      => $isDemo,
             'demo_warning' => $isDemo
                 ? 'Demo video provider: calls may disconnect after 5 minutes.'
                 : null,
-            'configured'   => $this->isProviderConfigured($provider, $domain, false, null, $appId),
+            // With a $joiner this reports whether THIS person can actually join.
+            // Without one it reports provider readiness only.
+            'configured'   => $joiner
+                ? $tokens->isUsable($jwt)
+                : ($tokens->appId() !== '' || $provider !== 'jaas'),
         ];
     }
 
@@ -155,100 +190,6 @@ class WebRtcService
         $room = $prefix . '-chat-' . $callId . '-' . $token;
 
         return preg_replace('/[^a-zA-Z0-9_-]/', '', $room) ?? $room;
-    }
-
-    private function isProviderConfigured(
-        string $provider,
-        string $domain,
-        bool $jwtEnabled,
-        ?string $jwt,
-        string $appId
-    ): bool {
-        if ($provider === 'meet_public_demo') {
-            return true;
-        }
-
-        if ($provider === 'self_hosted') {
-            return $domain !== '' && $domain !== 'meet.kaagapay.local'
-                && (!$jwtEnabled || !empty($jwt));
-        }
-
-        if ($provider === 'jaas') {
-            return $appId !== '' && (!$jwtEnabled || !empty($jwt));
-        }
-
-        return false;
-    }
-
-    private function buildJitsiJwt(
-        TelemedicineSession $session,
-        string $roomName,
-        string $provider
-    ): ?string {
-        if (!class_exists(\Firebase\JWT\JWT::class)) {
-            return null;
-        }
-
-        try {
-            $appId = (string) config('services.jitsi.app_id', '');
-            $appSecret = (string) config('services.jitsi.app_secret', '');
-            $apiKey = (string) config('services.jitsi.api_key', '');     // JaaS kid
-            $privateKey = (string) config('services.jitsi.private_key', '');
-            $domain = (string) config('services.jitsi.domain', '');
-
-            $now = time();
-
-            $session->loadMissing(['assignedDoctor']);
-            $doctor = $session->assignedDoctor;
-
-            $name = trim(
-                (string) ($doctor->first_name ?? '') . ' ' .
-                (string) ($doctor->last_name ?? '')
-            ) ?: 'RHU Clinician';
-
-            $payload = [
-                'aud'  => $provider === 'jaas' ? 'jitsi' : ($appId ?: 'kaagapay'),
-                'iss'  => $provider === 'jaas' ? 'chat' : ($appId ?: 'kaagapay'),
-                'sub'  => $provider === 'jaas' ? $appId : ($domain ?: 'kaagapay'),
-                'room' => $provider === 'jaas' ? '*' : $roomName,
-                'nbf'  => $now - 10,
-                'exp'  => $now + 7200,
-                'context' => [
-                    'user' => [
-                        'id'        => (string) ($session->assigned_doctor_id ?? 'staff'),
-                        'name'      => $name,
-                        'moderator' => true,
-                    ],
-                    'features' => [
-                        'recording'     => false,
-                        'livestreaming' => false,
-                        'transcription' => false,
-                    ],
-                ],
-            ];
-
-            if ($provider === 'jaas') {
-                if ($privateKey === '' || $apiKey === '') {
-                    return null;
-                }
-
-                return \Firebase\JWT\JWT::encode($payload, $privateKey, 'RS256', $apiKey);
-            }
-
-            // self_hosted: HS256 shared secret token.
-            if ($appSecret === '') {
-                return null;
-            }
-
-            return \Firebase\JWT\JWT::encode($payload, $appSecret, 'HS256');
-        } catch (\Throwable $e) {
-            logger()->warning('[WebRtcService] Failed to build Jitsi JWT.', [
-                'session_id' => $session->id,
-                'error' => $e->getMessage(),
-            ]);
-
-            return null;
-        }
     }
 
     public function createRoom(TelemedicineSession $session): array

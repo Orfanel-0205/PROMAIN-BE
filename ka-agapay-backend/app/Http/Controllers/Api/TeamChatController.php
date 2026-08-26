@@ -486,7 +486,7 @@ class TeamChatController extends Controller
 
         $this->markCallJoined($call, $me);
 
-        return response()->json(['data' => $this->callPayload($call->fresh(), $me)], 201);
+        return response()->json(['data' => $this->callPayload($call->fresh(), $me, true)], 201);
     }
 
     /**
@@ -503,7 +503,7 @@ class TeamChatController extends Controller
 
         $this->markCallJoined($callRow, $me);
 
-        return response()->json(['data' => $this->callPayload($callRow->fresh(), $me)]);
+        return response()->json(['data' => $this->callPayload($callRow->fresh(), $me, true)]);
     }
 
     /**
@@ -956,8 +956,25 @@ class TeamChatController extends Controller
     // CALLS — payload helper
     // =====================================================================
 
-    private function callPayload(ConversationCall $call, ?User $me = null): array
-    {
+    /**
+     * @param User|null $me            The viewer, for "started_by_me".
+     * @param bool      $withJoinToken Mint a JaaS room token for $me.
+     *
+     * The token is only minted on start/join — the calls that mean "this person
+     * is entering the room" — and never on a poll tick. Signing an RS256 token
+     * for every ringing call on every 4s poll would be pointless CPU, and the
+     * ring itself does not need one: the client fetches a fresh token from
+     * join/start immediately before it opens the room.
+     *
+     * Every caller reaches this only AFTER ensureParticipant() (or, for
+     * activeCallsFor, a participant-scoped query), so RHU/conversation
+     * authorization is enforced before any token exists.
+     */
+    private function callPayload(
+        ConversationCall $call,
+        ?User $me = null,
+        bool $withJoinToken = false
+    ): array {
         $starter = User::where('user_id', $call->started_by)->first();
 
         return [
@@ -970,7 +987,10 @@ class TeamChatController extends Controller
             'started_at' => optional($call->started_at)->toISOString(),
             'ended_at' => optional($call->ended_at)->toISOString(),
             'active' => $call->ended_at === null,
-            'video' => app(WebRtcService::class)->buildConversationRoomConfig($call),
+            'video' => app(WebRtcService::class)->buildConversationRoomConfig(
+                $call,
+                $withJoinToken ? $me : null
+            ),
         ];
     }
 
