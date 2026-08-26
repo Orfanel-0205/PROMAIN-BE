@@ -1237,9 +1237,22 @@ class AdminUserController extends Controller
         $rawAssignedRhuId = $user->assigned_rhu_id ? (int) $user->assigned_rhu_id : null;
         $assignedRhuId = Rhu::normalizeRhuId($rawAssignedRhuId);
 
+        // Additive: the walk-in queue flow creates a patient and then issues a
+        // queue ticket, and /queue/issue is keyed on resident_profile_id.
+        // Returning it here lets that chain happen without a second lookup.
+        // Null for staff roles, which have no resident profile.
+        $residentProfileId = null;
+
+        if (Schema::hasTable('resident_profiles')) {
+            $residentProfileId = DB::table('resident_profiles')
+                ->where('user_id', $user->user_id)
+                ->value('id');
+        }
+
         return [
             'id' => $user->user_id,
             'user_id' => $user->user_id,
+            'resident_profile_id' => $residentProfileId ? (int) $residentProfileId : null,
 
             'name' => $user->full_name,
             'full_name' => $user->full_name,

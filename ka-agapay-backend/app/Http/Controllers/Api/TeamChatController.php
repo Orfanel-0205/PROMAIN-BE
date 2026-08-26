@@ -13,9 +13,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
+use App\Models\ConversationCall;
+use App\Models\ConversationCallParticipant;
 use App\Models\ConversationParticipant;
 use App\Models\Message;
 use App\Models\User;
+use App\Services\Telemedicine\WebRtcService;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,6 +29,15 @@ class TeamChatController extends Controller
 {
     /** Roles that are NOT staff (residents) — excluded from Team Chat contacts. */
     private const RESIDENT_ROLES = ['resident', 'patient'];
+
+    /** A user counts as "online" if seen within this many minutes. */
+    private const ONLINE_WINDOW_MINUTES = 3;
+
+    /**
+     * Never write the heartbeat more often than this. The chat poll fires every
+     * ~4s; without this guard presence alone would be ~15 UPDATEs/min/user.
+     */
+    private const PRESENCE_WRITE_INTERVAL_SECONDS = 45;
 
     // =====================================================================
     // CONTACTS — staff this user is allowed to start a conversation with
@@ -97,6 +109,9 @@ class TeamChatController extends Controller
     {
         $me = $request->user();
 
+        // Presence rides this existing tick — no extra request.
+        $this->touchPresence($me);
+
         // Only conversations touched since the client's high-water mark, so an
         // idle panel returns an (almost) empty payload every tick.
         $sinceId = (int) $request->query('since_id', 0);
@@ -117,6 +132,10 @@ class TeamChatController extends Controller
             'data' => $conversations,
             'total_unread' => $this->totalUnread($me),
             'server_time' => now()->toISOString(),
+
+            // Incoming-call ring, piggybacked on the SAME tick rather than a new
+            // poller, so calling costs zero additional rate-limit budget.
+            'active_calls' => $this->activeCallsFor($me),
         ];
 
         // Piggyback the OPEN conversation's new-message tail onto this same
@@ -354,7 +373,16 @@ class TeamChatController extends Controller
      */
     public function unreadCount(Request $request): JsonResponse
     {
-        return response()->json(['unread_count' => $this->totalUnread($request->user())]);
+        $me = $request->user();
+
+        // The sidebar polls this ~every 30s from EVERY page, which makes it the
+        // natural app-wide presence heartbeat — again with no new request.
+        $this->touchPresence($me);
+
+        return response()->json([
+            'unread_count' => $this->totalUnread($me),
+            'active_calls' => $this->activeCallsFor($me),
+        ]);
     }
 
     // =====================================================================
@@ -369,10 +397,12 @@ class TeamChatController extends Controller
 
         $msg = Message::where('conversation_id', $convo->id)->findOrFail($message);
 
-        $isSuperAdmin = $me->hasAnyRole(['super_admin', 'superadmin']);
+        // SENDER-ONLY by requirement. The earlier build let a Super Admin delete
+        // anyone's message; that override was removed on purpose - no role may
+        // redact another staff member's words, only the author may.
         $isSender = (int) $msg->sender_id === (int) $me->user_id;
 
-        abort_unless($isSender || $isSuperAdmin, 403, 'You can only delete your own messages.');
+        abort_unless($isSender, 403, 'You can only delete your own messages.');
 
         // Soft content-redaction: keep the row + original body, hide the content.
         if ($msg->content_deleted_at === null) {
@@ -383,6 +413,155 @@ class TeamChatController extends Controller
         }
 
         return response()->json(['data' => $this->messagePayload($msg->fresh())]);
+    }
+
+    // =====================================================================
+    // CALLS — voice/video inside a conversation (1:1 and group)
+    //
+    // Reuses the EXISTING Jitsi integration from Telemedicine (WebRtcService):
+    // same configured provider, domain, room prefix. No second video stack.
+    // =====================================================================
+
+    /**
+     * POST /team-chat/conversations/{c}/call
+     *
+     * Starts a call, or joins the one already running in this conversation.
+     * Idempotent on purpose: two people tapping Call at the same moment must
+     * land in the SAME Jitsi room, never two rooms.
+     */
+    public function startCall(Request $request, int $conversation): JsonResponse
+    {
+        $me = $request->user();
+        $convo = Conversation::findOrFail($conversation);
+        $this->ensureParticipant($convo, $me);
+
+        $validated = $request->validate([
+            'mode' => ['nullable', 'string', 'in:audio,video'],
+        ]);
+
+        $mode = $validated['mode'] ?? 'video';
+
+        $call = DB::transaction(function () use ($convo, $me, $mode) {
+            $existing = ConversationCall::query()
+                ->where('conversation_id', $convo->id)
+                ->whereNull('ended_at')
+                ->where('started_at', '>', now()->subHour())
+                ->lockForUpdate()
+                ->orderByDesc('id')
+                ->first();
+
+            if ($existing) {
+                return $existing;
+            }
+
+            $call = ConversationCall::create([
+                'conversation_id' => $convo->id,
+                'started_by' => $me->user_id,
+                'room_name' => '',
+                'mode' => $mode,
+                'started_at' => now(),
+            ]);
+
+            // Room name needs the id, so it is stamped right after insert.
+            $call->forceFill([
+                'room_name' => WebRtcService::conversationRoomName($convo->id, $call->id),
+            ])->save();
+
+            // Everyone still in the thread starts as "ringing".
+            $participants = ConversationParticipant::where('conversation_id', $convo->id)
+                ->whereNull('left_at')
+                ->pluck('user_id');
+
+            foreach ($participants as $userId) {
+                ConversationCallParticipant::updateOrCreate(
+                    ['call_id' => $call->id, 'user_id' => $userId],
+                    (int) $userId === (int) $me->user_id
+                        ? ['status' => 'joined', 'joined_at' => now()]
+                        : ['status' => 'ringing']
+                );
+            }
+
+            return $call;
+        });
+
+        $this->markCallJoined($call, $me);
+
+        return response()->json(['data' => $this->callPayload($call->fresh(), $me)], 201);
+    }
+
+    /**
+     * POST /team-chat/calls/{call}/join — recipient accepted.
+     */
+    public function joinCall(Request $request, int $call): JsonResponse
+    {
+        $me = $request->user();
+        $callRow = ConversationCall::findOrFail($call);
+        $convo = Conversation::findOrFail($callRow->conversation_id);
+        $this->ensureParticipant($convo, $me);
+
+        abort_if($callRow->ended_at !== null, 409, 'This call has already ended.');
+
+        $this->markCallJoined($callRow, $me);
+
+        return response()->json(['data' => $this->callPayload($callRow->fresh(), $me)]);
+    }
+
+    /**
+     * POST /team-chat/calls/{call}/decline — recipient dismissed the ring.
+     *
+     * For a 1:1 call, declining ends it: there is no one else to answer.
+     */
+    public function declineCall(Request $request, int $call): JsonResponse
+    {
+        $me = $request->user();
+        $callRow = ConversationCall::findOrFail($call);
+        $convo = Conversation::findOrFail($callRow->conversation_id);
+        $this->ensureParticipant($convo, $me);
+
+        ConversationCallParticipant::updateOrCreate(
+            ['call_id' => $callRow->id, 'user_id' => $me->user_id],
+            ['status' => 'declined', 'left_at' => now()]
+        );
+
+        if ($convo->type === 'dm' && $callRow->ended_at === null) {
+            $callRow->forceFill(['ended_at' => now(), 'ended_by' => $me->user_id])->save();
+        }
+
+        return response()->json(['data' => $this->callPayload($callRow->fresh(), $me)]);
+    }
+
+    /**
+     * POST /team-chat/calls/{call}/end — hang up.
+     *
+     * The row is KEPT (ended_at stamped) as call history; nothing is deleted.
+     */
+    public function endCall(Request $request, int $call): JsonResponse
+    {
+        $me = $request->user();
+        $callRow = ConversationCall::findOrFail($call);
+        $convo = Conversation::findOrFail($callRow->conversation_id);
+        $this->ensureParticipant($convo, $me);
+
+        if ($callRow->ended_at === null) {
+            $callRow->forceFill([
+                'ended_at' => now(),
+                'ended_by' => $me->user_id,
+            ])->save();
+        }
+
+        ConversationCallParticipant::where('call_id', $callRow->id)
+            ->where('user_id', $me->user_id)
+            ->update(['left_at' => now()]);
+
+        return response()->json(['data' => $this->callPayload($callRow->fresh(), $me)]);
+    }
+
+    private function markCallJoined(ConversationCall $call, User $me): void
+    {
+        ConversationCallParticipant::updateOrCreate(
+            ['call_id' => $call->id, 'user_id' => $me->user_id],
+            ['status' => 'joined', 'joined_at' => now(), 'left_at' => null]
+        );
     }
 
     public function markRead(Request $request, int $conversation): JsonResponse
@@ -670,6 +849,28 @@ class TeamChatController extends Controller
                 ->map(fn ($p) => $this->userBrief($p->user))
                 ->values(),
             'participant_count' => $participants->whereNull('left_at')->count(),
+
+            /*
+             * SEEN RECEIPTS — no schema change needed. Each participant already
+             * carries last_read_message_id, so "seen" is simply: every message
+             * with id <= that value has been read by that person.
+             *
+             * read_up_to = the highest message id read by EVERY other active
+             * participant (the group-safe "Seen" watermark). For a DM that is
+             * just the other person's marker. Participants who have left are
+             * excluded so a departed member cannot hold the watermark down.
+             */
+            'read_receipts' => $participants
+                ->filter(fn ($p) => (int) $p->user_id !== (int) $me->user_id && $p->left_at === null)
+                ->map(fn ($p) => [
+                    'user_id' => (int) $p->user_id,
+                    'name' => $p->user ? $this->userBrief($p->user)['name'] : null,
+                    'last_read_message_id' => (int) ($p->last_read_message_id ?? 0),
+                ])
+                ->values(),
+            'read_up_to' => (int) ($participants
+                ->filter(fn ($p) => (int) $p->user_id !== (int) $me->user_id && $p->left_at === null)
+                ->min(fn ($p) => (int) ($p->last_read_message_id ?? 0)) ?? 0),
             'last_message' => $lastMessage ? [
                 'id' => $lastMessage->id,
                 'preview' => $lastMessage->content_deleted_at !== null
@@ -706,6 +907,105 @@ class TeamChatController extends Controller
         ];
     }
 
+    // =====================================================================
+    // PRESENCE — heartbeat piggybacked on polls the app already makes
+    // =====================================================================
+
+    /**
+     * Refresh the caller's last_active_at.
+     *
+     * Deliberately called from endpoints the app ALREADY polls (the Team Chat
+     * updates tick and the sidebar unread-count tick) instead of adding a
+     * dedicated heartbeat request — a new poller would eat into the same
+     * throttle:60,1 per-user ceiling that previously caused a 429 storm.
+     *
+     * Writes at most once per PRESENCE_WRITE_INTERVAL_SECONDS, and never fails
+     * the request it is riding on.
+     */
+    private function touchPresence(?User $me): void
+    {
+        if (!$me || !\Illuminate\Support\Facades\Schema::hasColumn('users', 'last_active_at')) {
+            return;
+        }
+
+        try {
+            $last = $me->last_active_at;
+
+            if ($last && $last->diffInSeconds(now()) < self::PRESENCE_WRITE_INTERVAL_SECONDS) {
+                return;
+            }
+
+            DB::table('users')
+                ->where('user_id', $me->user_id)
+                ->update(['last_active_at' => now()]);
+        } catch (\Throwable) {
+            // Presence is cosmetic; it must never break messaging.
+        }
+    }
+
+    private function isOnline(?User $u): bool
+    {
+        if (!$u || !$u->last_active_at) {
+            return false;
+        }
+
+        return $u->last_active_at->gt(now()->subMinutes(self::ONLINE_WINDOW_MINUTES));
+    }
+
+    // =====================================================================
+    // CALLS — payload helper
+    // =====================================================================
+
+    private function callPayload(ConversationCall $call, ?User $me = null): array
+    {
+        $starter = User::where('user_id', $call->started_by)->first();
+
+        return [
+            'id' => $call->id,
+            'conversation_id' => $call->conversation_id,
+            'mode' => $call->mode,
+            'started_by' => (int) $call->started_by,
+            'started_by_name' => $starter ? $this->userBrief($starter)['name'] : 'A staff member',
+            'started_by_me' => $me ? ((int) $call->started_by === (int) $me->user_id) : false,
+            'started_at' => optional($call->started_at)->toISOString(),
+            'ended_at' => optional($call->ended_at)->toISOString(),
+            'active' => $call->ended_at === null,
+            'video' => app(WebRtcService::class)->buildConversationRoomConfig($call),
+        ];
+    }
+
+    /**
+     * Active calls across the conversations this user still belongs to. This is
+     * what turns a poll tick into an "incoming call" ring.
+     */
+    private function activeCallsFor(User $me): array
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('conversation_calls')) {
+            return [];
+        }
+
+        $conversationIds = ConversationParticipant::query()
+            ->where('user_id', $me->user_id)
+            ->whereNull('left_at')
+            ->pluck('conversation_id');
+
+        if ($conversationIds->isEmpty()) {
+            return [];
+        }
+
+        return ConversationCall::query()
+            ->whereIn('conversation_id', $conversationIds)
+            ->whereNull('ended_at')
+            // A call that was never ended (browser closed mid-call) must not ring
+            // forever, so anything older than an hour is treated as stale.
+            ->where('started_at', '>', now()->subHour())
+            ->orderByDesc('id')
+            ->limit(10)
+            ->get()
+            ->map(fn (ConversationCall $call) => $this->callPayload($call, $me))
+            ->all();
+    }
+
     private function userBrief(User $u): array
     {
         $name = trim(($u->first_name ?? '') . ' ' . ($u->last_name ?? ''));
@@ -716,6 +1016,9 @@ class TeamChatController extends Controller
             'role' => $u->role_name,
             'avatar' => $this->avatarUrl($u),
             'rhu_id' => Rhu::resolveRhuIdFromUser($u),
+            // Derived presence, not a live socket: "seen within N minutes".
+            'is_online' => $this->isOnline($u),
+            'last_active_at' => optional($u->last_active_at)->toISOString(),
         ];
     }
 

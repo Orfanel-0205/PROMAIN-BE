@@ -3,6 +3,7 @@
 
 namespace App\Services\Telemedicine;
 
+use App\Models\ConversationCall;
 use App\Models\TelemedicineSession;
 use App\Models\User;
 use App\Models\WebrtcSignal;
@@ -88,6 +89,72 @@ class WebRtcService
                 : null,
             'configured'   => $this->isProviderConfigured($provider, $domain, $jwtEnabled, $jwt, $appId),
         ];
+    }
+
+    /**
+     * Team Chat calling reuses THIS service - the same configured Jitsi
+     * provider, domain, room prefix and JWT settings telemedicine already uses.
+     * No second video stack is introduced.
+     *
+     * The room name is derived from the call id + app key, exactly like the
+     * telemedicine room, so it is stable for everyone joining the same call and
+     * still carries no staff name, patient name or conversation title.
+     */
+    public function buildConversationRoomConfig(ConversationCall $call): array
+    {
+        $provider = (string) config('services.jitsi.provider', 'self_hosted');
+        $configuredDomain = (string) config('services.jitsi.domain', 'meet.kaagapay.local');
+        $prefix = (string) config('services.jitsi.room_prefix', 'kaagapay-rhu1');
+        $appId = (string) config('services.jitsi.app_id', '');
+        $jwtEnabled = (bool) config('services.jitsi.jwt_enabled', false);
+
+        $isDemo = $provider === 'meet_public_demo';
+        $domain = $isDemo ? 'meet.jit.si' : $configuredDomain;
+
+        $roomName = $call->room_name !== ''
+            ? $call->room_name
+            : self::conversationRoomName($call->conversation_id, $call->id);
+
+        $fullRoom = ($provider === 'jaas' && $appId !== '')
+            ? $appId . '/' . $roomName
+            : $roomName;
+
+        $joinUrl = 'https://' . $domain . '/' . $fullRoom
+            . '#config.prejoinPageEnabled=false&config.disableDeepLinking=true'
+            . ($call->mode === 'audio' ? '&config.startWithVideoMuted=true' : '');
+
+        return [
+            'provider'     => $provider,
+            'domain'       => $domain,
+            'room_name'    => $fullRoom,
+            'room'         => $fullRoom,
+            'room_url'     => $joinUrl,
+            'join_url'     => $joinUrl,
+            // JWT is only wired for telemedicine sessions today; a staff-to-staff
+            // call joins the same way an unauthenticated-room deployment does.
+            // Flagged rather than silently pretending the room is token-secured.
+            'jwt'          => null,
+            'jwt_enabled'  => $jwtEnabled,
+            'is_demo'      => $isDemo,
+            'demo_warning' => $isDemo
+                ? 'Demo video provider: calls may disconnect after 5 minutes.'
+                : null,
+            'configured'   => $this->isProviderConfigured($provider, $domain, false, null, $appId),
+        ];
+    }
+
+    /**
+     * Stable, privacy-safe room name for a conversation call.
+     */
+    public static function conversationRoomName(int $conversationId, int $callId): string
+    {
+        $prefix = (string) config('services.jitsi.room_prefix', 'kaagapay-rhu1');
+        $seed = 'chat:' . $conversationId . ':' . $callId . ':' . config('app.key');
+        $token = substr(hash('sha256', $seed), 0, 12);
+
+        $room = $prefix . '-chat-' . $callId . '-' . $token;
+
+        return preg_replace('/[^a-zA-Z0-9_-]/', '', $room) ?? $room;
     }
 
     private function isProviderConfigured(

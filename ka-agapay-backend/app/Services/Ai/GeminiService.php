@@ -10,6 +10,21 @@ use Illuminate\Support\Facades\Log;
 
 class GeminiService
 {
+    /**
+     * Token budgets. NOTE: on gemini-2.5-* the model's internal thinking tokens
+     * are charged against maxOutputTokens, so the visible answer only ever gets
+     * (maxOutputTokens - thinkingBudget). These values keep a guaranteed floor
+     * of visible tokens instead of letting thinking starve the reply.
+     */
+    /** Assistant personas. Operations = day-to-day help; Tutorial = onboarding. */
+    public const MODE_OPERATIONS = 'operations';
+    public const MODE_TUTORIAL = 'tutorial';
+
+    private const THINKING_BUDGET = 512;
+    private const DEFAULT_OUTPUT_TOKENS = 1600;
+    private const LONG_FORM_OUTPUT_TOKENS = 3200;
+    private const RETRY_OUTPUT_TOKENS = 4000;
+
     private string $apiKey;
     private string $model = 'gemini-2.5-flash';
     private string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -37,7 +52,9 @@ class GeminiService
             return $this->fallbackResponse($message, $audience);
         }
 
-        $ruleBased = $this->ruleBasedResponse($message, $audience);
+        $mode = $this->resolveMode($context, $audience);
+
+        $ruleBased = $this->ruleBasedResponse($message, $audience, $mode);
 
         if ($ruleBased !== null) {
             return $ruleBased;
@@ -55,7 +72,7 @@ class GeminiService
         }
 
         try {
-            return $this->callGeminiApi($message, $history, $audience, $context);
+            return $this->callGeminiApi($message, $history, $audience, $context, $mode);
         } catch (ConnectionException $e) {
             Log::warning('[GeminiService] Connection failed', [
                 'error' => $e->getMessage(),
@@ -76,9 +93,14 @@ class GeminiService
         string $message,
         array $history,
         string $audience,
-        array $context
+        array $context,
+        string $mode = self::MODE_OPERATIONS
     ): string {
         $history = array_slice($history, -8);
+        // Onboarding walkthroughs are inherently multi-step, so they always get
+        // the long budget.
+        $longForm = $mode === self::MODE_TUTORIAL
+            || $this->needsLongForm($message, $audience);
 
         $contents = [];
 
@@ -107,70 +129,140 @@ class GeminiService
 
         $url = "{$this->baseUrl}/{$this->model}:generateContent?key={$this->apiKey}";
 
-        $response = Http::timeout(20)
-            ->retry(2, 700)
-            ->withHeaders([
-                'Content-Type' => 'application/json',
-            ])
-            ->post($url, [
-                'contents' => $contents,
-                'systemInstruction' => [
-                    'parts' => [
-                        [
-                            'text' => $this->systemPrompt($audience),
+        // gemini-2.5-flash is a THINKING model: its internal "thoughts" tokens are
+        // billed against maxOutputTokens. The old flat cap of 700 left almost
+        // nothing for the visible answer once the staff system prompt grew - a
+        // full CMS draft request measured finishReason=MAX_TOKENS with 669
+        // thinking tokens and only 26 visible ones, which is exactly the
+        // "starts the draft then stops" bug. So: bound the thinking budget and
+        // give the visible answer real headroom, then retry once (thinking off)
+        // if the model still runs out of room.
+        $attempts = $longForm
+            ? [[self::LONG_FORM_OUTPUT_TOKENS, self::THINKING_BUDGET], [self::RETRY_OUTPUT_TOKENS, 0]]
+            : [[self::DEFAULT_OUTPUT_TOKENS, self::THINKING_BUDGET], [self::LONG_FORM_OUTPUT_TOKENS, 0]];
+
+        $lastReply = null;
+
+        foreach ($attempts as [$maxOutputTokens, $thinkingBudget]) {
+            $response = Http::timeout($longForm ? 45 : 25)
+                ->retry(2, 700)
+                ->withHeaders([
+                    'Content-Type' => 'application/json',
+                ])
+                ->post($url, [
+                    'contents' => $contents,
+                    'systemInstruction' => [
+                        'parts' => [
+                            [
+                                'text' => $this->systemPrompt($audience, $mode),
+                            ],
                         ],
                     ],
-                ],
-                'generationConfig' => [
-                    'temperature' => 0.35,
-                    'maxOutputTokens' => 700,
-                ],
-                'safetySettings' => [
-                    [
-                        'category' => 'HARM_CATEGORY_HARASSMENT',
-                        'threshold' => 'BLOCK_ONLY_HIGH',
+                    'generationConfig' => [
+                        'temperature' => 0.35,
+                        'maxOutputTokens' => $maxOutputTokens,
+                        'thinkingConfig' => [
+                            'thinkingBudget' => $thinkingBudget,
+                        ],
                     ],
-                    [
-                        'category' => 'HARM_CATEGORY_HATE_SPEECH',
-                        'threshold' => 'BLOCK_ONLY_HIGH',
+                    'safetySettings' => [
+                        [
+                            'category' => 'HARM_CATEGORY_HARASSMENT',
+                            'threshold' => 'BLOCK_ONLY_HIGH',
+                        ],
+                        [
+                            'category' => 'HARM_CATEGORY_HATE_SPEECH',
+                            'threshold' => 'BLOCK_ONLY_HIGH',
+                        ],
+                        [
+                            'category' => 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+                            'threshold' => 'BLOCK_ONLY_HIGH',
+                        ],
+                        [
+                            'category' => 'HARM_CATEGORY_DANGEROUS_CONTENT',
+                            'threshold' => 'BLOCK_ONLY_HIGH',
+                        ],
                     ],
-                    [
-                        'category' => 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-                        'threshold' => 'BLOCK_ONLY_HIGH',
-                    ],
-                    [
-                        'category' => 'HARM_CATEGORY_DANGEROUS_CONTENT',
-                        'threshold' => 'BLOCK_ONLY_HIGH',
-                    ],
-                ],
+                ]);
+
+            if ($response->status() === 429) {
+                Cache::put('gemini_cooldown', true, now()->addMinutes(2));
+                return $lastReply ?? $this->fallbackResponse($message, $audience);
+            }
+
+            if (!$response->successful()) {
+                Log::warning('[GeminiService] Gemini request failed', [
+                    'status' => $response->status(),
+                    'body' => substr($response->body(), 0, 1000),
+                ]);
+
+                return $lastReply ?? $this->fallbackResponse($message, $audience);
+            }
+
+            $payload = $response->json();
+            $candidate = $payload['candidates'][0] ?? [];
+            $finishReason = (string) ($candidate['finishReason'] ?? '');
+            $reply = $candidate['content']['parts'][0]['text'] ?? null;
+            $reply = is_string($reply) ? trim($reply) : '';
+
+            if ($reply !== '') {
+                $lastReply = $reply;
+            }
+
+            // Complete answer - done.
+            if ($reply !== '' && $finishReason !== 'MAX_TOKENS') {
+                return $reply;
+            }
+
+            Log::warning('[GeminiService] Reply truncated or empty, retrying with more room', [
+                'finish_reason' => $finishReason ?: 'none',
+                'max_output_tokens' => $maxOutputTokens,
+                'thinking_budget' => $thinkingBudget,
+                'thoughts_tokens' => $payload['usageMetadata']['thoughtsTokenCount'] ?? null,
+                'visible_tokens' => $payload['usageMetadata']['candidatesTokenCount'] ?? null,
+                'long_form' => $longForm,
             ]);
-
-        if ($response->status() === 429) {
-            Cache::put('gemini_cooldown', true, now()->addMinutes(2));
-            return $this->fallbackResponse($message, $audience);
         }
 
-        if (!$response->successful()) {
-            Log::warning('[GeminiService] Gemini request failed', [
-                'status' => $response->status(),
-                'body' => substr($response->body(), 0, 1000),
-            ]);
-
-            return $this->fallbackResponse($message, $audience);
-        }
-
-        $payload = $response->json();
-        $reply = $payload['candidates'][0]['content']['parts'][0]['text'] ?? null;
-
-        if (!is_string($reply) || trim($reply) === '') {
-            return $this->fallbackResponse($message, $audience);
-        }
-
-        return trim($reply);
+        return $lastReply ?? $this->fallbackResponse($message, $audience);
     }
 
-    private function systemPrompt(string $audience): string
+    /**
+     * Requests that legitimately need a long, complete answer: CMS content
+     * drafts (which must cover every field of the Event/Announcement form) and
+     * troubleshooting walkthroughs. Everything else keeps a tighter budget so
+     * simple navigation questions stay short.
+     */
+    private function needsLongForm(string $message, string $audience): bool
     {
+        if ($audience !== 'staff') {
+            return false;
+        }
+
+        $lower = mb_strtolower($message);
+
+        return $this->containsAny($lower, [
+            // drafting intent
+            'draft', 'create a', 'create an', 'make a', 'make an', 'write',
+            'compose', 'help me create', 'help me make', 'suggest', 'recommend',
+            'gumawa', 'gawan', 'isulat', 'buuin', 'tulungan', 'magmungkahi',
+            // content nouns
+            'event', 'announcement', 'program', 'campaign', 'advisory',
+            // troubleshooting intent
+            'why is', 'why isn', 'why did', 'why does', 'not showing',
+            'not appearing', 'hindi lumalabas', 'hindi makita', 'bakit',
+            'failed', 'error', 'troubleshoot', 'fix', 'ayusin', 'problema',
+            // walkthroughs
+            'step by step', 'walkthrough', 'tutorial', 'paano',
+        ]);
+    }
+
+    private function systemPrompt(string $audience, string $mode = self::MODE_OPERATIONS): string
+    {
+        if ($audience === 'staff' && $mode === self::MODE_TUTORIAL) {
+            return $this->tutorialSystemPrompt();
+        }
+
         if ($audience === 'staff') {
             $serviceCatalog = implode('; ', [
                 'Konsulta/Maternal & Newborn Care (Prenatal, Post-natal, Labor & Delivery, Newborn Care, Consultation/Outpatient)',
@@ -194,14 +286,63 @@ class GeminiService
                 "(gumamit ng 'po'/'opo' kapag Tagalog o Taglish ang user), concise, and never condescending. Mirror the user's language (English, Tagalog, or Taglish). " .
                 "Use professional, step-by-step guidance aligned with Ka-Agapay workflows: queue management, appointments, consultations, telemedicine, e-prescriptions, inventory, reports, CMS events/announcements, SMS, analytics, and user verification. " .
                 "IMPORTANT STYLE RULE: refer to clickable navigation items as buttons, not modules. Say 'click the Events button', 'click the Queue button'. " .
-                "CONTENT DRAFTING — one of your most useful jobs: when staff ask for help creating an event, program, or announcement " .
-                "(e.g. 'help me create an event for Sex Education'), do NOT just tell them where to click. Produce a ready-to-copy draft they can paste into the Event form: " .
-                "1) Title (short, plain-language); 2) Category; 3) Description (simple words residents understand — what it is, who may join, what to bring, no graphic detail); " .
-                "4) Suggested Target Audience groups (choose from: Infants, Children, Adolescents/Youth, Adults, Senior Citizens, Pregnant Women, Lactating Mothers, PWDs, Solo Parents, Indigent Families, 4Ps Beneficiaries, Farmers/Fisherfolk, Barangay Health Workers, Others); " .
-                "5) Suggested RHU Service classification, chosen ONLY from this official catalog: {$serviceCatalog}; " .
-                "6) SMS Summary of AT MOST 160 characters (this exact text is TEXTED to residents when the post is published, and a reminder is auto-texted 3 days before the event — keep it complete and self-contained); " .
-                "then 7) the click-path: click the Events button → Create Event → fill the sections → Create & Publish. " .
+                "CONTENT DRAFTING \u2014 one of your most useful jobs: when staff ask for help creating an event, program, or announcement " .
+                "(e.g. \'help me create an event about feeding program\'), do NOT just tell them where to click, and do NOT stop after the first two or three fields. " .
+                "Produce a COMPLETE, ready-to-copy draft that fills EVERY field of the actual Ka-Agapay CMS form, in this exact order, each on its own labelled line. " .
+                "You must output all of the following fields every single time, even when the staff message is short \u2014 never truncate the draft and never end after Title/Category: " .
+                "1) Post Type (choose exactly one: Event, Program, or Announcement); " .
+                "2) Category (short free-text label, e.g. Immunization, Nutrition, Medical Mission, Dental); " .
+                "3) Title (required, at least 5 characters, short and plain-language); " .
+                "4) Description (required, at least 10 characters \u2014 simple words residents understand: what it is, who may join, what to bring, no graphic detail); " .
+                "5) Start Date & Time (required for Event/Program; propose a concrete realistic future date and time, e.g. \'2026-09-15 08:00 AM\', and remind staff to confirm it \u2014 a past schedule cannot be published); " .
+                "6) End Date & Time (optional; if given it must NOT be earlier than the start); " .
+                "7) Location / Venue (required for Event/Program \u2014 suggest a realistic Malasiqui RHU or barangay venue, e.g. \'RHU 1 Covered Court, Poblacion, Malasiqui\'); " .
+                "8) Target Audience (choose the fitting groups ONLY from: Infants (0-11 months), Children, Adolescents / Youth, Adults, Senior Citizens, Pregnant Women, Lactating Mothers, PWDs (Persons with Disabilities), Solo Parents, Indigent Families, 4Ps Beneficiaries, Farmers / Fisherfolk, Barangay Health Workers, Others); " .
+                "9) Barangay Target (either \'All barangays\' or a specific list of Malasiqui barangays); " .
+                "10) Maximum Slots (a whole number of at least 1, or \'No limit\' when the activity is open to everyone); " .
+                "11) RHU Service Offered, chosen ONLY from this official catalog: {$serviceCatalog}; " .
+                "12) Priority (Normal, High, or Urgent \u2014 Urgent is only for time-critical advisories); " .
+                "13) Visibility (Public = all residents of both RHUs, RHU 1 = RHU 1 residents only, RHU 2 = RHU 2 residents only); " .
+                "14) Tags (2 to 5 short keywords, comma-separated); " .
+                "15) SMS Summary of AT MOST 160 characters (this exact text is TEXTED to residents when the post is published, and a reminder is auto-texted 3 days before the event \u2014 keep it complete and self-contained; state the character count in parentheses after it); " .
+                "then a short \'Banner image\' note reminding staff to upload and crop a banner themselves (you cannot generate images), " .
+                "then say whether to Save as Draft or Create & Publish, " .
+                "and finally the click-path: click the Events button \u2192 Create Event \u2192 fill the sections with the draft above \u2192 Create & Publish. " .
+                "This full-draft rule applies no matter which button/screen the staff member is currently on \u2014 whether they are on the Dashboard, the Queue, or already inside the Events form, always return the complete draft. " .
                 "For sensitive health topics (sex education, HIV, family planning, mental health), keep drafts factual, non-graphic, stigma-free, and aligned with DOH health-promotion tone. " .
+                "TROUBLESHOOTING \u2014 when staff ask why something is not working (\'why isn\'t this appointment showing in queue\', " .
+                "\'why did this registration fail\', \'bakit hindi lumalabas\'), do NOT give generic advice and do NOT invent a cause. " .
+                "You cannot see the actual record, so instead give a SHORT ranked checklist of the causes that really occur in this system, " .
+                "most likely first, each with the exact check or fix. Say plainly that you cannot see the record and that they should confirm each item on screen. " .
+                "These are the real, system-verified causes \u2014 use them, not guesses: " .
+                "(A) APPOINTMENT NOT IN THE QUEUE: it is still Pending \u2014 it must be approved/scheduled before Add to Queue works; " .
+                "it is Cancelled, Rejected, or Completed \u2014 closed appointments cannot be queued; " .
+                "it is an ONLINE/telemedicine appointment \u2014 those never get an onsite queue ticket, open the Telemedicine button instead; " .
+                "it belongs to a different RHU \u2014 staff may only manage their assigned RHU; " .
+                "it is scheduled for another date \u2014 the active onsite queue board shows TODAY only; " .
+                "it was already added \u2014 check the other status views before re-adding; " .
+                "or the wrong service desk/counter is selected \u2014 each desk shows only its own service. " .
+                "(B) REGISTRATION / ID VERIFICATION FAILED: the ID photo is blurred, glared, or cropped so the name could not be read; " .
+                "the typed first and last name are not both visible on the ID (middle names and suffixes are never required); " .
+                "the PhilHealth ID name does not match the profile name; " .
+                "or the account is simply still Pending and waiting for staff approval under the Users button. " .
+                "(C) STAFF REGISTRATION LINK NOT WORKING: staff registration is invitation-only via a signed one-time link \u2014 " .
+                "the link has EXPIRED, was REVOKED, or was ALREADY USED (each link works exactly once). The fix is always a new invite from a Super Admin. " .
+                "(D) EVENT/ANNOUNCEMENT WILL NOT PUBLISH: the schedule is in the past (a past event cannot be published); " .
+                "the title is under 5 characters or the description under 10; a date and location are missing (both required for Event/Program, not Announcement); " .
+                "the end date is earlier than the start; or the SMS summary is over 160 characters. " .
+                "(E) RESIDENTS CANNOT SEE A PUBLISHED POST: visibility is set to RHU 1 or RHU 2 instead of Public, " .
+                "the Barangay Target excludes them, or the post is still saved as a Draft. " .
+                "(F) RESIDENT CANNOT JOIN AN EVENT: the event has no available slots left. " .
+                "(G) CANNOT MESSAGE A CO-WORKER IN TEAM CHAT: that staff member is in a different RHU (only Super Admin/MHO span both). " .
+                "(H) CANNOT CREATE AN ACCOUNT: the email or mobile number is already registered \u2014 including on a previously deleted account, " .
+                "because deleted records are archived, never hard-deleted; or the mobile number is not in 09XXXXXXXXX format. " .
+                "(I) SMS LOGS LOOK EMPTY: the SMS log view defaults to TODAY \u2014 widen the date range to see older sends. " .
+                "(J) A TELEMEDICINE SESSION CANNOT BE REJOINED: ended, no-show, and cancelled sessions never reopen \u2014 " .
+                "open the consultation record instead to write or edit the SOAP notes. " .
+                "(K) A LIST LOOKS EMPTY IN GENERAL: check the RHU filter, the status/board filter, the date range, and any search text \u2014 " .
+                "RHU scoping is enforced on the server, so staff genuinely cannot see another RHU\'s records. " .
+                "After the checklist, name the one button they should open to verify. " .
                 "OPERATIONAL MATH: you SHOULD do basic arithmetic for everyday RHU tasks when the user gives you the numbers — " .
                 "e.g. stock remaining after dispensing (40 − 15 = 25 units left), days until an expiry date the user states, " .
                 "totals, differences, averages, and simple percentages. Show the computation in one short line so staff can double-check it. " .
@@ -252,11 +393,20 @@ class GeminiService
             ? 'Audience: RHU staff/admin user. Use button names, not module labels.'
             : 'Audience: mobile resident user.';
 
-        return "{$audienceText}{$contextText}\n\nUser message:\n{$message}";
+        // The model has no clock. Without this it drafts events dated in the
+        // past, and the Event form refuses to publish a past schedule.
+        $today = now()->format('l, F j, Y');
+        $dateText = "\n\nToday's date is {$today}. Any date you propose for an event, "
+            . 'program, or deadline MUST be on or after this date.';
+
+        return "{$audienceText}{$dateText}{$contextText}\n\nUser message:\n{$message}";
     }
 
-    private function ruleBasedResponse(string $message, string $audience): ?string
-    {
+    private function ruleBasedResponse(
+        string $message,
+        string $audience,
+        string $mode = self::MODE_OPERATIONS
+    ): ?string {
         $lower = mb_strtolower($message);
 
         $emergencyKeywords = [
@@ -281,7 +431,23 @@ class GeminiService
             }
         }
 
+        // Getting Started mode is a teaching conversation that has to track where
+        // the learner already is. The canned navigation blurbs below cannot do
+        // that, so in tutorial mode everything except the emergency guard above
+        // goes to the model.
+        if ($mode === self::MODE_TUTORIAL) {
+            return null;
+        }
+
         if ($audience === 'staff') {
+            // Troubleshooting questions must reach the model. Without this,
+            // "why isn't this appointment showing in queue" matched the plain
+            // 'appointment'/'queue' keyword rules below and came back as a
+            // click-here walkthrough instead of the real cause checklist.
+            if ($this->isTroubleshootingIntent($lower)) {
+                return null;
+            }
+
             // Panelist follow-up round: computational questions must reach
             // Gemini, not a canned navigation walkthrough. Without this, a
             // question like "if I dispense 15 from a stock of 40, how many
@@ -453,6 +619,77 @@ class GeminiService
         return
             "Nandito ako para tumulong sa Ka-Agapay app. Pwede kitang gabayan sa appointment booking, " .
             "events, records, telemedicine, ID verification, at RHU services. Kung emergency ang nararamdaman, pumunta agad sa ER o humingi ng tulong.";
+    }
+
+    /**
+     * Tutorial mode is opt-in from the assistant header and only meaningful for
+     * staff; residents always get the ordinary assistant.
+     */
+    private function resolveMode(array $context, string $audience): string
+    {
+        if ($audience !== 'staff') {
+            return self::MODE_OPERATIONS;
+        }
+
+        return ($context['assistant_mode'] ?? null) === self::MODE_TUTORIAL
+            ? self::MODE_TUTORIAL
+            : self::MODE_OPERATIONS;
+    }
+
+    /**
+     * "Getting Started" persona: walks a new RHU staff member through the
+     * dashboard one step at a time instead of answering one-off questions.
+     */
+    private function tutorialSystemPrompt(): string
+    {
+        return
+            "You are the Ka-Agapay Getting Started Coach for new RHU staff of Malasiqui, Pangasinan, inside the admin dashboard. " .
+            "Your job is TEACHING, not answering one-off operational questions. Assume the person is new to the system and may have low digital confidence. " .
+            "MANNER: patient, warm, encouraging, never condescending, the way a courteous Philippine government health office speaks " .
+            "(gumamit ng 'po'/'opo' kapag Tagalog o Taglish ang user). Mirror the user's language (English, Tagalog, or Taglish). " .
+            "IMPORTANT STYLE RULE: refer to clickable navigation items as buttons, not modules. Say 'click the Queue button'. " .
+            "TEACHING METHOD - follow this every time: " .
+            "1) Open with one short sentence naming what they are about to learn. " .
+            "2) Give the steps as a SHORT numbered list, at most 5 steps, one action per step, each naming the exact button to click. " .
+            "3) Add one 'What you should see' line so they can confirm it worked. " .
+            "4) Add one short 'Watch out for' line with the mistake new staff actually make here. " .
+            "5) End by asking ONE question: whether to continue to the next topic or repeat this one. Always end with that question. " .
+            "Never dump the whole system at once. Teach ONE topic per reply and wait. " .
+            "If the user has not chosen a topic yet, briefly offer this learning path and ask which to start with: " .
+            "(1) Getting around the dashboard, (2) Queue - calling and serving patients, (3) Appointments - approving and scheduling, " .
+            "(4) Consultations - recording diagnosis and SOAP notes, (5) Telemedicine - online consultations, (6) Prescriptions, " .
+            "(7) Patient Registry and patient profiles, (8) Inventory - medicine and vaccine stock, (9) CMS - posting events and announcements, " .
+            "(10) SMS campaigns, (11) Reports and Analytics, (12) Users - approving accounts and ID verification, (13) Team Chat - messaging co-staff. " .
+            "You have NO access to live system data: never invent patient records, stock counts, queue numbers, or figures. " .
+            "Use realistic EXAMPLE values when illustrating a step and label them clearly as examples. " .
+            "Do not give clinical advice or medication doses - that is for a licensed clinician. Do not expose API keys, passwords, or secrets. " .
+            "If the user asks a normal operational question while in this mode, answer it briefly and then offer to resume the walkthrough.";
+    }
+
+    /**
+     * "Why is X not working / not showing / failed" style questions. These need
+     * the grounded cause checklist in the system prompt, never a canned
+     * navigation answer.
+     */
+    private function isTroubleshootingIntent(string $lower): bool
+    {
+        $asksWhy = $this->containsAny($lower, [
+            'why is', 'why isn', 'why are', 'why did', 'why does', 'why do',
+            'why can', 'why won', 'bakit', 'anong problema', 'ano ang problema',
+        ]);
+
+        $reportsFault = $this->containsAny($lower, [
+            'not showing', 'not appearing', 'not show', 'not visible',
+            'does not appear', 'doesn\'t appear', 'did not appear',
+            'not working', 'does not work', 'doesn\'t work', 'wont work',
+            'won\'t work', 'cannot', 'can not', 'can\'t', 'unable to',
+            'failed', 'failing', 'fails', 'error', 'rejected', 'blocked',
+            'missing', 'empty', 'no results', 'stuck', 'troubleshoot',
+            'hindi lumalabas', 'hindi makita', 'hindi gumagana', 'hindi ma',
+            'walang lumalabas', 'ayaw', 'problema', 'mali',
+        ]);
+
+        return $asksWhy || $reportsFault;
     }
 
     private function containsAny(string $text, array $keywords): bool

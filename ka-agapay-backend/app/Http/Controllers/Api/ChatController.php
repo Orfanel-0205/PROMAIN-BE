@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ChatLog;
 use App\Models\ChatMessage;
 use App\Models\ChatSession;
+use App\Services\Ai\CmsDraftParser;
 use App\Services\Ai\GeminiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,7 +17,10 @@ use Illuminate\Support\Str;
 
 class ChatController extends Controller
 {
-    public function __construct(private readonly GeminiService $geminiService) {}
+    public function __construct(
+        private readonly GeminiService $geminiService,
+        private readonly CmsDraftParser $cmsDraftParser,
+    ) {}
 
     /**
      * POST /api/v1/chat/message
@@ -99,6 +103,14 @@ class ChatController extends Controller
             'tutorial_cards' => $audience === 'staff'
                 ? $this->tutorialCards($suggestedAction, $intent)
                 : [],
+
+            // When the assistant drafted CMS content, hand the web admin a
+            // structured version of the SAME text it just rendered, so staff can
+            // load it straight into the Event form instead of copying 15 fields
+            // by hand. Null for anything that is not a draft.
+            'cms_draft' => $audience === 'staff'
+                ? $this->cmsDraftParser->parse($reply)
+                : null,
             'detected_complaint' => $audience === 'resident' ? $this->detectComplaint($message) : null,
             'meta' => [
                 'response_ms' => $responseMs,
@@ -486,6 +498,9 @@ class ChatController extends Controller
                 'language',
                 'app_section',
                 'source',
+                // 'tutorial' switches the staff assistant to the Getting
+                // Started onboarding persona; any other value is operations.
+                'assistant_mode',
             ])
             ->filter(fn ($value) => is_scalar($value) && trim((string) $value) !== '')
             ->map(fn ($value) => trim((string) $value))

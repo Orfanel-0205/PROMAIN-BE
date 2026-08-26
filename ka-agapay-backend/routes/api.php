@@ -775,8 +775,18 @@ Route::prefix('v1')->group(function () {
                 Route::post('/conversations/{conversation}/messages',  [TeamChatController::class, 'sendMessage'])
                     ->middleware('throttle:30,1');
 
-                // Soft-delete (content-redact) a single message — sender or Super Admin.
+                // Soft content-redaction of a single message — SENDER ONLY.
+                // The former Super Admin override was removed on purpose: no role
+                // may redact another staff member's words.
                 Route::delete('/conversations/{conversation}/messages/{message}', [TeamChatController::class, 'deleteMessage']);
+
+                // CALLS — voice/video reusing the existing Jitsi integration.
+                // Start is throttled like send: it creates a room + ringing rows.
+                Route::post('/conversations/{conversation}/call', [TeamChatController::class, 'startCall'])
+                    ->middleware('throttle:30,1');
+                Route::post('/calls/{call}/join',    [TeamChatController::class, 'joinCall']);
+                Route::post('/calls/{call}/decline', [TeamChatController::class, 'declineCall']);
+                Route::post('/calls/{call}/end',     [TeamChatController::class, 'endCall']);
             });
 
         // =====================================================================

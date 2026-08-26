@@ -73,6 +73,9 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'otp_expires_at' => 'datetime',
         'last_login_at' => 'datetime',
+        // Team Chat presence heartbeat — must be a Carbon instance for the
+        // "active within N minutes" comparison.
+        'last_active_at' => 'datetime',
         'locked_until' => 'datetime',
         'staff_approved_at' => 'datetime',
         'terms_accepted_at' => 'datetime',
