@@ -1176,6 +1176,13 @@ class AuthController extends Controller
             'avatar' => $user->profile_picture_url ?? $user->avatar,
             'profile_picture' => $user->profile_picture,
 
+            // Drives the one-time "Getting Started" auto-open in the web admin.
+            // Schema-guarded so this payload still works if the column has not
+            // been migrated yet (treated as "already seen" => never auto-opens).
+            'has_seen_onboarding' => Schema::hasColumn('users', 'has_seen_onboarding')
+                ? (bool) $user->has_seen_onboarding
+                : true,
+
             'capabilities' => $this->capabilitiesForRole($roleName),
         ];
     }

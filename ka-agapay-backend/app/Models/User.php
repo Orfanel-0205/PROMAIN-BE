@@ -60,6 +60,9 @@ class User extends Authenticatable
 
         'biometric_enabled',
         'biometric_token_hash',
+
+        // One-time "Getting Started" tour flag (web admin first login).
+        'has_seen_onboarding',
     ];
 
     protected $hidden = [
@@ -77,6 +80,7 @@ class User extends Authenticatable
         // "active within N minutes" comparison.
         'last_active_at' => 'datetime',
         'locked_until' => 'datetime',
+        'has_seen_onboarding' => 'boolean',
         'staff_approved_at' => 'datetime',
         'terms_accepted_at' => 'datetime',
         'approved_at' => 'datetime',

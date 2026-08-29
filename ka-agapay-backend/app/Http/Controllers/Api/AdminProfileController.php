@@ -21,6 +21,33 @@ class AdminProfileController extends Controller
         ]);
     }
 
+    /**
+     * POST /api/v1/admin/profile/onboarding-seen
+     *
+     * Marks the "Getting Started" tour as shown so it never auto-opens again
+     * for this account. The sidebar entry remains available afterwards.
+     *
+     * Idempotent, acts only on the AUTHENTICATED user (no id parameter, so one
+     * staff member can never flip another's flag), and never fails the caller:
+     * the tour re-opening once is a cosmetic annoyance, not worth a 500.
+     */
+    public function markOnboardingSeen(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user && Schema::hasColumn('users', 'has_seen_onboarding') && !$user->has_seen_onboarding) {
+            try {
+                $user->forceFill(['has_seen_onboarding' => true])->save();
+            } catch (\Throwable) {
+                // Non-fatal by design.
+            }
+        }
+
+        return response()->json([
+            'data' => ['has_seen_onboarding' => true],
+        ]);
+    }
+
     public function update(Request $request): JsonResponse
     {
         $user = $request->user();

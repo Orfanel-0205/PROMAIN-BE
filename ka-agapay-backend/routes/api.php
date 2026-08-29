@@ -136,6 +136,9 @@ Route::prefix('v1')->group(function () {
                 Route::get('/admin/me', [AdminProfileController::class, 'show']);
                 Route::patch('/admin/profile', [AdminProfileController::class, 'update']);
                 Route::patch('/admin/profile/password', [AdminProfileController::class, 'changePassword']);
+
+                // One-time "Getting Started" tour flag for the current user.
+                Route::post('/admin/profile/onboarding-seen', [AdminProfileController::class, 'markOnboardingSeen']);
             });
 
         // =====================================================================
