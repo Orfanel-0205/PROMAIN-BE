@@ -567,6 +567,13 @@ class ChatController extends Controller
 
         if ($audience === 'staff') {
             return match (true) {
+                $this->containsAny($lower, ['patient registry', 'patient profile', 'patients list', 'active patients']) => 'patient_registry_guidance',
+                $this->containsAny($lower, ['team chat', 'co-worker', 'coworker', 'staff chat', 'group chat']) => 'team_chat_guidance',
+                $this->containsAny($lower, ['registration approval', 'registration approvals', 'registrations', 'view ocr', 'employee id']) => 'registration_approval_guidance',
+                $this->containsAny($lower, ['feedback', 'service feedback', 'condition update', 'resident update']) => 'feedback_guidance',
+                $this->containsAny($lower, ['follow-up', 'follow up', 'followups', 'reminder']) => 'followup_guidance',
+                $this->containsAny($lower, ['notification', 'notifications', 'alert', 'alerts', 'bell']) => 'notification_guidance',
+                $this->containsAny($lower, ['setting', 'settings', 'backup', 'sms provider', 'system control']) => 'settings_guidance',
                 $this->containsAny($lower, ['report', 'reports', 'ulat', 'pinamigay', 'dispensed', 'export', 'csv']) => 'reports_guidance',
                 $this->containsAny($lower, ['queue', 'pila', 'call next', 'serving']) => 'queue_guidance',
                 $this->containsAny($lower, ['appointment', 'booking', 'schedule']) => 'appointment_guidance',
@@ -574,8 +581,10 @@ class ChatController extends Controller
                 $this->containsAny($lower, ['telemedicine', 'video', 'online consult']) => 'telemedicine_guidance',
                 $this->containsAny($lower, ['prescription', 'reseta', 'e-prescription']) => 'prescription_guidance',
                 $this->containsAny($lower, ['inventory', 'stock', 'vaccine', 'medicine', 'gamot']) => 'inventory_guidance',
-                $this->containsAny($lower, ['analytics', 'dashboard', 'heatmap', 'trend']) => 'analytics_guidance',
-                $this->containsAny($lower, ['announcement', 'event', 'cms', 'post', 'program']) => 'cms_guidance',
+                $this->containsAny($lower, ['heatmap', 'disease cluster', 'barangay risk']) => 'heatmap_guidance',
+                $this->containsAny($lower, ['analytics', 'dashboard', 'trend']) => 'analytics_guidance',
+                $this->containsAny($lower, ['event', 'events', 'program']) => 'events_guidance',
+                $this->containsAny($lower, ['announcement', 'cms', 'post']) => 'cms_guidance',
                 $this->containsAny($lower, ['sms', 'text', 'semaphore', 'notification']) => 'sms_guidance',
                 $this->containsAny($lower, ['user', 'approve', 'verify', 'account']) => 'user_management_guidance',
                 default => 'staff_workflow_guidance',
@@ -602,17 +611,26 @@ class ChatController extends Controller
         }
 
         return match ($intent) {
+            'patient_registry_guidance' => 'open_patient_registry',
             'reports_guidance' => 'open_reports',
             'queue_guidance' => 'open_queue',
             'appointment_guidance' => 'open_appointments',
             'consultation_guidance' => 'open_consultations',
             'telemedicine_guidance' => 'open_telemedicine',
             'prescription_guidance' => 'open_prescriptions',
+            'team_chat_guidance' => 'open_team_chat',
             'inventory_guidance' => 'open_inventory',
-            'analytics_guidance' => str_contains(mb_strtolower($message), 'heatmap') ? 'open_heatmap' : 'open_analytics',
+            'analytics_guidance' => 'open_analytics',
+            'heatmap_guidance' => 'open_heatmap',
             'cms_guidance' => 'open_cms',
+            'events_guidance' => 'open_events',
+            'feedback_guidance' => 'open_feedback',
+            'followup_guidance' => 'open_followups',
+            'notification_guidance' => 'open_notifications',
             'sms_guidance' => 'open_sms',
+            'registration_approval_guidance' => 'open_registrations',
             'user_management_guidance' => 'open_users',
+            'settings_guidance' => 'open_settings',
             default => null,
         };
     }
@@ -620,60 +638,276 @@ class ChatController extends Controller
     private function tutorialCards(?string $suggestedAction, string $intent): array
     {
         return match ($suggestedAction) {
+            'open_dashboard' => [
+                [
+                    'title' => '1. Click Dashboard button',
+                    'body' => 'Real-Time RHU Dashboard: live tracking for patients, consultations, queue, telemedicine, inventory, and barangay health heatmap.',
+                    'mascot' => '/Wavingduck.png',
+                ],
+                [
+                    'title' => '2. Start with priorities',
+                    'body' => 'Check Priority Action Center, Shift Summary, and KPI cards before opening source records.',
+                    'mascot' => '/Wavingduck.png',
+                ],
+            ],
+            'open_patient_registry' => [
+                [
+                    'title' => '1. Click Patient Registry button',
+                    'body' => 'Browse and search active patients, then open a profile for full history.',
+                    'mascot' => '/HappyDuckloving.png',
+                ],
+                [
+                    'title' => '2. Open the patient profile',
+                    'body' => 'Search by name or mobile number and use View to confirm the history before follow-up work.',
+                    'mascot' => '/HappyDuckloving.png',
+                ],
+            ],
+            'open_appointments' => [
+                [
+                    'title' => '1. Click Appointments button',
+                    'body' => 'Simple RHU appointment board for approving, scheduling, rejecting, adding onsite patients to queue, and starting consultations.',
+                    'mascot' => '/Thinkingduck.png',
+                ],
+                [
+                    'title' => '2. Decide the next action',
+                    'body' => 'Confirm onsite versus online type, then approve, schedule, add to queue, or open telemedicine.',
+                    'mascot' => '/Thinkingduck.png',
+                ],
+            ],
+            'open_consultations' => [
+                [
+                    'title' => '1. Click Consultations button',
+                    'body' => 'Review active consultation records, open SOAP documentation, check diagnosis status, and complete required records.',
+                    'mascot' => '/Consultationduck.png',
+                ],
+                [
+                    'title' => '2. Complete documentation',
+                    'body' => 'Add SOAP, diagnosis, prescription, lab request, referral, or follow-up details before completion.',
+                    'mascot' => '/Consultationduck.png',
+                ],
+            ],
+            'open_telemedicine' => [
+                [
+                    'title' => '1. Click Telemedicine button',
+                    'body' => 'Screen online consultation requests, open video sessions, track request progress, and safely complete SOAP documentation.',
+                    'mascot' => '/Duckcheckingmobilephone.png',
+                ],
+                [
+                    'title' => '2. Finish the record',
+                    'body' => 'After the call, save or finalize SOAP notes from the telemedicine room or linked consultation.',
+                    'mascot' => '/Duckcheckingmobilephone.png',
+                ],
+            ],
+            'open_prescriptions' => [
+                [
+                    'title' => '1. Click E-Prescription button',
+                    'body' => 'Create medicine prescriptions or laboratory requests and release official PDFs.',
+                    'mascot' => '/Consultationduck.png',
+                ],
+                [
+                    'title' => '2. Review before release',
+                    'body' => 'Check the patient context and request details before releasing the PDF or dispensing.',
+                    'mascot' => '/Consultationduck.png',
+                ],
+            ],
+            'open_team_chat' => [
+                [
+                    'title' => '1. Click Team Chat button',
+                    'body' => 'Internal staff messaging with chats, group conversations, search, presence, seen receipts, and voice/video calls.',
+                    'mascot' => '/Side-waved duck.png',
+                ],
+                [
+                    'title' => '2. Coordinate with staff',
+                    'body' => 'Use Search, New chat, or New group while respecting RHU visibility rules.',
+                    'mascot' => '/Side-waved duck.png',
+                ],
+            ],
+            'open_inventory' => [
+                [
+                    'title' => '1. Click Inventory button',
+                    'body' => 'Real-time monitoring of medicines, vaccines, supplies, and equipment, including restock needs and expiry safety.',
+                    'mascot' => '/Thinkingduck.png',
+                ],
+                [
+                    'title' => '2. Follow FEFO',
+                    'body' => 'Record stock-in, stock-out, or adjustment history; expired items should not be dispensed.',
+                    'mascot' => '/Thinkingduck.png',
+                ],
+            ],
+            'open_cms' => [
+                [
+                    'title' => '1. Click Announcements button',
+                    'body' => 'Content Management: create simple, readable, and timely public information for Ka-Agapay residents.',
+                    'mascot' => '/Side-waved duck.png',
+                ],
+                [
+                    'title' => '2. Preview before publishing',
+                    'body' => 'Write a clear title, preview resident view, publish only when final, and archive old advisories.',
+                    'mascot' => '/Side-waved duck.png',
+                ],
+            ],
+            'open_events' => [
+                [
+                    'title' => '1. Click Events button',
+                    'body' => 'Events & Programs Management: create clear RHU events, health programs, and public advisories.',
+                    'mascot' => '/Side-waved duck.png',
+                ],
+                [
+                    'title' => '2. Complete required fields',
+                    'body' => 'Review schedule, location, audience, barangay target, RHU service, visibility, and SMS summary before publishing.',
+                    'mascot' => '/Side-waved duck.png',
+                ],
+            ],
             'open_reports' => [
                 [
                     'title' => '1. Click Reports button',
                     'body' => 'Use Reports when the staff needs printable or exportable summaries, including dispensed medicines.',
+                    'mascot' => '/Lightbulbduck.png',
                 ],
                 [
                     'title' => '2. Select report type',
                     'body' => 'Choose the medicine dispensing, prescription, consultation, queue, or inventory report depending on the needed output.',
+                    'mascot' => '/Lightbulbduck.png',
                 ],
                 [
                     'title' => '3. Filter and export',
                     'body' => 'Set date range, RHU, barangay, or medicine filters, then preview before exporting or printing.',
+                    'mascot' => '/Thumbsupduck.png',
+                ],
+            ],
+            'open_analytics' => [
+                [
+                    'title' => '1. Click Analytics button',
+                    'body' => 'Track patients, consultations, telemedicine usage, queue tickets, disease clusters, and chatbot questions for better RHU planning.',
+                    'mascot' => '/Lightbulbduck.png',
+                ],
+                [
+                    'title' => '2. Validate insights',
+                    'body' => 'Use analytics as a guide and validate high-risk records before making decisions or public advisories.',
+                    'mascot' => '/Lightbulbduck.png',
+                ],
+            ],
+            'open_heatmap' => [
+                [
+                    'title' => '1. Click Heatmap Analytics button',
+                    'body' => 'Use separate operational workspaces for RHU queue monitoring and barangay disease cluster surveillance.',
+                    'mascot' => '/Lightbulbduck.png',
+                ],
+                [
+                    'title' => '2. Review active signals',
+                    'body' => 'Check queue density or barangay disease clusters, then validate before SMS or CMS action.',
+                    'mascot' => '/Lightbulbduck.png',
                 ],
             ],
             'open_queue' => [
                 [
                     'title' => '1. Click Queue button',
                     'body' => 'Review waiting tickets and priority flags before calling the next patient.',
+                    'mascot' => '/Thinkingduck.png',
                 ],
                 [
                     'title' => '2. Serve in order',
                     'body' => 'Use Call Next, Serving, and Done to keep the flow fair and traceable.',
+                    'mascot' => '/Thinkingduck.png',
                 ],
                 [
                     'title' => '3. Check priority reasons',
                     'body' => 'Senior, PWD, pregnant, pediatric, emergency, and BHW-assisted flags explain priority.',
+                    'mascot' => '/Thumbsupduck.png',
+                ],
+            ],
+            'open_feedback' => [
+                [
+                    'title' => '1. Click Feedback button',
+                    'body' => 'Service Feedback: patient service feedback and condition updates submitted from the mobile app.',
+                    'mascot' => '/HappyDuckloving.png',
+                ],
+                [
+                    'title' => '2. Route follow-ups',
+                    'body' => 'Respond to feedback when appropriate; use Health Follow-up for clinical reminders.',
+                    'mascot' => '/HappyDuckloving.png',
+                ],
+            ],
+            'open_followups' => [
+                [
+                    'title' => '1. Click Health Follow-up button',
+                    'body' => 'Track overdue, due today, upcoming, and completed patient follow-ups.',
+                    'mascot' => '/HappyDuckloving.png',
+                ],
+                [
+                    'title' => '2. Check the linked record',
+                    'body' => 'Open the consultation when clinical context is needed and resend SMS only after review.',
+                    'mascot' => '/HappyDuckloving.png',
+                ],
+            ],
+            'open_notifications' => [
+                [
+                    'title' => '1. Click Notifications button',
+                    'body' => 'View mobile requests, queue updates, telemedicine reminders, appointment notices, RHU posts, and system alerts in one inbox.',
+                    'mascot' => '/Lightbulbduck.png',
+                ],
+                [
+                    'title' => '2. Open the source',
+                    'body' => 'Use the linked page to complete the work, then mark alerts read after review.',
+                    'mascot' => '/Lightbulbduck.png',
                 ],
             ],
             'open_sms' => [
                 [
                     'title' => '1. Click SMS button',
                     'body' => 'Create a short announcement, reminder, or follow-up message.',
+                    'mascot' => '/Duckcheckingmobilephone.png',
                 ],
                 [
                     'title' => '2. Choose recipients',
                     'body' => 'Filter by barangay, account status, program, age group, sex, or RHU targeting.',
+                    'mascot' => '/Duckcheckingmobilephone.png',
                 ],
                 [
                     'title' => '3. Preview first',
                     'body' => 'Check recipient count and message privacy before sending.',
+                    'mascot' => '/Thumbsupduck.png',
+                ],
+            ],
+            'open_registrations' => [
+                [
+                    'title' => '1. Click Registration Approvals button',
+                    'body' => 'Review pending registrants - residents and staff. Open View OCR to verify the submitted ID before approval.',
+                    'mascot' => '/Thinkingduck.png',
+                ],
+                [
+                    'title' => '2. Approve or reject',
+                    'body' => 'Compare profile details and submitted ID/OCR, then approve, reject, or request correction.',
+                    'mascot' => '/Thinkingduck.png',
                 ],
             ],
             'open_users' => [
                 [
                     'title' => '1. Click Users button',
                     'body' => 'Open pending, active, or rejected accounts.',
+                    'mascot' => '/Thinkingduck.png',
                 ],
                 [
                     'title' => '2. Review verification',
                     'body' => 'Compare profile details and uploaded ID/OCR result before approval.',
+                    'mascot' => '/Thinkingduck.png',
                 ],
                 [
                     'title' => '3. Save decision',
                     'body' => 'Approve, reject, or request correction based on RHU account validation rules.',
+                    'mascot' => '/Thumbsupduck.png',
+                ],
+            ],
+            'open_settings' => [
+                [
+                    'title' => '1. Click Settings button',
+                    'body' => 'Settings Management: manage RHU information, notifications, security, and backup settings clearly and safely.',
+                    'mascot' => '/Thumbsupduck.png',
+                ],
+                [
+                    'title' => '2. Test critical settings',
+                    'body' => 'Review details, save valid settings, then test SMS and backup configuration.',
+                    'mascot' => '/Thumbsupduck.png',
                 ],
             ],
             default => $intent === 'staff_workflow_guidance' ? [
@@ -689,17 +923,27 @@ class ChatController extends Controller
     {
         $replacements = [
             'Queue module' => 'Queue button',
+            'Patient Registry module' => 'Patient Registry button',
             'Appointments module' => 'Appointments button',
             'Appointment module' => 'Appointments button',
             'Consultations module' => 'Consultations button',
             'Telemedicine module' => 'Telemedicine button',
             'Prescriptions module' => 'Prescriptions button',
+            'E-Prescription module' => 'E-Prescription button',
+            'Team Chat module' => 'Team Chat button',
             'Inventory module' => 'Inventory button',
             'Analytics module' => 'Analytics button',
-            'Heatmap module' => 'Heatmap button',
+            'Heatmap module' => 'Heatmap Analytics button',
+            'Heatmap Analytics module' => 'Heatmap Analytics button',
             'CMS module' => 'CMS button',
+            'Announcements module' => 'Announcements button',
+            'Events module' => 'Events button',
+            'Feedback module' => 'Feedback button',
+            'Follow-up module' => 'Health Follow-up button',
+            'Notifications module' => 'Notifications button',
             'SMS module' => 'SMS button',
             'Reports module' => 'Reports button',
+            'Registration Approvals module' => 'Registration Approvals button',
             'Users module' => 'Users button',
             'Settings module' => 'Settings button',
             'Dashboard module' => 'Dashboard button',

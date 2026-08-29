@@ -469,21 +469,15 @@ class GeminiService
             // SPECIFIC task requests must also reach Gemini. "Help me create
             // an event for Sex Education" used to hit the generic 'event'
             // keyword rule and got a click-here walkthrough instead of an
-            // actual draft. Longer messages with drafting/assistance intent
-            // skip the canned rules; short generic questions ("how to post an
-            // event?") keep their fast canned answers.
-            $wordCount = count(preg_split('/\s+/', trim($lower)) ?: []);
-
-            if (
-                $wordCount >= 5 &&
-                $this->containsAny($lower, [
-                    'help me', 'assist me', 'create a', 'create an', 'make a',
-                    'make an', 'draft', 'write', 'suggest', 'recommend',
-                    'gumawa', 'gawan', 'isulat', 'buuin', 'tulungan',
-                    'magmungkahi', ' for ', ' para sa ', ' tungkol sa ',
-                    ' about ',
-                ])
-            ) {
+            // actual draft.
+            //
+            // This used to be gated on a >=5 word count, which was a PROXY for
+            // intent and got the decision wrong on short requests: "draft an
+            // event" is 3 words, failed the gate, fell through to the generic
+            // 'event' rule below and returned a static walkthrough -- the model
+            // was never called at all. Intent is now decided by
+            // isDraftingIntent(), so message LENGTH no longer decides anything.
+            if ($this->isDraftingIntent($lower)) {
                 return null;
             }
 
@@ -502,13 +496,13 @@ class GeminiService
                 return
                     "Narito ang mabilis na guide sa admin dashboard:\n\n" .
                     "1. I-click ang **Dashboard** button para makita ang daily summary at alerts.\n" .
-                    "2. I-click ang **Queue** button para tumawag, mag-serve, at magtapos ng tickets.\n" .
-                    "3. I-click ang **Appointments** button para mag-approve, mag-reschedule, o magsimula ng consultation.\n" .
-                    "4. I-click ang **Consultations** button para mag-record ng diagnosis, notes, prescriptions, at follow-up.\n" .
-                    "5. I-click ang **CMS** button para gumawa ng announcements/events para sa mobile app.\n" .
-                    "6. I-click ang **SMS** button para pumili ng target demographics at mag-send ng campaign.\n" .
-                    "7. I-click ang **Reports** button para gumawa ng printable/exportable RHU reports.\n\n" .
-                    "Sabihin mo kung aling button ang gusto mong i-walkthrough step-by-step.";
+                    "2. Gamitin ang **Patient Registry**, **Queue**, **Appointments**, **Consultations**, **Telemedicine**, at **E-Prescription / Lab Request** buttons para sa patient-care workflow.\n" .
+                    "3. Gamitin ang **Team Chat** at **Inventory** buttons para sa staff coordination at stock safety.\n" .
+                    "4. Gamitin ang **Announcements** at **Events** buttons para sa CMS posts, then **SMS** para sa safe resident messaging.\n" .
+                    "5. Gamitin ang **Reports**, **Analytics**, at **Heatmap Analytics** buttons para sa formal reports and planning signals.\n" .
+                    "6. Gamitin ang **Feedback**, **Health Follow-up**, at **Notifications** buttons para sa resident updates and alerts.\n" .
+                    "7. Tapusin sa **Registration Approvals**, **Users**, at **Settings** buttons para sa account and system control.\n\n" .
+                    "Para sa full step-by-step path, i-on ang **Getting Started** sa chatbot header.";
             }
 
             if ($this->containsAny($lower, ['queue', 'pila'])) {
@@ -655,11 +649,33 @@ class GeminiService
             "4) Add one short 'Watch out for' line with the mistake new staff actually make here. " .
             "5) End by asking ONE question: whether to continue to the next topic or repeat this one. Always end with that question. " .
             "Never dump the whole system at once. Teach ONE topic per reply and wait. " .
+            "Ground the walkthrough in the actual admin pages and their header descriptions, not generic clinic software. Use these source descriptions when explaining each button: " .
+            "Dashboard button - Real-Time RHU Dashboard: live tracking for patients, consultations, queue, telemedicine, inventory, and barangay health heatmap. " .
+            "Patient Registry button - Browse and search active patients, then open a profile for full history. " .
+            "Queue button - near real-time queue status across RHU stations, refreshed from the backend queue API; staff call, serve, complete, skip, no-show, and add walk-in patients here. " .
+            "Appointments button - Simple RHU appointment board for approving, scheduling, rejecting, adding onsite patients to queue, and starting consultations. " .
+            "Consultations button - Review active consultation records, open SOAP documentation, check diagnosis status, and make sure every consultation is properly documented before completion. " .
+            "Telemedicine button - Screen RHU online consultation requests, open video sessions, track request progress, and safely complete SOAP documentation. " .
+            "E-Prescription / Lab Request button - Create medicine prescriptions or laboratory requests and release official PDFs; dispensing happens after release. " .
+            "Team Chat button - Internal staff messaging with chats, group conversations, search, presence, seen receipts, and voice/video calls. " .
+            "Inventory button - Real-time medicines and vaccines stock tracking from the backend, including low stock, expiry, stock-in, stock-out, and adjustment history. " .
+            "CMS Announcements button - Content Management: create simple, readable, and timely public information for Ka-Agapay residents; preview before publishing and archive old advisories. " .
+            "Events button - Events & Programs Management: create clear RHU events, health programs, and public advisories; complete schedule, location, target audience, barangay target, RHU service, visibility, and SMS summary before publishing. " .
+            "Reports button - Formal Diagnosis + ITR consultation records, follow-up tracking, data completeness, staff workload, barangay watchlist, and CSV exports. " .
+            "Analytics button - Track patients, consultations, telemedicine usage, queue tickets, disease clusters, and chatbot questions for better RHU planning. " .
+            "Heatmap Analytics button - Separate operational workspaces for RHU queue monitoring and barangay disease cluster surveillance. " .
+            "Feedback button - Patient service feedback and condition updates submitted from the mobile app, scoped to the assigned RHU; clinical follow-up reminders stay in Health Follow-up. " .
+            "Health Follow-up button - Track overdue, due today, upcoming, and completed patient follow-ups. " .
+            "Notifications button - View mobile requests, queue updates, telemedicine reminders, appointment notices, RHU posts, and important system alerts in one simple inbox. " .
+            "SMS Center button - Send safe RHU reminders, queue alerts, follow-ups, and program advisories; preview recipients first. " .
+            "Registration Approvals button - Review pending residents and staff, open View OCR to verify submitted ID, then approve or reject. " .
+            "Users button - Review, approve, edit, disable, or archive accounts safely; Super Admin can update user roles instantly. " .
+            "Settings button - Manage RHU information, notifications, security, and backup settings clearly and safely. " .
             "If the user has not chosen a topic yet, briefly offer this learning path and ask which to start with: " .
-            "(1) Getting around the dashboard, (2) Queue - calling and serving patients, (3) Appointments - approving and scheduling, " .
-            "(4) Consultations - recording diagnosis and SOAP notes, (5) Telemedicine - online consultations, (6) Prescriptions, " .
-            "(7) Patient Registry and patient profiles, (8) Inventory - medicine and vaccine stock, (9) CMS - posting events and announcements, " .
-            "(10) SMS campaigns, (11) Reports and Analytics, (12) Users - approving accounts and ID verification, (13) Team Chat - messaging co-staff. " .
+            "(1) Dashboard, (2) Patient Registry, (3) Queue, (4) Appointments, (5) Consultations, (6) Telemedicine, " .
+            "(7) E-Prescription / Lab Request, (8) Team Chat, (9) Inventory, (10) CMS Announcements, (11) Events & Programs, " .
+            "(12) Reports, (13) Analytics, (14) Heatmap Analytics, (15) Feedback, (16) Health Follow-up, (17) Notifications, " .
+            "(18) SMS Center, (19) Registration Approvals, (20) Users, (21) Settings. " .
             "You have NO access to live system data: never invent patient records, stock counts, queue numbers, or figures. " .
             "Use realistic EXAMPLE values when illustrating a step and label them clearly as examples. " .
             "Do not give clinical advice or medication doses - that is for a licensed clinician. Do not expose API keys, passwords, or secrets. " .
@@ -671,6 +687,41 @@ class GeminiService
      * the grounded cause checklist in the system prompt, never a canned
      * navigation answer.
      */
+    /**
+     * "Produce this content for me" requests, which must reach the model rather
+     * than a canned navigation walkthrough.
+     *
+     * Deliberately decided by INTENT, never by message length. The previous
+     * >=5-word gate meant "draft an event" (3 words) silently fell through to
+     * the generic 'event' walkthrough and never reached Gemini at all.
+     *
+     * Both halves are required:
+     *   1. a verb that means "compose it for me", not "show me where to click"
+     *   2. a publishable CMS subject to actually compose
+     *
+     * Requiring the subject is what keeps the weak connector words below from
+     * false-positiving on short unrelated messages, and is why "make a report"
+     * (a Reports-module navigation task the assistant cannot compose) keeps its
+     * canned walkthrough while "draft an event" does not.
+     */
+    private function isDraftingIntent(string $lower): bool
+    {
+        $composeVerb = $this->containsAny($lower, [
+            'draft', 'compose', 'write', 'create a', 'create an',
+            'make a', 'make an', 'help me', 'assist me', 'suggest', 'recommend',
+            'gumawa', 'gawan', 'isulat', 'buuin', 'tulungan', 'magmungkahi',
+        ]);
+
+        if (!$composeVerb) {
+            return false;
+        }
+
+        return $this->containsAny($lower, [
+            'event', 'announcement', 'program', 'campaign', 'advisory',
+            'post', 'sms', 'anunsyo', 'patalastas', 'programa', 'kaganapan',
+        ]);
+    }
+
     private function isTroubleshootingIntent(string $lower): bool
     {
         $asksWhy = $this->containsAny($lower, [

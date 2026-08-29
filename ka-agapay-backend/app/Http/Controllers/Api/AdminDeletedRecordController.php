@@ -5,9 +5,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Announcement;
-use App\Models\Appointment;
 use App\Models\AuditLog;
-use App\Models\Consultation;
 use App\Models\Event;
 use App\Models\InventoryItem;
 use App\Models\User;
@@ -23,11 +21,23 @@ class AdminDeletedRecordController extends Controller
 {
     private int $restoreWindowDays = 30;
 
+    /*
+     * Only models that ACTUALLY use SoftDeletes belong here — restore() aborts
+     * with a 422 on anything else, so an aspirational entry is a promise the
+     * endpoint cannot keep.
+     *
+     * Appointments and consultations are deliberately ABSENT: neither model uses
+     * SoftDeletes and neither module exposes a delete route at all, so there is
+     * nothing to restore. Do not re-add them without first adding the trait —
+     * and note that doing so attaches a deleted_at global scope that silently
+     * filters every existing consultation/appointment query (Analytics, Reports,
+     * Patient Profile, the appointment boards), so it is not a one-line change.
+     * They remain listed under skipped_modules in expire(), which is correct:
+     * clinical records are never permanently purged.
+     */
     private array $restorableModels = [
         'announcements' => Announcement::class,
         'events' => Event::class,
-        'appointments' => Appointment::class,
-        'consultations' => Consultation::class,
         'inventory' => InventoryItem::class,
         'inventory_items' => InventoryItem::class,
         'users' => User::class,
