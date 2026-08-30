@@ -136,6 +136,41 @@ class InventoryService
     }
 
     /**
+     * Record a ledger row for a stock level that was ALREADY written elsewhere.
+     *
+     * Used by item creation (opening stock) and by the edit form, which set
+     * current_stock directly. Those paths bypassed stockIn/stockOut entirely,
+     * so the quantity moved with no ledger row and no actor -- an item could be
+     * created with 500 units, or edited from 10 to 500, and the Stock Movement
+     * History would show nothing at all.
+     *
+     * This deliberately does NOT touch current_stock: the caller already
+     * persisted it, and re-applying the delta here would double-count.
+     * Returns null for a no-op change so edits that leave stock alone do not
+     * litter the history.
+     */
+    public function recordAppliedStockChange(
+        InventoryItem $item,
+        string $transactionType,
+        int $quantityBefore,
+        int $quantityAfter,
+        array $data = []
+    ): ?InventoryTransaction {
+        if ($quantityBefore === $quantityAfter && $transactionType !== 'stock_in') {
+            return null;
+        }
+
+        return $this->recordTransaction(
+            item: $item,
+            transactionType: $transactionType,
+            quantityBefore: $quantityBefore,
+            quantityChanged: $quantityAfter - $quantityBefore,
+            quantityAfter: $quantityAfter,
+            data: $data
+        );
+    }
+
+    /**
      * Raise a staff-only low/out/expiry notification for an item after a stock
      * change. Runs outside the stock transaction and never throws, so a
      * notification problem can never roll back or block the movement.

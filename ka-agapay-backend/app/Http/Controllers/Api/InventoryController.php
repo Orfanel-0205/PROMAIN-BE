@@ -205,6 +205,43 @@ class InventoryController extends Controller
             ], 500);
         }
 
+        // Stamp the creator when the column exists (guarded so a missing column
+        // can never break item creation).
+        if (Schema::hasColumn($item->getTable(), 'created_by')) {
+            $item->forceFill(['created_by' => $request->user()?->user_id ?? $request->user()?->id])->save();
+        }
+
+        // Lifecycle trail, mirroring the existing 'inventory.deleted' entry.
+        $this->audit->log(
+            $request,
+            'inventory.created',
+            'inventory',
+            $item,
+            [],
+            $item->attributesToArray(),
+            [
+                'item_code' => $item->item_code,
+                'opening_stock' => (int) $item->current_stock,
+            ],
+            'info',
+            $item->getAuditLabel()
+        );
+
+        // Opening stock is a real stock ADDITION and must be visible in Stock
+        // Movement History with an actor, not appear from nowhere.
+        if ((int) $item->current_stock > 0) {
+            $this->service->recordAppliedStockChange(
+                $item,
+                'stock_in',
+                0,
+                (int) $item->current_stock,
+                [
+                    'reason' => 'Opening stock recorded when the item was created.',
+                    'notes'  => $validated['notes'] ?? null,
+                ]
+            );
+        }
+
         return response()->json([
             'message' => 'Inventory item created.',
             'data' => $item->fresh(),
@@ -330,7 +367,48 @@ class InventoryController extends Controller
             'notes'                   => ['nullable', 'string'],
         ]);
 
+        $before = $inventory->attributesToArray();
+        $stockBefore = (int) $inventory->current_stock;
+
         $inventory->update($validated);
+
+        if (Schema::hasColumn($inventory->getTable(), 'updated_by')) {
+            $inventory->forceFill(['updated_by' => $request->user()?->user_id ?? $request->user()?->id])->save();
+        }
+
+        $stockAfter = (int) $inventory->fresh()->current_stock;
+
+        // The edit form can set current_stock directly, which used to move stock
+        // with NO ledger row and no actor -- a silent way around Restock/Deduct.
+        // Any change made that way is now recorded as an adjustment.
+        if ($stockBefore !== $stockAfter) {
+            $this->service->recordAppliedStockChange(
+                $inventory->fresh(),
+                'adjustment',
+                $stockBefore,
+                $stockAfter,
+                [
+                    'reason' => 'Stock changed directly from the Edit Item form.',
+                    'notes'  => 'Recorded automatically; use Restock/Deduct/Adjust to capture a specific reason.',
+                ]
+            );
+        }
+
+        $this->audit->log(
+            $request,
+            'inventory.updated',
+            'inventory',
+            $inventory,
+            $before,
+            $inventory->fresh()->attributesToArray(),
+            [
+                'item_code' => $inventory->item_code,
+                'stock_before' => $stockBefore,
+                'stock_after' => $stockAfter,
+            ],
+            'info',
+            $inventory->getAuditLabel()
+        );
 
         return response()->json([
             'message' => 'Inventory item updated.',
@@ -402,11 +480,24 @@ class InventoryController extends Controller
     {
         $this->authorizeInventory($request);
 
+        // 'reason' is OPTIONAL here by design: a restock is a routine delivery
+        // and the delivery receipt (reference_number) is the real accountability
+        // artifact. Deduct/Adjust keep it REQUIRED because those remove or
+        // overwrite stock. It is accepted rather than ignored because the web
+        // admin's restock form has always shown a Reason box -- staff typed into
+        // it and the value was silently dropped before reaching the ledger.
         $validated = $request->validate([
             'quantity'         => ['required', 'integer', 'min:1'],
             'reference_number' => ['nullable', 'string', 'max:50'],
+            'reason'           => ['nullable', 'string', 'max:300'],
             'notes'            => ['nullable', 'string', 'max:500'],
         ]);
+
+        // Drop a blank reason so InventoryService still applies its default
+        // instead of writing an empty string into the ledger.
+        if (trim((string) ($validated['reason'] ?? '')) === '') {
+            unset($validated['reason']);
+        }
 
         $transaction = $this->service->stockIn(
             $item,
@@ -495,9 +586,29 @@ class InventoryController extends Controller
         $this->authorizeInventory($request);
 
         $transactions = $item->transactions()
-            ->with(['performedBy'])
-            ->latest('created_at')
+            ->with(['performedBy:user_id,first_name,last_name'])
+            // Secondary sort on id: several movements on the same item often
+            // share the same created_at second, and ordering by timestamp alone
+            // let them render in a scrambled, non-chronological order.
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
             ->paginate($request->integer('per_page', 20));
+
+        // Eloquent serializes the performedBy relation under the key
+        // "performed_by", which OVERWRITES the integer column of the same name
+        // and left the UI with an object where it expected an id. Expose the
+        // actor explicitly instead, and keep performed_by as the id.
+        $transactions->getCollection()->transform(function ($tx) {
+            $actor = $tx->performedBy;
+            $name = $actor
+                ? trim(($actor->first_name ?? '') . ' ' . ($actor->last_name ?? ''))
+                : '';
+
+            $tx->unsetRelation('performedBy');
+            $tx->performed_by_name = $name !== '' ? $name : null;
+
+            return $tx;
+        });
 
         return response()->json($transactions);
     }
