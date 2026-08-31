@@ -57,6 +57,32 @@ class AccountSmsService
     }
 
     /**
+     * Security transparency: an administrator changed this account's password.
+     *
+     * The NEW PASSWORD IS DELIBERATELY NOT SENT. SMS is an insecure, logged
+     * channel (every message lands in sms_logs and stays on the handset), and
+     * the admin conveys the password in person. The point of this message is so
+     * a staff member finds out if their account was taken over.
+     */
+    public function sendPasswordChangedByAdmin(User $user): ?SmsLog
+    {
+        $mobile = $this->recipientMobile($user);
+        if ($mobile === null) {
+            return null;
+        }
+
+        $first = $this->firstName($user);
+
+        $message = implode(' ', [
+            "Hi {$first}, your Ka-Agapay password was changed by an administrator on "
+                . now()->format('d M Y, g:i A') . '.',
+            'If you did not expect this, contact your RHU administrator immediately.',
+        ]);
+
+        return $this->dispatch($user, $mobile, $message, 'account_password_changed');
+    }
+
+    /**
      * 3b — self-registration approved. Reused for staff approvals too (harmless
      * and consistent).
      */

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
+use App\Models\InventoryPersonnel;
 use App\Support\Rhu;
 use App\Services\Audit\AuditService;
 use App\Services\Inventory\InventoryService;
@@ -581,6 +582,118 @@ class InventoryController extends Controller
         ]);
     }
 
+    /**
+     * GET /inventory/assigned-personnel?rhu_id=
+     *
+     * Current designation for an RHU plus the staff eligible to hold it.
+     * RHU-scoped through the shared Rhu helper exactly like every other
+     * inventory read, so RHU1 can never see or set RHU2's assignment.
+     */
+    public function assignedPersonnel(Request $request): JsonResponse
+    {
+        $this->authorizeInventory($request);
+
+        $request->validate(['rhu_id' => ['required', 'integer']]);
+        $rhuId = Rhu::scopeRhuId($request->user(), $request->integer('rhu_id'));
+
+        $row = InventoryPersonnel::query()
+            ->with(['user:user_id,first_name,last_name', 'assignedBy:user_id,first_name,last_name'])
+            ->where('rhu_id', $rhuId)
+            ->first();
+
+        $name = fn ($u) => $u
+            ? trim(($u->first_name ?? '') . ' ' . ($u->last_name ?? ''))
+            : null;
+
+        // Staff who could plausibly hold the designation: those already allowed
+        // to touch inventory, scoped to this RHU.
+        $eligible = \App\Models\User::query()
+            ->whereHas('role', fn ($q) => $q->whereIn('name', [
+                'mho', 'super_admin', 'staff_admin', 'admin', 'rhu_admin',
+                'staff', 'doctor', 'nurse', 'midwife', 'bhw',
+            ]))
+            ->where('account_status', 'active')
+            ->orderBy('first_name')
+            ->get(['user_id', 'first_name', 'last_name', 'assigned_rhu_id'])
+            ->map(fn ($u) => [
+                'user_id' => (int) $u->user_id,
+                'name' => trim(($u->first_name ?? '') . ' ' . ($u->last_name ?? '')),
+                'assigned_rhu_id' => $u->assigned_rhu_id ? (int) $u->assigned_rhu_id : null,
+            ])
+            ->values();
+
+        return response()->json([
+            'data' => [
+                'rhu_id' => $rhuId,
+                'user_id' => $row?->user_id ? (int) $row->user_id : null,
+                'name' => $name($row?->user),
+                'assigned_by_name' => $name($row?->assignedBy),
+                'assigned_at' => optional($row?->assigned_at)->toISOString(),
+            ],
+            'eligible' => $eligible,
+        ]);
+    }
+
+    /**
+     * POST /inventory/assigned-personnel
+     *
+     * Designate (or clear, with user_id = null) the inventory personnel for an
+     * RHU. Strict authorization — same Super Admin / MHO gate as adjust and
+     * delete — and written to the SAME audit_logs trail as every other
+     * inventory lifecycle event.
+     */
+    public function assignPersonnel(Request $request): JsonResponse
+    {
+        $this->authorizeInventory($request, true);
+
+        $validated = $request->validate([
+            'rhu_id'  => ['required', 'integer'],
+            'user_id' => ['nullable', 'integer', 'exists:users,user_id'],
+        ]);
+
+        $rhuId = Rhu::scopeRhuId($request->user(), (int) $validated['rhu_id']);
+        $actorId = $request->user()?->user_id ?? $request->user()?->id;
+
+        $previous = InventoryPersonnel::query()->where('rhu_id', $rhuId)->first();
+
+        $row = InventoryPersonnel::updateOrCreate(
+            ['rhu_id' => $rhuId],
+            [
+                'user_id' => $validated['user_id'] ?? null,
+                'assigned_by' => $actorId,
+                'assigned_at' => now(),
+            ]
+        );
+
+        $row->load('user:user_id,first_name,last_name');
+        $name = $row->user
+            ? trim(($row->user->first_name ?? '') . ' ' . ($row->user->last_name ?? ''))
+            : null;
+
+        $this->audit->log(
+            $request,
+            'inventory.personnel_assigned',
+            'inventory',
+            $row,
+            ['user_id' => $previous?->user_id],
+            ['user_id' => $row->user_id],
+            ['rhu_id' => $rhuId, 'assigned_name' => $name],
+            'info',
+            $name ? "Inventory personnel for RHU {$rhuId}: {$name}" : "Inventory personnel cleared for RHU {$rhuId}"
+        );
+
+        return response()->json([
+            'message' => $name
+                ? "{$name} is now the assigned inventory personnel for RHU {$rhuId}."
+                : "Assigned inventory personnel cleared for RHU {$rhuId}.",
+            'data' => [
+                'rhu_id' => $rhuId,
+                'user_id' => $row->user_id ? (int) $row->user_id : null,
+                'name' => $name,
+            ],
+        ]);
+    }
+
     public function transactions(Request $request, InventoryItem $item): JsonResponse
     {
         $this->authorizeInventory($request);
@@ -598,7 +711,19 @@ class InventoryController extends Controller
         // "performed_by", which OVERWRITES the integer column of the same name
         // and left the UI with an object where it expected an id. Expose the
         // actor explicitly instead, and keep performed_by as the id.
-        $transactions->getCollection()->transform(function ($tx) {
+        // Part 2(a): who is FORMALLY assigned to inventory at this item's RHU,
+        // so each movement can be cross-referenced against who actually did it.
+        $assignedUserId = InventoryPersonnel::assignedUserIdFor((int) $item->rhu_id);
+        $assigned = $assignedUserId
+            ? \App\Models\User::query()
+                ->where('user_id', $assignedUserId)
+                ->first(['user_id', 'first_name', 'last_name'])
+            : null;
+        $assignedName = $assigned
+            ? trim(($assigned->first_name ?? '') . ' ' . ($assigned->last_name ?? ''))
+            : null;
+
+        $transactions->getCollection()->transform(function ($tx) use ($assignedUserId, $assignedName) {
             $actor = $tx->performedBy;
             $name = $actor
                 ? trim(($actor->first_name ?? '') . ' ' . ($actor->last_name ?? ''))
@@ -606,6 +731,15 @@ class InventoryController extends Controller
 
             $tx->unsetRelation('performedBy');
             $tx->performed_by_name = $name !== '' ? $name : null;
+
+            // null  = nobody is designated for this RHU, so there is nothing to
+            //         compare against (NOT the same as "someone unauthorised").
+            // true  = performed by the assigned personnel.
+            // false = performed by someone else.
+            $tx->assigned_personnel_name = $assignedName;
+            $tx->performed_by_assigned = $assignedUserId === null
+                ? null
+                : ((int) $tx->performed_by === (int) $assignedUserId);
 
             return $tx;
         });

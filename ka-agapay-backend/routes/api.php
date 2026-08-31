@@ -348,6 +348,11 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/medicines/search',              [InventoryController::class, 'searchMedicines']);
         Route::get('/inventory/alerts',              [InventoryController::class, 'alerts']);
+        // Part 2(a) - formally assigned inventory personnel per RHU.
+        // Declared BEFORE apiResource so 'assigned-personnel' is not
+        // swallowed by the /inventory/{inventory} wildcard.
+        Route::get('/inventory/assigned-personnel',  [InventoryController::class, 'assignedPersonnel']);
+        Route::post('/inventory/assigned-personnel', [InventoryController::class, 'assignPersonnel']);
         Route::post('/inventory/{item}/stock-in',    [InventoryController::class, 'stockIn']);
         Route::post('/inventory/{item}/stock-out',   [InventoryController::class, 'stockOut']);
         Route::post('/inventory/{item}/adjust',      [InventoryController::class, 'adjust']);

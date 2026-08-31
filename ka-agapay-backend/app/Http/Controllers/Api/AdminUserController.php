@@ -199,7 +199,12 @@ class AdminUserController extends Controller
 
             'role' => ['required', 'string', 'max:50'],
 
-            'password' => ['nullable', 'string', PasswordPolicyService::standard()],
+            // 'confirmed' pairs this with password_confirmation. Matching is checked
+            // SERVER-side, not just in the browser, so a crafted request cannot set
+            // a password the admin never retyped. Policy stays the single shared
+            // PasswordPolicyService::standard() rule used by every other flow.
+            'password' => ['nullable', 'string', 'confirmed', PasswordPolicyService::standard()],
+            'password_confirmation' => ['nullable', 'string'],
 
             'sex' => ['nullable', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -503,7 +508,12 @@ class AdminUserController extends Controller
 
             'role' => ['nullable', 'string', 'max:50'],
 
-            'password' => ['nullable', 'string', PasswordPolicyService::standard()],
+            // 'confirmed' pairs this with password_confirmation. Matching is checked
+            // SERVER-side, not just in the browser, so a crafted request cannot set
+            // a password the admin never retyped. Policy stays the single shared
+            // PasswordPolicyService::standard() rule used by every other flow.
+            'password' => ['nullable', 'string', 'confirmed', PasswordPolicyService::standard()],
+            'password_confirmation' => ['nullable', 'string'],
 
             'sex' => ['nullable', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -608,8 +618,16 @@ class AdminUserController extends Controller
             $updates['assigned_rhu_id'] = $newAssignedRhuId;
         }
 
+        $passwordWasChanged = false;
+
         if (!empty($validated['password'])) {
             $updates['password'] = Hash::make($validated['password']);
+
+            // Only counts as "changed by an administrator" when someone else did
+            // it. An admin editing their own row is a self-change and must not
+            // text itself an intruder warning.
+            $actorId = $request->user()?->user_id ?? $request->user()?->id;
+            $passwordWasChanged = (int) $actorId !== (int) ($user->user_id ?? $user->id);
         }
 
         if (!empty($validated['role'])) {
@@ -672,6 +690,22 @@ class AdminUserController extends Controller
                 );
             }
         });
+
+        // Security transparency: tell the account owner an administrator changed
+        // their password, so a takeover is visible to them. Fires only after the
+        // change is committed, and never sends the password itself. Wrapped so an
+        // SMS problem can never fail the update.
+        if ($passwordWasChanged) {
+            try {
+                app(\App\Services\Notification\AccountSmsService::class)
+                    ->sendPasswordChangedByAdmin($user->fresh());
+            } catch (\Throwable $e) {
+                logger()->warning('[AdminUserController] Password-change SMS failed.', [
+                    'user_id' => $user->user_id ?? $user->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         return response()->json([
             'message' => 'User updated successfully.',
