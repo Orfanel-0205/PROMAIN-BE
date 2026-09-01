@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\Telemedicine\SessionController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\RegistrationApprovalController;
 use App\Http\Controllers\Api\RegistrationInviteController;
+use App\Http\Controllers\Api\AdminBackupController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
 use App\Http\Controllers\Api\AiSettingsController;
@@ -225,6 +226,22 @@ Route::prefix('v1')->group(function () {
                 Route::get('/logs',     [AdminSmsController::class, 'logs']);
                 Route::post('/preview', [AdminSmsController::class, 'preview']);
                 Route::post('/send',    [AdminSmsController::class, 'send']);
+            });
+
+        // =====================================================================
+        // BACKUP STATUS (read-only)
+        // Final URL:
+        // GET /api/v1/admin/backups/status
+        //
+        // Reports what the nightly cron actually did. There is no POST here on
+        // purpose: pg_dump belongs to cron, not to a request thread. See
+        // AdminBackupController and docs/OPERATIONS.md.
+        // =====================================================================
+
+        Route::prefix('admin/backups')
+            ->middleware('role:super_admin,mho,rhu_admin')
+            ->group(function () {
+                Route::get('/status', [AdminBackupController::class, 'status']);
             });
 
         // =====================================================================
