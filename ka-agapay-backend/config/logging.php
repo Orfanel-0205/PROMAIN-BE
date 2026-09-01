@@ -52,9 +52,24 @@ return [
     */
 
     'channels' => [
+        /*
+         * Phase 2 — the default production stack.
+         *
+         * Was hardcoded to ['single']: ONE log file, never rotated, which is
+         * the usual way this droplet's disk fills up. It is now driven by
+         * LOG_STACK so alerting can be turned on by editing .env rather than
+         * by editing code.
+         *
+         *   LOG_STACK=daily         rotation only (safe default)
+         *   LOG_STACK=daily,slack   rotation + webhook alerts
+         *
+         * Listing 'slack' with LOG_SLACK_WEBHOOK_URL unset is SAFE: the slack
+         * handler is skipped, nothing throws, and 'daily' still receives every
+         * record. Verified against this Laravel version before shipping.
+         */
         'stack' => [
             'driver' => 'stack',
-            'channels' => ['single'],
+            'channels' => explode(',', (string) env('LOG_STACK', 'daily,slack')),
             'ignore_exceptions' => false,
         ],
 
@@ -73,12 +88,27 @@ return [
             'replace_placeholders' => true,
         ],
 
+        /*
+         * Alert destination. Inert until LOG_SLACK_WEBHOOK_URL is set.
+         *
+         * Its level is deliberately SEPARATE from LOG_LEVEL: the log file wants
+         * warning and above, but a chat channel that fires on every warning
+         * gets muted by the people who most need to read it. Start at warning
+         * as configured here; raise LOG_SLACK_LEVEL to 'error' if it turns out
+         * noisy in practice.
+         *
+         * Backup failures (backup:run, backup:offsite) log at error level, so
+         * they reach this channel at either setting.
+         */
         'slack' => [
             'driver' => 'slack',
             'url' => env('LOG_SLACK_WEBHOOK_URL'),
-            'username' => 'Laravel Log',
-            'emoji' => ':boom:',
-            'level' => env('LOG_LEVEL', 'critical'),
+            'username' => env('LOG_SLACK_USERNAME', 'Ka-Agapay'),
+            'emoji' => ':rotating_light:',
+            // Deliberately does NOT fall back to LOG_LEVEL. A server left at
+            // LOG_LEVEL=debug would otherwise fire the webhook on every debug
+            // record and flood the channel into uselessness.
+            'level' => env('LOG_SLACK_LEVEL', 'warning'),
             'replace_placeholders' => true,
         ],
 
