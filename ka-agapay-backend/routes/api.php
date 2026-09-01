@@ -59,29 +59,58 @@ Route::prefix('v1')->group(function () {
     // PUBLIC ROUTES
     // =========================================================================
 
-    Route::middleware('throttle:5,1')->group(function () {
+    // Phase 3 — auth rate limiting.
+    //
+    // These were all one shared `throttle:5,1` bucket keyed by IP alone. Every
+    // RHU workstation is behind a single municipal connection, so five combined
+    // attempts per minute were shared by ALL staff at both facilities and one
+    // mistyped password locked out the building.
+    //
+    // Each named limiter (App\Providers\RouteServiceProvider) applies a tight
+    // PER-ACCOUNT limit plus a wider PER-IP limit, so guessing is still stopped
+    // while a shared address is not. See docs/OPERATIONS.md.
 
-        // ---------------------------------------------------------------------
-        // AUTHENTICATION
-        // ---------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // AUTHENTICATION — 5/min per account, 30/min per IP
+    // ---------------------------------------------------------------------
+
+    Route::middleware('throttle:auth-login')->group(function () {
 
         Route::post('/register',        [AuthController::class, 'register']);
         Route::post('/login',           [AuthController::class, 'login']);
 
-        // WEB ADMIN LOGIN / REGISTRATION
+        // WEB ADMIN LOGIN
         Route::post('/admin/login',     [AuthController::class, 'adminLogin']);
-        Route::post('/admin/register',  [AdminRegistrationController::class, 'store']);
 
         Route::post('/verify-otp',      [AuthController::class, 'verifyOtp']);
-        Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
-        Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
-        Route::post('/reset-password',  [AuthController::class, 'resetPassword']);
 
         // ---------------------------------------------------------------------
         // BIOMETRIC LOGIN
         // ---------------------------------------------------------------------
 
         Route::post('/biometric/login', [AuthController::class, 'biometricLogin']);
+    });
+
+    // ---------------------------------------------------------------------
+    // ACCOUNT RECOVERY — 3/min per account, 15/min per IP.
+    // Tighter because each accepted request can send a real (billed) SMS.
+    // ---------------------------------------------------------------------
+
+    Route::middleware('throttle:auth-recovery')->group(function () {
+
+        Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
+        Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+        Route::post('/reset-password',  [AuthController::class, 'resetPassword']);
+    });
+
+    // ---------------------------------------------------------------------
+    // REGISTRATION-INVITE ACCEPTANCE — 10/min per invite token, 20/min per IP.
+    // Bounds signature guessing without breaking a page refresh.
+    // ---------------------------------------------------------------------
+
+    Route::middleware('throttle:auth-invite')->group(function () {
+
+        Route::post('/admin/register',  [AdminRegistrationController::class, 'store']);
     });
 
     // =========================================================================
@@ -106,7 +135,7 @@ Route::prefix('v1')->group(function () {
     // logic. Route NAME is what URL::temporarySignedRoute() signs against.
     Route::get('/admin/register/validate-invite', [RegistrationInviteController::class, 'verify'])
         ->name('admin.register.invite.verify')
-        ->middleware('throttle:20,1');
+        ->middleware('throttle:auth-invite');
 
     // =========================================================================
     // AUTHENTICATED ROUTES
