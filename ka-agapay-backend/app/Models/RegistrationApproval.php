@@ -1,5 +1,5 @@
-//app/Models/RegistrationApproval.php
 <?php
+// app/Models/RegistrationApproval.php
 
 namespace App\Models;
 
