@@ -88,6 +88,20 @@ class SessionController extends Controller
      */
     public function show(TelemedicineSession $session): JsonResponse
     {
+        /*
+         * SECURITY: this endpoint MINTS a JaaS room token.
+         *
+         * Serialising the session runs WebRtcService::buildRoomConfig(), which
+         * issues a signed JWT naming the caller and valid for that room. Without
+         * this gate, any authenticated user could request any session id and
+         * receive both the consultation record and a working token for someone
+         * else's video call — so requiring a JWT to join would have protected
+         * nothing.
+         *
+         * The policy's participant test mirrors the scoping index() applies.
+         */
+        $this->authorize('view', $session);
+
         $session->load([
             'request.residentProfile.user',
             'request.residentProfile.barangay',
