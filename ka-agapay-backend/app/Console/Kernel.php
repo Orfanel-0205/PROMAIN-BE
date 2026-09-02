@@ -24,23 +24,33 @@ class Kernel extends ConsoleKernel
         })->dailyAt('00:05')->description('Expire stale prescriptions');
 
         $schedule->command('followups:send-reminders')
+            ->name('Send follow-up reminder push notifications')
             ->dailyAt('08:00')
-            ->withoutOverlapping()
-            ->description('Send follow-up reminder push notifications');
+            ->withoutOverlapping();
 
         // 3-days-before SMS reminder for published events, scoped to each
         // event's barangay/facility audience. Idempotent (reminder_sms_sent_at).
         $schedule->command('events:send-reminders')
+            ->name('Send 3-days-before event SMS reminders to target audiences')
             ->dailyAt('08:15')
-            ->withoutOverlapping()
-            ->description('Send 3-days-before event SMS reminders to target audiences');
+            ->withoutOverlapping();
 
         // Part 2 (trigger #4) — daily staff alerts for low/out/expiring inventory
         // so alerts are not limited to items that had a stock movement. Deduped.
+        //
+        // ORDERING MATTERS on closure events: CallbackEvent::withoutOverlapping()
+        // throws unless the name is already set, because the overlap mutex key is
+        // sha1() of that name and a closure has nothing else to derive it from.
+        // This line previously called ->description() AFTER ->withoutOverlapping(),
+        // which threw a LogicException while the schedule was being BUILT -- so
+        // every `schedule:run` aborted and NONE of the jobs here ever executed.
+        // Keep the name before withoutOverlapping().
         $schedule->call(function () {
             $count = app(\App\Services\Notification\NotificationService::class)->sweepInventoryAlerts();
             logger()->info("Swept {$count} inventory item(s) for staff stock/expiry alerts.");
-        })->dailyAt('07:30')->withoutOverlapping()->description('Sweep inventory low-stock / expiry alerts');
+        })->name('Sweep inventory low-stock / expiry alerts')
+            ->dailyAt('07:30')
+            ->withoutOverlapping();
     }
 
     /**
