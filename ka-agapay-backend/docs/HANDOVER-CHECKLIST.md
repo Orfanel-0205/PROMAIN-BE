@@ -31,6 +31,30 @@ can access it — one of whom is a permanent staff member, not a student.
 | **Expo / EAS + Play Store + App Store** | Mobile app updates | `__________` | `__________` |
 | **GitHub** (source code) | Nobody can change or redeploy the system | `__________` | `__________` |
 
+### Where the source code lives
+
+Three private repositories under the `Orfanel-0205` GitHub account. Anyone
+maintaining this system needs access to all three (see the GitHub row above).
+
+| Part of the system | Repository |
+|---|---|
+| Backend API (Laravel) | `Orfanel-0205/PROMAIN-BE` |
+| Web admin (React) | `Orfanel-0205/Rhu-admin-main` |
+| Mobile app (Expo) | `Orfanel-0205/KaAgapay-mobile` |
+
+> ### ⛔ Do not use `promain-f8`
+>
+> There is an older repository, **`Orfanel-0205/promain-f8`**, that also contains
+> the mobile app. **It is a stale archive and must not be used.** Its last commit
+> is 2026-06-20, it is missing roughly two and a half months of work, and the app
+> sits inside a `KaAgapay/` subfolder rather than at the repository root.
+>
+> The current mobile code is in **`KaAgapay-mobile`**. The two have completely
+> unrelated histories — the working copy was re-initialised as a fresh
+> repository on 2026-06-23, which severed the link. Keep `promain-f8` for
+> historical reference only, or archive it on GitHub so nobody clones it by
+> mistake.
+
 > ### ⛔ The domain is the quiet one
 >
 > Domain registration usually renews annually and is easy to forget. If it
@@ -94,7 +118,7 @@ the source code alone.
       admin's *Settings → Backup* panel shows **"Database is protected"**. If it
       says *"No backups recorded yet"*, the job is not installed.
 - [ ] **At least one restore has been tested.** A backup nobody has restored is a
-      guess. Date of last successful restore drill: `__________`
+      guess. Record it in the restore drill log below.
 - [ ] **Backups are stored somewhere other than the server.** A copy that lives
       only on the server does not survive that server failing. If the panel says
       *"Backup has not left the server"*, this is not done.
@@ -112,6 +136,19 @@ the source code alone.
 - [ ] **At least two people can access every account in §1.**
 - [ ] **At least one RHU staff member has walked through `docs/OPERATIONS.md`**
       with the outgoing team, on the actual server.
+
+### Restore drill log
+
+Add a row each time a restore is actually performed. Procedure is in
+`OPERATIONS.md` §7 — restore into a scratch database, never over production,
+then check the row counts. **If the most recent entry is more than a term old,
+the backups are unproven again.**
+
+| Date performed | Dump file restored | By whom | Row counts looked right? |
+|---|---|---|---|
+| `__________` | `__________` | `__________` | `__________` |
+| `__________` | `__________` | `__________` | `__________` |
+| `__________` | `__________` | `__________` | `__________` |
 
 ### Should be scheduled, not just noted
 
@@ -178,6 +215,9 @@ on day one:
    what each one controls.
 3. **Access to the accounts in §1** — without these, no developer can help,
    however skilled.
+4. **The three repositories named in §1** — and the warning that `promain-f8`
+   is a stale archive, not the mobile app. Someone who clones the wrong one will
+   be reading code that is months out of date and will not realise it.
 
 **Skills to ask for when hiring:** PHP / Laravel, PostgreSQL, React, basic Linux
 server administration (Nginx, cron, Certbot).
