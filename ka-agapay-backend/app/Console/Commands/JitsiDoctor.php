@@ -108,13 +108,31 @@ class JitsiDoctor extends Command
                 $header = json_decode($this->b64($parts[0]), true) ?: [];
                 $claims = json_decode($this->b64($parts[1]), true) ?: [];
 
-                $this->line(sprintf('  alg / kid present         %s / %s',
+                $this->line(sprintf('  alg / kid                 %s / %s',
                     $header['alg'] ?? '?',
-                    isset($header['kid']) ? 'yes' : 'NO'));
-                $this->line(sprintf('  aud / iss / sub           %s / %s / %s',
+                    $header['kid'] ?? 'MISSING'));
+                $this->line(sprintf('  aud / iss                 %s / %s',
                     $claims['aud'] ?? '?',
-                    $claims['iss'] ?? '?',
-                    isset($claims['sub']) ? 'set' : 'MISSING'));
+                    $claims['iss'] ?? '?'));
+
+                // 'sub' must equal the JaaS AppID or 8x8 rejects the join. This
+                // previously printed the literal word 'set' from an
+                // isset() presence check, so an operator comparing the token
+                // against the 8x8 dashboard had nothing to compare -- and a
+                // wrong AppID would have looked identical to a correct one.
+                // Neither the AppID nor the key id is secret: both travel in
+                // the token, and the AppID is in every room URL.
+                $configuredAppId = (string) config('services.jitsi.app_id', '');
+                $sub = $claims['sub'] ?? null;
+
+                $subLine = match (true) {
+                    $sub === null => 'MISSING',
+                    $configuredAppId === '' => $sub . '   (JITSI_APP_ID is unset, cannot compare)',
+                    $sub === $configuredAppId => $sub . '   (matches JITSI_APP_ID)',
+                    default => $sub . '   (MISMATCH - JITSI_APP_ID is ' . $configuredAppId . ')',
+                };
+
+                $this->line(sprintf('  sub (JaaS AppID)          %s', $subLine));
                 $this->line(sprintf('  room claim                %s', $claims['room'] ?? '?'));
                 $this->line(sprintf('  context.user.name         %s', $claims['context']['user']['name'] ?? '?'));
                 $this->line(sprintf('  expires in                %d min',
