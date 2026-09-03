@@ -60,9 +60,51 @@ class JitsiTokenService
         return $this->provider() === 'jaas';
     }
 
+    /**
+     * The JWT 'kid' header, in the compound form 8x8 requires.
+     *
+     * JaaS expects "<AppID>/<shortKeyId>" and rejects a bare short id with
+     * "Key ID (kid) does not match sub". This method used to return
+     * config('services.jitsi.api_key') raw, with no concatenation anywhere in
+     * the class, so production minted every token with kid="0aa1cb" instead of
+     * "vpaas-magic-cookie-.../0aa1cb" and every JaaS join was refused.
+     *
+     * The short id is the documented contract, not a mistake by whoever
+     * configured the droplet: .env.example calls it "API key ID", OPERATIONS.md
+     * shows JITSI_API_KEY=<key id>, and the accepted alias is literally
+     * JITSI_API_KEY_ID. The operator pasted exactly what the 8x8 console shows
+     * and what our own docs asked for; the app simply never did its half.
+     * Building the compound value here keeps that contract and means the fix
+     * ships with a deploy rather than needing an .env edit on the droplet.
+     *
+     * Idempotent: a value that already contains '/' is treated as a complete
+     * compound id and returned untouched, so an operator who pastes the full
+     * string is not punished with "<AppID>/<AppID>/<key>". If that prefix is
+     * the WRONG AppID it is deliberately left alone rather than silently
+     * rewritten -- `jitsi:doctor` reports the mismatch instead.
+     */
     public function keyId(): string
     {
-        return (string) config('services.jitsi.api_key', '');
+        $raw = trim((string) config('services.jitsi.api_key', ''));
+
+        if ($raw === '') {
+            return '';
+        }
+
+        // Already compound (correct or not) -- respect what was configured.
+        if (str_contains($raw, '/')) {
+            return $raw;
+        }
+
+        $appId = $this->appId();
+
+        // No tenant to qualify against (self_hosted, or misconfigured JaaS that
+        // signJaas() will refuse anyway). Return the bare value unchanged.
+        if ($appId === '') {
+            return $raw;
+        }
+
+        return $appId . '/' . $raw;
     }
 
     /**

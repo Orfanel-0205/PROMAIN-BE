@@ -108,9 +108,23 @@ class JitsiDoctor extends Command
                 $header = json_decode($this->b64($parts[0]), true) ?: [];
                 $claims = json_decode($this->b64($parts[1]), true) ?: [];
 
-                $this->line(sprintf('  alg / kid                 %s / %s',
-                    $header['alg'] ?? '?',
-                    $header['kid'] ?? 'MISSING'));
+                // kid must be "<AppID>/<shortKeyId>". A bare short id is what
+                // 8x8 rejects with "Key ID (kid) does not match sub", and it
+                // looks perfectly plausible in a log, so check the shape here
+                // rather than leaving an operator to eyeball it.
+                $kid = $header['kid'] ?? null;
+                $appIdForKid = (string) config('services.jitsi.app_id', '');
+
+                $kidLine = match (true) {
+                    $kid === null => 'MISSING',
+                    $appIdForKid === '' => $kid . '   (JITSI_APP_ID unset, cannot check prefix)',
+                    str_starts_with($kid, $appIdForKid . '/') => $kid . '   (correctly prefixed)',
+                    !str_contains($kid, '/') => $kid . '   (BARE KEY ID - 8x8 will reject: needs "' . $appIdForKid . '/" prefix)',
+                    default => $kid . '   (WRONG PREFIX - expected "' . $appIdForKid . '/...")',
+                };
+
+                $this->line(sprintf('  alg                       %s', $header['alg'] ?? '?'));
+                $this->line(sprintf('  kid (AppID/keyId)         %s', $kidLine));
                 $this->line(sprintf('  aud / iss                 %s / %s',
                     $claims['aud'] ?? '?',
                     $claims['iss'] ?? '?'));

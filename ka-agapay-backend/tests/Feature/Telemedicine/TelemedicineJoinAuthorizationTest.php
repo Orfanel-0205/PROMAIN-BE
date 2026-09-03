@@ -277,6 +277,43 @@ class TelemedicineJoinAuthorizationTest extends TestCase
         $this->assertStringContainsString('Elena', (string) $doctorName);
     }
 
+    /**
+     * Regression guard for the "Key ID (kid) does not match sub" rejection.
+     *
+     * JaaS requires the kid header to be "<AppID>/<shortKeyId>" and refuses a
+     * bare short id. keyId() used to return config('services.jitsi.api_key')
+     * untouched, so production signed every token with kid="0aa1cb" while sub
+     * was the full AppID -- well-formed, correctly signed, and rejected by 8x8.
+     * A single assertion on the header would have caught it.
+     */
+    public function test_the_kid_header_is_prefixed_with_the_app_id(): void
+    {
+        $this->requireSigningKey();
+
+        $jwt = $this->actingAs($this->patient)
+            ->getJson('/api/v1/telemedicine/sessions/' . $this->session->id)
+            ->json('data.video.jwt');
+
+        $header = $this->decodeJwtSegment(explode('.', $jwt)[0]);
+        $claims = $this->decodeJwtPayload($jwt);
+
+        $appId = (string) config('services.jitsi.app_id');
+
+        $this->assertSame(
+            $appId . '/' . 'test-key-id',
+            $header['kid'] ?? null,
+            'kid must be "<AppID>/<shortKeyId>", not the bare key id.'
+        );
+
+        // This is the exact relationship 8x8 checks when it reports
+        // "Key ID (kid) does not match sub".
+        $this->assertStringStartsWith(
+            $claims['sub'] . '/',
+            $header['kid'],
+            'kid must be prefixed with the sub claim.'
+        );
+    }
+
     public function test_both_participants_are_issued_tokens_for_the_same_room(): void
     {
         $patientVideo = $this->actingAs($this->patient)
@@ -366,6 +403,11 @@ class TelemedicineJoinAuthorizationTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
+
+    private function decodeJwtSegment(string $segment): array
+    {
+        return json_decode(base64_decode(strtr($segment, '-_', '+/')), true) ?: [];
+    }
 
     private function decodeJwtPayload(string $jwt): array
     {
