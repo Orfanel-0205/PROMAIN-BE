@@ -69,7 +69,35 @@ return [
          */
         'stack' => [
             'driver' => 'stack',
-            'channels' => explode(',', (string) env('LOG_STACK', 'daily,slack')),
+
+            /*
+             * Drop 'slack' from the stack when no webhook URL is configured.
+             *
+             * CORRECTION: an earlier version of this file claimed listing
+             * 'slack' with an unset webhook was safe, "verified against this
+             * Laravel version". That claim was wrong, and CI caught it on its
+             * very first run: Monolog's Slack handler hands the empty string
+             * to curl, which throws
+             *
+             *     RuntimeException: Curl error (code 3): URL rejected
+             *
+             * on the first record at or above LOG_SLACK_LEVEL. With
+             * ignore_exceptions => false that propagates out of the logger, so
+             * a request that merely logged a warning would fail outright --
+             * and anyone who copied .env.example without filling in the
+             * webhook would hit it in production.
+             *
+             * Filtering here rather than making operators remember to edit
+             * LOG_STACK means the intended end state (daily,slack) can sit in
+             * .env from day one and simply starts working the moment the
+             * webhook is filled in.
+             */
+            'channels' => array_values(array_filter(
+                array_map('trim', explode(',', (string) env('LOG_STACK', 'daily,slack'))),
+                static fn (string $channel): bool => $channel !== ''
+                    && ($channel !== 'slack' || trim((string) env('LOG_SLACK_WEBHOOK_URL', '')) !== ''),
+            )),
+
             'ignore_exceptions' => false,
         ],
 

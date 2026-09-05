@@ -117,11 +117,16 @@ jobs:
     name: Dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Advisory only. Laravel 10 is past its security-support window and carries
-    # known advisories with no fix available on the 10.x line, so a hard failure
-    # here would block every PR on something no PR can fix. Making it visible on
-    # each run is the point; the upgrade is tracked separately.
-    continue-on-error: true
+    # Advisory, and deliberately NOT allowed to go red.
+    #
+    # Laravel 10 is past its security-support window and carries advisories
+    # with no fix on the 10.x line, so this check can never pass until the
+    # framework upgrade lands. A check that is permanently red is worse than no
+    # check: people learn to ignore the red X, and then miss a real one. That
+    # is the same invisible-failure trap this pipeline exists to avoid.
+    #
+    # So the audit always exits 0 and writes its findings to the run summary,
+    # where they are read rather than dismissed.
 
     steps:
       - uses: actions/checkout@v4
@@ -138,4 +143,9 @@ jobs:
 
       - name: composer audit
         working-directory: ka-agapay-backend
-        run: composer audit
+        run: |
+          echo "## Backend dependency advisories" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          composer audit 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Advisory only -- see the workflow comments for why this does not fail the build." >> "$GITHUB_STEP_SUMMARY"
