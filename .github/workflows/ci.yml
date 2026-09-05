@@ -1,0 +1,141 @@
+# .github/workflows/ci.yml -- Ka-Agapay backend (Laravel)
+#
+# NOTE ON PATHS: the Laravel application lives in the ka-agapay-backend/
+# subdirectory, not at the repository root. Every step below sets
+# working-directory accordingly. Getting this wrong produces a green run that
+# tested nothing.
+#
+# WHY THIS EXISTS
+# ---------------
+# This repo had no CI until 2026-09-05. The 30 tests in tests/ ran only when
+# somebody remembered to run them, which made them decoration rather than a
+# safety net -- and several of those tests were written specifically to pin
+# down production incidents:
+#
+#   - a telemedicine endpoint that minted a video-call token for any
+#     authenticated caller, not just the consultation's participants
+#   - two source files missing their opening <?php tag, one of which was
+#     hard-failing five live routes. PHP treats a file with no opening tag as
+#     inline HTML, so php -l, composer install and a zip-and-scp deploy all
+#     reported success while the class silently did not exist
+#   - a JaaS kid header built without its AppID prefix, which 8x8 rejected
+#
+# Every one of those was invisible rather than broken: the system reported
+# success at each step. Tests that only run by hand cannot defend against that,
+# because the failure mode is precisely "nobody noticed".
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: PHP tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # The suite uses RefreshDatabase against PostgreSQL (matching production).
+    # It is NOT sqlite-compatible: several migrations use Postgres-specific
+    # types, so an in-memory sqlite shortcut would fail or, worse, pass while
+    # testing something other than production behaviour.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ka_agapay_test
+          POSTGRES_USER: kaagapay
+          POSTGRES_PASSWORD: kaagapay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_pgsql, mbstring, bcmath, gd, intl, zip
+          coverage: none
+
+      - name: Install dependencies
+        working-directory: ka-agapay-backend
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      # No .env is committed (correctly). Tests need a working config, so build
+      # a minimal one pointing at the postgres service above.
+      #
+      # Deliberately NO real third-party credentials here: the suite fakes every
+      # outbound call (Http::fake) and generates a throwaway RSA keypair for the
+      # JaaS token tests. If a test ever starts needing a real secret to pass,
+      # that is a bug in the test, not a reason to add secrets to CI.
+      - name: Prepare test environment
+        working-directory: ka-agapay-backend
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          {
+            echo "APP_ENV=testing"
+            echo "DB_CONNECTION=pgsql"
+            echo "DB_HOST=127.0.0.1"
+            echo "DB_PORT=5432"
+            echo "DB_DATABASE=ka_agapay_test"
+            echo "DB_USERNAME=kaagapay"
+            echo "DB_PASSWORD=kaagapay"
+            echo "DB_SSLMODE=disable"
+            echo "CACHE_DRIVER=array"
+            echo "SESSION_DRIVER=array"
+            echo "QUEUE_CONNECTION=sync"
+            echo "MAIL_MAILER=array"
+          } >> .env
+
+      - name: Run migrations
+        working-directory: ka-agapay-backend
+        run: php artisan migrate --force
+
+      # This suite includes two guards that exist because of real incidents:
+      #   - test_every_php_source_file_opens_with_a_php_tag  (repo-wide)
+      #   - test_the_kid_header_is_prefixed_with_the_app_id  (JaaS tokens)
+      - name: Run tests
+        working-directory: ka-agapay-backend
+        run: php artisan test
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Advisory only. Laravel 10 is past its security-support window and carries
+    # known advisories with no fix available on the 10.x line, so a hard failure
+    # here would block every PR on something no PR can fix. Making it visible on
+    # each run is the point; the upgrade is tracked separately.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Install dependencies
+        working-directory: ka-agapay-backend
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: composer audit
+        working-directory: ka-agapay-backend
+        run: composer audit
