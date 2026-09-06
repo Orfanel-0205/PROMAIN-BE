@@ -479,6 +479,26 @@ Expo, built through EAS and submitted to the stores.
   `google-services.json` are correctly gitignored. A fresh clone will not build
   until someone supplies them — transfer them out of band, never commit them to
   "fix" the build.
+- **How `google-services.json` actually reaches an EAS build, verified
+  2026-09-06.** It is *not* referenced by `android.googleServicesFile` in
+  `app.json`. It reaches the build because a `.easignore` file exists, and when
+  one is present EAS uses it **instead of** `.gitignore` to decide what to
+  upload — `.easignore` does not list `google-services.json`, so it ships.
+  That works, but it works by omission rather than by intent: adding the file
+  to `.easignore`, or deleting `.easignore` so `.gitignore` applies again,
+  would silently produce builds with no FCM configuration. Push registration
+  would then fail on device while the build itself still succeeds.
+  If you harden this by declaring `"googleServicesFile": "./google-services.json"`
+  in the `android` block, note that `expo prebuild` then **fails** when the file
+  is absent — so CI must be given the file (a GitHub Actions secret written to
+  disk before prebuild) in the same change, or the APK boot test breaks.
+- **CI-built APKs have no FCM configuration.** GitHub Actions checks out from
+  git, where `google-services.json` is correctly ignored, so
+  `expo prebuild --clean` generates an `android/` without it. The boot test APK
+  therefore cannot receive push notifications. That is fine for what the boot
+  test asserts (the app opens), but it means the CI artifact differs from a
+  shipped build in a push-relevant way — do not use a CI APK to test
+  notifications.
 - **No offline support.** No local caching or queued writes; every screen needs a
   live connection. For BHWs on barangay visits this is a real limit, and it is
   the thesis's own second recommendation for future work.
