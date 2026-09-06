@@ -2,9 +2,16 @@
 #
 # kaagapay-backup.sh — nightly database backup for the Ka-Agapay droplet.
 #
-# NOT YET INSTALLED ON PRODUCTION. This file is a deliverable for whoever has
-# SSH access; see "Installing" at the bottom. Nothing in the application runs
-# it automatically.
+# INSTALLED ON PRODUCTION as /usr/local/bin/kaagapay-backup.sh, run from the
+# www-data crontab at 02:00 UTC (10:00 Manila). This file is the source of
+# truth; if you change it, copy it to /usr/local/bin/ on the droplet. See
+# "Installing" at the bottom.
+#
+# Note the cron entry appends to /var/log/kaagapay-backup.log. That file must
+# exist and be writable BY www-data before the job can run at all: when a shell
+# cannot open a redirect target it aborts before executing the command, so a
+# missing or root-owned log file means the backup silently never runs and
+# nothing anywhere records that it didn't.
 #
 # What it does, in order:
 #   1. php artisan backup:run    — pg_dump + gzip, and writes a backup_runs row
@@ -28,7 +35,12 @@ set -uo pipefail
 # Configure these three lines for the droplet, then leave the rest alone.
 # ---------------------------------------------------------------------------
 
-APP_DIR="/var/www/ka-agapay-backend"      # directory containing `artisan`
+# The doubled path segment is NOT a typo: the git repository root is
+# /var/www/ka-agapay-backend and the Laravel application sits in a
+# ka-agapay-backend/ subdirectory inside it, so artisan is one level deeper
+# than the repo. This file previously shipped the shorter path, which pointed
+# at a directory containing no artisan.
+APP_DIR="/var/www/ka-agapay-backend/ka-agapay-backend"   # directory containing `artisan`
 BACKUP_DIR="/var/backups/kaagapay"        # must match BACKUP_PATH in .env
 REMOTE_DEST="s3://kaagapay-backups"       # DigitalOcean Spaces / S3 bucket
 
@@ -79,11 +91,18 @@ fi
 log "Uploading $(basename "$LATEST") to $REMOTE_DEST ..."
 
 # Swap this one line for whatever uploader the droplet has installed:
-#   s3cmd put "$LATEST" "$REMOTE_DEST/"
+#   s3cmd --config=/etc/kaagapay/s3cfg put "$LATEST" "$REMOTE_DEST/"
 #   aws s3 cp "$LATEST" "$REMOTE_DEST/" --endpoint-url https://sgp1.digitaloceanspaces.com
 #   rclone copy "$LATEST" "spaces:kaagapay-backups"
 #   scp "$LATEST" backup-user@another-host:/srv/kaagapay-backups/
-UPLOAD_ERR="$(s3cmd put "$LATEST" "$REMOTE_DEST/" 2>&1)"
+#
+# --config is explicit because this runs from cron as www-data, whose home is
+# /var/www -- a directory it cannot even write to, and which holds no .s3cfg.
+# s3cmd's default ~/.s3cfg lookup therefore finds nothing and the upload fails
+# while the local dump still succeeds, which is exactly the split-failure this
+# script separates steps 1 and 3 to catch. Credentials live in
+# /etc/kaagapay/s3cfg, mode 0600 and owned by www-data.
+UPLOAD_ERR="$(s3cmd --config=/etc/kaagapay/s3cfg put "$LATEST" "$REMOTE_DEST/" 2>&1)"
 UPLOAD_RC=$?
 
 # --- Step 3: record the truth ---------------------------------------------

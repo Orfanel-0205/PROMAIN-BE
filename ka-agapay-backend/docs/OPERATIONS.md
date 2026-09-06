@@ -160,16 +160,38 @@ scp admin-dist.zip user@<droplet>:/tmp/
 
 ```bash
 # on the droplet — keep the previous build; it is the entire rollback plan
-sudo mv /var/www/rhu-admin /var/www/rhu-admin.prev
-sudo unzip /tmp/admin-dist.zip -d /tmp/newbuild
-sudo mv /tmp/newbuild/dist /var/www/rhu-admin
-sudo chown -R www-data:www-data /var/www/rhu-admin
+#
+# THE DOCROOT IS /var/www/ka-agapay-admin/dist, confirmed against
+# /etc/nginx/sites-enabled/ka-agapay. Earlier revisions of this runbook said
+# /var/www/rhu-admin, which nginx does not serve: following them deployed a
+# correct build to a directory nobody reads.
+STAMP=$(date +%Y-%m-%d-%H%M)
+sudo rm -rf /var/www/ka-agapay-admin/dist.new
+sudo mkdir -p /var/www/ka-agapay-admin/dist.new
+sudo tar -xzf /tmp/admin-dist.tar.gz -C /var/www/ka-agapay-admin/dist.new
+
+# Assert the STAGED copy before it becomes live, not after.
+BREF=$(grep -oE '/assets/[^"]+\.js' /var/www/ka-agapay-admin/dist.new/index.html | head -1)
+test -f "/var/www/ka-agapay-admin/dist.new${BREF}"
+[ "$(wc -c < "/var/www/ka-agapay-admin/dist.new${BREF}")" -gt 500000 ]
+
+sudo mv /var/www/ka-agapay-admin/dist "/var/www/ka-agapay-admin/dist.prev-${STAMP}"
+sudo mv /var/www/ka-agapay-admin/dist.new /var/www/ka-agapay-admin/dist
+sudo chown -R www-data:www-data /var/www/ka-agapay-admin/dist
 ```
 
 Verify in a **hard-refreshed** browser: Vite hashes asset filenames, but
 `index.html` is not hashed and is routinely served stale.
 
-**Rollback:** `sudo rm -rf /var/www/rhu-admin && sudo mv /var/www/rhu-admin.prev /var/www/rhu-admin`
+**Rollback:** `sudo mv /var/www/ka-agapay-admin/dist /var/www/ka-agapay-admin/dist.bad && sudo mv /var/www/ka-agapay-admin/dist.prev-<STAMP> /var/www/ka-agapay-admin/dist`
+
+> **Housekeeping:** this mv-aside pattern never deletes anything, so `/var/www`
+> accumulates. As of 6 September 2026 it holds ~50 `ka-agapay-admin-backup-*`
+> directories from June, two stale `admin-dist*.zip` files, and several
+> zero-byte junk files (`npm`, `scp`, `ssh`, `tsc`, `cd`, `Compress-Archive`)
+> left by a mistyped shell command. Harmless at 8% disk use, but prune old
+> `dist.prev-*` and `*-backup-*` directories periodically — keeping the last
+> two or three is all the rollback plan actually needs.
 
 > **Known:** the bundle is ~2 MB with no code splitting. First load is slow on
 > barangay connections. Deferred, not a new fault.
@@ -476,7 +498,7 @@ left implicit it is what stops happening the moment the original team graduates.
 |---|---|---|
 | **Week** | Check the Semaphore balance; glance at the Settings → Backup panel | SMS is the dominant cost and fails quietly when funds run out |
 | **Month** | `composer audit` and `npm audit`; confirm the backup panel reads `healthy` | Both take seconds |
-| **Quarter** | `sudo certbot renew --dry-run`; restore a dump into a scratch database and record the date | Certificates last 90 days; an untested restore is not a restore |
+| **Quarter** | `sudo certbot renew --dry-run`; restore a dump into a scratch database and record the date; prune old `dist.prev-*` / `*-backup-*` directories under `/var/www` (§4) | Certificates last 90 days; an untested restore is not a restore; the deploy pattern never deletes anything |
 | **Year** | Review the framework version against its security-support window | Laravel 10 is already past it (§9) |
 
 ---
