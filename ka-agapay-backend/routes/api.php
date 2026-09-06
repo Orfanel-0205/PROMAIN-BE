@@ -31,6 +31,7 @@ use App\Http\Controllers\Api\AdminBackupController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
 use App\Http\Controllers\Api\AiSettingsController;
+use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AnnouncementController;
@@ -271,6 +272,37 @@ Route::prefix('v1')->group(function () {
             ->middleware('role:super_admin,mho,rhu_admin')
             ->group(function () {
                 Route::get('/status', [AdminBackupController::class, 'status']);
+            });
+
+        // =====================================================================
+        // ADMIN SETTINGS (real persistence -- replaces localStorage)
+        // Final URLs:
+        //   GET /api/v1/admin/settings
+        //   PUT /api/v1/admin/settings/facility
+        //   PUT /api/v1/admin/settings/notifications
+        //   PUT /api/v1/admin/settings/security
+        //
+        // Facility Information is per-RHU (RHU 1 and RHU 2 are different
+        // buildings); Notifications and Security are municipality-wide.
+        //
+        // Security Rules sits in its own group with a TIGHTER role list on
+        // purpose: reading settings is an admin/MHO activity, but changing how
+        // many failed logins are allowed is not. An MHO can see the value and
+        // cannot edit it.
+        // =====================================================================
+
+        Route::prefix('admin/settings')
+            ->middleware('role:super_admin,mho,rhu_admin')
+            ->group(function () {
+                Route::get('/', [SettingsController::class, 'index']);
+                Route::put('/facility', [SettingsController::class, 'updateFacility']);
+                Route::put('/notifications', [SettingsController::class, 'updateNotifications']);
+            });
+
+        Route::prefix('admin/settings')
+            ->middleware('role:super_admin,superadmin,rhu_admin,admin')
+            ->group(function () {
+                Route::put('/security', [SettingsController::class, 'updateSecurity']);
             });
 
         // =====================================================================

@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Support\AppSettings;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
 use Illuminate\Http\Request;
@@ -66,8 +67,24 @@ class RouteServiceProvider extends ServiceProvider
                 ?? ''
             )));
 
+            // Per-account attempts are configurable from the admin Settings
+            // page (Security Rules). Before this, that panel offered a
+            // "Max Login Attempts" field between 3 and 10 while the server
+            // enforced a hardcoded 5 the field could not influence -- a
+            // control that looked real and did nothing.
+            //
+            // AppSettings::maxLoginAttempts() is deliberately total: it clamps
+            // to the same bounds the API validates against and falls back to 5
+            // if the table, the row, or the cache store is unavailable, so a
+            // settings problem can never lock everybody out.
+            $maxAttempts = AppSettings::maxLoginAttempts();
+
             return [
-                Limit::perMinute(5)->by('login:' . $identifier . '|' . $request->ip())->response($tooMany),
+                Limit::perMinute($maxAttempts)->by('login:' . $identifier . '|' . $request->ip())->response($tooMany),
+
+                // Unchanged, and deliberately not configurable: this is the
+                // broad per-IP guard against spraying many accounts at once,
+                // not the per-account limit the panel controls.
                 Limit::perMinute(30)->by('login-ip:' . $request->ip())->response($tooMany),
             ];
         });

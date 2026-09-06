@@ -9,6 +9,7 @@ use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
 use App\Services\BiometricAuthService;
+use App\Support\AppSettings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -191,7 +192,10 @@ class AuthController extends Controller
 
         $rateLimitKey = 'admin_login|' . $login . '|' . $request->ip();
 
-        if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
+        // Per-account attempt ceiling, supplied by the admin Settings page
+        // (Security Rules -> Max Login Attempts). See AppSettings for why the
+        // accessor clamps and falls back to 5 rather than trusting the row.
+        if (RateLimiter::tooManyAttempts($rateLimitKey, AppSettings::maxLoginAttempts())) {
             $seconds = RateLimiter::availableIn($rateLimitKey);
 
             return response()->json([
@@ -348,7 +352,10 @@ class AuthController extends Controller
         $mobile = $this->normalizeMobileNumber($validated['mobile_number']);
         $rateLimitKey = 'login|' . $mobile;
 
-        if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
+        // Per-account attempt ceiling, supplied by the admin Settings page
+        // (Security Rules -> Max Login Attempts). See AppSettings for why the
+        // accessor clamps and falls back to 5 rather than trusting the row.
+        if (RateLimiter::tooManyAttempts($rateLimitKey, AppSettings::maxLoginAttempts())) {
             $seconds = RateLimiter::availableIn($rateLimitKey);
 
             return response()->json([
@@ -863,7 +870,10 @@ class AuthController extends Controller
 
         $rateLimitKey = 'biometric_login|' . $request->ip();
 
-        if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
+        // Per-account attempt ceiling, supplied by the admin Settings page
+        // (Security Rules -> Max Login Attempts). See AppSettings for why the
+        // accessor clamps and falls back to 5 rather than trusting the row.
+        if (RateLimiter::tooManyAttempts($rateLimitKey, AppSettings::maxLoginAttempts())) {
             $seconds = RateLimiter::availableIn($rateLimitKey);
 
             return response()->json([
