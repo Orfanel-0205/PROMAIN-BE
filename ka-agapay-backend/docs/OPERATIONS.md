@@ -499,6 +499,29 @@ Expo, built through EAS and submitted to the stores.
   test asserts (the app opens), but it means the CI artifact differs from a
   shipped build in a push-relevant way — do not use a CI APK to test
   notifications.
+- **A build with no `google-services.json` used to succeed silently.** Measured,
+  not assumed. Two cases, and the dangerous one is the common one:
+
+  | Starting state | Missing file causes |
+  |---|---|
+  | `android/` already generated | Gradle **fails** — the generated `android/app/build.gradle` applies `com.google.gms.google-services` unconditionally |
+  | Fresh clone, or `prebuild --clean` | **Build succeeds.** Prebuild omits both the file and the plugin, Gradle has nothing to object to, and the APK installs, opens, requests a push token, and can never receive a notification |
+
+  The second row is what CI does on every run, which is the proof that nothing
+  in the toolchain objects to it.
+
+  **Guard:** `scripts/check-push-credentials.mjs` in the mobile repo asserts the
+  file exists, is non-empty, is valid JSON, and lists this app's
+  `android.package` (a valid file for the *wrong* app is the quiet failure —
+  FCM would issue tokens against the package named in the file). It is wired as
+  `eas-build-pre-install` in `package.json`, so **every EAS build runs it first
+  and fails loudly**. Run it by hand before any local build with
+  `npm run check:push-credentials`.
+
+  Verified by removing the file, emptying it, and pointing it at a different
+  package — all three exit non-zero with the reason named. `npm install` does
+  **not** trigger the hook (confirmed empirically), so GitHub Actions keeps
+  building without the credential, which is intended.
 - **No offline support.** No local caching or queued writes; every screen needs a
   live connection. For BHWs on barangay visits this is a real limit, and it is
   the thesis's own second recommendation for future work.
