@@ -87,6 +87,26 @@ class Kernel extends ConsoleKernel
             ->dailyAt('07:30')
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Sweep inventory low-stock / expiry alerts'));
+
+        // Confirm that notifications this system reported as sent were actually
+        // delivered. An Expo ticket only means the message was queued; the
+        // receipt, available minutes later, is the only thing that reports what
+        // Google did with it. Without this, a total delivery outage looks
+        // identical to success in every log -- which is exactly how one went
+        // undiagnosed until 2026-09-09.
+        //
+        // Every ten minutes rather than daily: DeviceNotRegistered should retire
+        // a dead token while the sends that follow still matter, and a
+        // credentials failure (MismatchSenderId / InvalidCredentials) breaks push
+        // for every user at once and should not wait until morning to be seen.
+        $schedule->command('push:check-receipts')
+            ->name('Check Expo push receipts for actual delivery')
+            ->everyTenMinutes()
+            ->withoutOverlapping()
+            ->onFailure(fn (Stringable $output) => $this->reportScheduleFailure(
+                'Check Expo push receipts for actual delivery',
+                (string) $output
+            ));
     }
 
     /**
