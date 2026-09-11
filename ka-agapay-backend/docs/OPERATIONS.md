@@ -43,7 +43,7 @@ Nginx from a separate web root.
 | Piece | Source root | How it ships |
 |---|---|---|
 | **Backend API** | `ka-agapay-backend` (github.com/Orfanel-0205/PROMAIN-BE) | `git pull` on the droplet, then Composer + artisan cache steps |
-| **Web admin** | `rhu-admin-main` | Built locally, zipped, `scp`'d, extracted into the Nginx static root |
+| **Web admin** | `rhu-admin-main` | Built locally, packed as `.tar.gz`, `scp`'d, extracted into the Nginx static root (§4) |
 | **Mobile app** | `KaAgapay` (Expo) | EAS build → store submission |
 
 > ### ⚠ Nested folder
@@ -149,14 +149,39 @@ php artisan jitsi:doctor    # presence, path, permissions, validity — never pr
 
 No CI/CD. The API base URL is baked in at build time, so building with the wrong
 `VITE_API_URL` produces a bundle that looks fine and talks to the wrong server.
+Since 2026-09-10 the build refuses to: `scripts/check-api-url.mjs` runs as
+`prebuild` and `postbuild`, and fails unless `VITE_API_URL` is https, points at
+the server host rather than localhost or a LAN IP, ends in `/api/v1`, and
+actually landed in the bundle. Put the value in `.env.production` (gitignored);
+`.env.example` documents it.
+
+**First check whether a deploy is needed at all.** Vite names the entry script
+after a hash of its contents, so if the live hash equals the local one, the
+server already serves this exact build and redeploying changes nothing:
+
+```bash
+curl -s https://<admin-host>/ | grep -oE '/assets/[^"]+\.js' | head -1   # live
+grep -oE '/assets/[^"]+\.js' dist/index.html | head -1                     # local
+```
 
 ```bash
 # locally, in rhu-admin-main
 npm ci
-npm run build            # tsc && vite build -> dist/
-zip -r admin-dist.zip dist
-scp admin-dist.zip user@<droplet>:/tmp/
+npm run build            # prebuild check -> tsc && vite build -> postbuild check
+
+# Pack the CONTENTS of dist/, not the dist folder itself. The droplet step
+# below extracts into dist.new/ and asserts dist.new/assets/...; an archive with
+# a top-level dist/ lands at dist.new/dist/assets/... and fails that assertion.
+# Earlier revisions said `zip -r admin-dist.zip dist` here, which was both the
+# wrong format for the `tar -xzf` below and nested one level too deep.
+tar -czf admin-dist.tar.gz -C dist .
+tar -tzf admin-dist.tar.gz | head -3     # expect ./index.html and ./assets/...
+scp admin-dist.tar.gz user@<droplet>:/tmp/
 ```
+
+On Windows, PowerShell's execution policy can block `npm` (it runs as
+`npm.ps1`). Use `npm.cmd run build`, or Git Bash. `tar` ships with Windows 10
+and later, so the same `tar -czf` line works in PowerShell.
 
 ```bash
 # on the droplet — keep the previous build; it is the entire rollback plan
@@ -200,18 +225,19 @@ Verify in a **hard-refreshed** browser: Vite hashes asset filenames, but
 
 ## 5. The scheduler — the thing that silently isn't running
 
-Five recurring jobs are declared in `app/Console/Kernel.php`. All depend on one
+The recurring jobs are declared in `app/Console/Kernel.php`. All depend on one
 system cron entry. **If it is missing, nothing errors and nothing logs** — the
 features simply never happen, and it surfaces weeks later as "the reminders
 stopped working."
 
 | When | Job | If it never runs |
 |---|---|---|
-| Every 5 min | Telemedicine session reminders | Patients get no heads-up |
+| Every 10 min | Check Expo push receipts (`push:check-receipts`) | Undelivered pushes look delivered in every log, and dead device tokens are never retired |
 | 07:30 daily | Inventory low-stock / expiry sweep | Staff never learn stock ran out |
 | 08:00 daily | Follow-up reminder push | Follow-ups missed |
 | 08:15 daily | Event SMS reminders (3 days out) | Medical missions unannounced |
 | 00:05 daily | Expire stale prescriptions | Expired prescriptions stay dispensable |
+| — | Telemedicine session reminders: **disabled since 2026-09-02** | It called a method that no longer exists and failed on every run; read the comment in `Kernel.php` before re-enabling |
 
 ```bash
 sudo crontab -l -u www-data | grep schedule:run
