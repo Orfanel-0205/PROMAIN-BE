@@ -498,8 +498,16 @@ cd /path/to/ka-agapay-backend && composer audit
 cd /path/to/rhu-admin-main    && npm audit
 ```
 
-Run monthly (§10). As of this pass the backend is down to **3 advisories in 1
-package** and the web admin to **2**, all requiring major version bumps.
+Run monthly (§10). As of 14 September 2026 the backend has **3 advisories in 1
+package** (below) and the web admin **4**:
+
+- `browserslist` (high) and `baseline-browser-mapping` (moderate): build tooling
+  only, never shipped to browsers. `npm audit fix` clears both without a major
+  bump.
+- `react-router` / `react-router-dom` (moderate): an open redirect through
+  crafted links, and an SSR hydration issue that does not apply to this
+  client-only app. Needs the v6 → v7 major upgrade; plan it, then retest every
+  page's navigation.
 
 ### ⚠ Laravel 10 is past end of security support
 
