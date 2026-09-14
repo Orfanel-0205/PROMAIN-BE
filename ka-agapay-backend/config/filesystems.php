@@ -36,6 +36,17 @@ return [
             'throw' => false,
         ],
 
+        // Sensitive uploads: ID photos and prescription / lab-request PDFs.
+        // Deliberately NOT under storage/app/public, which the web server serves
+        // at /storage. Files here are reachable only through logged-in routes
+        // that check who is asking. See App\Support\SensitiveFiles.
+        'private' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private'),
+            'visibility' => 'private',
+            'throw' => false,
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),

@@ -9,6 +9,8 @@ use App\Http\Requests\DispensePrescriptionRequest;
 use App\Http\Resources\Prescription\PrescriptionResource;
 use App\Models\Prescription;
 use App\Services\Prescription\PrescriptionService;
+use App\Support\Rhu;
+use App\Support\SensitiveFiles;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -52,9 +54,72 @@ class PrescriptionController extends Controller
         );
     }
 
+    /**
+     * Staff who may browse prescriptions. They see those issued by their own RHU,
+     * or every RHU for global-scope accounts (super_admin, MHO); the same rule
+     * as patient records. Residents use /prescriptions/mine instead.
+     */
+    private const VIEWER_ROLES = [
+        'doctor', 'nurse', 'head_nurse', 'midwife', 'bhw', 'pharmacist',
+        'staff', 'staff_admin', 'rhu_staff', 'rhu_admin', 'admin',
+        'mho', 'mho_admin', 'municipal_mayor', 'it_staff', 'super_admin', 'superadmin',
+    ];
+
+    /**
+     * Whether $user may open this prescription: the patient it was written for,
+     * the prescriber, or staff in the issuing RHU. Prescriptions carry diagnoses
+     * and medicines, so this gates both the record and its PDF.
+     */
+    private function canView(?\App\Models\User $user, object $row): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $userId = (int) ($user->user_id ?? $user->getKey());
+
+        if ((int) $row->prescribed_by === $userId) {
+            return true;
+        }
+
+        if ($user->hasAnyRole(self::VIEWER_ROLES)) {
+            $rhuId = Rhu::filterRhuId($user, null);
+
+            return $rhuId === null || $rhuId === (int) $row->rhu_id;
+        }
+
+        return DB::table('resident_profiles')
+            ->where('id', $row->resident_profile_id)
+            ->where('user_id', $userId)
+            ->exists();
+    }
+
+    /**
+     * The prescription, or a 404 when it is missing or the caller may not see it.
+     * The same answer for both, so prescription ids cannot be probed.
+     */
+    private function findViewable(Request $request, int $id): object
+    {
+        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescription not found.');
+
+        $row = DB::table('prescriptions')->where('id', $id)->first();
+
+        abort_unless($row && $this->canView($request->user(), $row), 404, 'Prescription not found.');
+
+        return $row;
+    }
+
     public function index(Request $request): JsonResponse
     {
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+
+        $user = $request->user();
+
+        abort_unless(
+            $user?->hasAnyRole(self::VIEWER_ROLES),
+            403,
+            'Only RHU staff can browse prescriptions. Residents can see their own under My Prescriptions.'
+        );
 
         $query = DB::table('prescriptions as p')
             ->leftJoin('resident_profiles as rp', 'rp.id', '=', 'p.resident_profile_id')
@@ -62,6 +127,13 @@ class PrescriptionController extends Controller
             ->leftJoin('users as d', 'd.user_id', '=', 'p.prescribed_by')
             ->selectRaw("p.*, CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as patient_name")
             ->selectRaw("CONCAT(COALESCE(d.first_name, ''), ' ', COALESCE(d.last_name, '')) as prescriber_name");
+
+        // Locked to the caller's RHU; global-scope accounts may pick one or see all.
+        $rhuId = Rhu::filterRhuId($user, $request->filled('rhu_id') ? $request->integer('rhu_id') : null);
+
+        if ($rhuId !== null) {
+            $query->where('p.rhu_id', $rhuId);
+        }
 
         if ($request->filled('status') && $request->query('status') !== 'all') {
             $query->where('p.status', $request->query('status'));
@@ -368,12 +440,9 @@ class PrescriptionController extends Controller
         ], 201);
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Request $request, int $id): JsonResponse
     {
-        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
-
-        $row = DB::table('prescriptions')->where('id', $id)->first();
-        abort_unless($row, 404, 'Prescription not found.');
+        $row = $this->findViewable($request, $id);
 
         return response()->json([
             'data' => $this->formatPrescription($row),
@@ -418,7 +487,7 @@ class PrescriptionController extends Controller
             ]);
         }
 
-        return $this->show($id);
+        return $this->show($request, $id);
     }
 
     public function destroy(Request $request, int $id): JsonResponse
@@ -539,12 +608,9 @@ class PrescriptionController extends Controller
         ]);
     }
 
-    public function downloadPdf(int $id)
+    public function downloadPdf(Request $request, int $id)
     {
-        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
-
-        $row = DB::table('prescriptions')->where('id', $id)->first();
-        abort_unless($row, 404, 'Prescription not found.');
+        $row = $this->findViewable($request, $id);
 
         /*
          * IMPORTANT:
@@ -558,6 +624,7 @@ class PrescriptionController extends Controller
         return response($pdfBytes, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="' . $filename . '"',
+            'Cache-Control' => 'private, max-age=0, no-store',
         ]);
     }
 
@@ -572,9 +639,9 @@ class PrescriptionController extends Controller
         $data['request_reason'] = $row->request_reason ?? null;
         $data['priority'] = $row->priority ?? null;
         $data['request_notes'] = $row->request_notes ?? null;
-        $data['pdf_url'] = !empty($row->file_path)
-            ? Storage::disk('public')->url($row->file_path)
-            : null;
+        // No public link any more: PDFs live on the private disk. Clients use
+        // pdf_endpoint, which requires a login and checks canView().
+        $data['pdf_url'] = null;
         $data['pdf_endpoint'] = url('/api/v1/prescriptions/' . $row->id . '/pdf');
 
         return $data;
@@ -772,7 +839,8 @@ class PrescriptionController extends Controller
             : 'prescriptions/manual';
         $path = $folder . '/' . Str::slug($number) . '.pdf';
 
-        Storage::disk('public')->put($path, $this->renderModernPdf($row));
+        // Private disk: never web-served (see SensitiveFiles).
+        SensitiveFiles::put($path, $this->renderModernPdf($row));
 
         return $path;
     }

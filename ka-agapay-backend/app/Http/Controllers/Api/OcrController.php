@@ -4,6 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\SensitiveFiles;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -24,6 +25,10 @@ class OcrController extends Controller
     // OCR.space's free tier rejects files above ~1 MB. Uploads are allowed up to
     // 5 MB, so oversized photos are downscaled below this before being sent.
     private const OCR_MAX_UPLOAD_BYTES = 1024 * 1024;
+
+    // Who may read or re-run someone else's OCR result: the people who work the
+    // registration approval queue. Everyone else sees only their own uploads.
+    private const ID_REVIEWER_ROLES = ['super_admin', 'superadmin', 'mho', 'mho_admin', 'it_staff'];
 
     private array $staffRoles = [
         'doctor',
@@ -66,12 +71,10 @@ class OcrController extends Controller
 
         $file = $request->file('id_image');
 
-        $path = $file->store(
-            'ocr/id-verification/' . $this->authUserId($user),
-            'public'
-        );
+        // Private disk: ID photos are never web-served (see SensitiveFiles).
+        $path = SensitiveFiles::store($file, 'ocr/id-verification/' . $this->authUserId($user));
 
-        $fullPath = Storage::disk('public')->path($path);
+        $fullPath = SensitiveFiles::disk()->path($path);
 
         $ocr = $this->runOcr($fullPath, (string) $file->getMimeType());
 
@@ -264,8 +267,8 @@ class OcrController extends Controller
         $user->loadMissing('role');
 
         $file = $request->file('id_image');
-        $path = $file->store('ocr/philhealth/' . $this->authUserId($user), 'public');
-        $fullPath = Storage::disk('public')->path($path);
+        $path = SensitiveFiles::store($file, 'ocr/philhealth/' . $this->authUserId($user));
+        $fullPath = SensitiveFiles::disk()->path($path);
 
         $ocr = $this->runOcr($fullPath, (string) $file->getMimeType());
         $text = trim((string) ($ocr['text'] ?? ''));
@@ -421,12 +424,9 @@ class OcrController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $path = $file->store(
-            'ocr/prescriptions/consultation-' . $consultationId,
-            'public'
-        );
+        $path = SensitiveFiles::store($file, 'ocr/prescriptions/consultation-' . $consultationId);
 
-        $fullPath = Storage::disk('public')->path($path);
+        $fullPath = SensitiveFiles::disk()->path($path);
 
         $ocr = $this->runOcr($fullPath, (string) $file->getMimeType());
 
@@ -550,34 +550,24 @@ class OcrController extends Controller
     // OCR RESULT
     // =========================================================================
 
-    public function result(int $id): JsonResponse
+    public function result(Request $request, int $id): JsonResponse
     {
-        abort_unless(Schema::hasTable('ocr_results'), 404, 'OCR results table not found.');
-
-        $row = DB::table('ocr_results')->where('id', $id)->first();
-
-        abort_unless($row, 404, 'OCR result not found.');
+        $row = $this->findViewableOcrResult($request, $id);
 
         return response()->json(['data' => $row]);
     }
 
-    public function retry(int $id): JsonResponse
+    public function retry(Request $request, int $id): JsonResponse
     {
-        abort_unless(Schema::hasTable('ocr_results'), 404, 'OCR results table not found.');
+        $row = $this->findViewableOcrResult($request, $id);
 
-        $row = DB::table('ocr_results')->where('id', $id)->first();
+        $fullPath = SensitiveFiles::absolutePath($row->file_path ?? null);
 
-        abort_unless($row, 404, 'OCR result not found.');
-
-        $path = $row->file_path ?? null;
-
-        if (!$path || !Storage::disk('public')->exists($path)) {
+        if (!$fullPath) {
             return response()->json([
                 'message' => 'Original OCR file was not found.',
             ], 404);
         }
-
-        $fullPath = Storage::disk('public')->path($path);
 
         $ocr = $this->runOcr($fullPath, 'image');
 
@@ -600,6 +590,30 @@ class OcrController extends Controller
             'message' => 'OCR retry completed.',
             'data' => DB::table('ocr_results')->where('id', $id)->first(),
         ]);
+    }
+
+    /**
+     * An OCR result row the caller may see: their own upload, or anyone's if they
+     * review registrations. These rows hold a person's ID number, name and birth
+     * date, and these routes are open to accounts still pending approval, so
+     * anything else is a 404. It looks exactly like a missing row, so ids
+     * cannot be probed.
+     */
+    private function findViewableOcrResult(Request $request, int $id): object
+    {
+        $user = $request->user();
+        $row = Schema::hasTable('ocr_results')
+            ? DB::table('ocr_results')->where('id', $id)->first()
+            : null;
+
+        $allowed = $row && $user && (
+            (int) $row->user_id === $this->authUserId($user)
+            || $user->hasAnyRole(self::ID_REVIEWER_ROLES)
+        );
+
+        abort_unless($allowed, 404, 'OCR result not found.');
+
+        return $row;
     }
 
     // =========================================================================

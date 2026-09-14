@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\UserRole;
 use App\Services\Notification\AccountSmsService;
 use App\Support\Rhu;
+use App\Support\SensitiveFiles;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -227,8 +228,7 @@ class RegistrationApprovalController extends Controller
                     'overall_match'       => $ocr->overall_match ?? null,
                     'confidence_score'    => $ocr->confidence_score ?? null,
                     'submitted_at'        => $ocr->created_at ?? null,
-                    'has_file'            => !empty($ocr->file_path)
-                        && Storage::disk('public')->exists($ocr->file_path),
+                    'has_file'            => SensitiveFiles::exists($ocr->file_path ?? null),
                     'file_url'            => !empty($ocr->file_path)
                         ? url('/api/v1/admin/registrations/' . $id . '/ocr/file')
                         : null,
@@ -251,8 +251,9 @@ class RegistrationApprovalController extends Controller
 
         abort_if(!$ocr || empty($ocr->file_path), 404, 'No ID document on file.');
 
-        $disk = Storage::disk('public');
-        abort_unless($disk->exists($ocr->file_path), 404, 'ID document file is missing.');
+        // Private disk, or the old public one for files not yet moved.
+        $disk = SensitiveFiles::locate($ocr->file_path);
+        abort_unless($disk, 404, 'ID document file is missing.');
 
         // Resolve a correct, explicit Content-Type so the browser can render the
         // image / PDF inline. Prefer the extension mapping, then the disk's own
@@ -358,7 +359,7 @@ class RegistrationApprovalController extends Controller
         // FINAL RULE: do not approve without a submitted ID / Employee ID.
         $ocr = $this->latestIdOcr($id);
 
-        if (!$ocr || empty($ocr->file_path) || !Storage::disk('public')->exists($ocr->file_path)) {
+        if (!$ocr || !SensitiveFiles::exists($ocr->file_path ?? null)) {
             return response()->json([
                 'message' => $this->isStaff($user)
                     ? 'Cannot approve yet — no Employee Identification Card has been submitted for review.'

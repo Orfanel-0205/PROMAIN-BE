@@ -12,6 +12,7 @@ use App\Services\Notification\AccountSmsService;
 use App\Services\Notification\NotificationService;
 use App\Services\PasswordPolicyService;
 use App\Services\RegistrationInviteService;
+use App\Support\SensitiveFiles;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -247,10 +248,8 @@ class AdminRegistrationController extends Controller
 
         $file = $request->file('employee_id');
 
-        $path = $file->store(
-            'ocr/employee-id/' . $user->user_id,
-            'public'
-        );
+        // Private disk: ID photos are never web-served (see SensitiveFiles).
+        $path = SensitiveFiles::store($file, 'ocr/employee-id/' . $user->user_id);
 
         // Reuse the fields already extracted by the pre-create name-match gate so
         // OCR runs only ONCE per registration. Safe nulls if extraction was empty.

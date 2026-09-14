@@ -125,6 +125,12 @@ php artisan jitsi:doctor    # presence, path, permissions, validity — never pr
    ```bash
    php artisan migrate --force
    ```
+   Then move any ID photos or prescription PDFs still on the public disk
+   (§9 "Sensitive files"). A no-op once everything is moved, so it is safe on
+   every deploy:
+   ```bash
+   php artisan storage:privatize-sensitive
+   ```
 6. Rebuild caches and reload. **Clear before caching** — a stale config cache
    holding an old API key is a common and confusing failure.
    ```bash
@@ -434,6 +440,53 @@ These sit **on top of** `BruteForceProtection` (5 failures per mobile number,
 15-minute lockout), which is per-account and survives across IPs. Rate limiting
 bounds request rate; brute-force protection bounds failure count. Neither
 replaces the other.
+
+### Sensitive files: ID photos and prescriptions
+
+Resident and staff ID photos, PhilHealth IDs, scanned paper prescriptions and
+generated prescription / lab-request PDFs live on the **`private` disk**
+(`storage/app/private`), which nginx never serves. The `public` disk
+(`storage/app/public`, served at `/storage`) is for things meant to be public:
+announcement and event banners, profile pictures.
+
+They are handed out only through logged-in routes that check who is asking:
+
+| Route | Who gets it |
+|---|---|
+| `GET /prescriptions/{id}`, `GET /prescriptions/{id}/pdf` | the patient, the prescriber, staff in the issuing RHU (super_admin / MHO: all) |
+| `GET /prescriptions` | staff only, locked to their RHU (super_admin / MHO: all) |
+| `GET /prescriptions/mine` | the resident's own |
+| `GET /ocr/result/{id}`, `POST /ocr/retry/{id}` | the uploader, and super_admin / mho / mho_admin / it_staff |
+| `GET /admin/registrations/{id}/ocr/file` | the registration approval queue |
+
+A refused request gets **404, not 403**, so ids cannot be probed.
+
+**Before this change** these files were on the public disk and prescription PDFs
+were named after the prescription number, so anyone could fetch them by
+guessing. `php artisan storage:privatize-sensitive` moves everything under
+`ocr/` and `prescriptions/` from the public to the private disk; `--dry-run`
+lists what would move. It verifies each copy before deleting the original, and
+reports anything it could not move. Until it runs, reads fall back to the old
+location, so nothing breaks in between.
+
+To confirm nothing sensitive is still public after a deploy:
+
+```bash
+ls storage/app/public          # expect no ocr/ or prescriptions/ folder
+ls storage/app/private         # ocr/ and prescriptions/ live here
+```
+
+**Deliberately not used: temporary signed URLs.** Laravel 10 carries the
+unfixed *Temporary Signed URL Path Confusion* advisory (below), so files stream
+through the authenticated routes instead.
+
+**Still open:**
+
+- `POST /prescriptions/{id}/release` and `/dispense` have no role check. Any
+  approved account can mark a prescription dispensed and deduct stock. Restrict
+  them to dispensing staff in the prescription's RHU.
+- Team-chat attachments (`chat/attachments`) are on the public disk. Staff chat
+  can carry patient details. Move them the same way.
 
 ### Dependency scanning
 

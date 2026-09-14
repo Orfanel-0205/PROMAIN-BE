@@ -474,11 +474,10 @@ class AdminDeletedRecordController extends Controller
                 continue;
             }
 
-            try {
-                Storage::disk('public')->delete($path);
-            } catch (\Throwable) {
-                // Do not fail expiration because of a missing file.
-            }
+            // Both locations: sensitive files now live on the private disk, and
+            // anything uploaded before that move may still be on the public one.
+            // A missing file never fails expiration.
+            \App\Support\SensitiveFiles::delete($path);
         }
     }
 
