@@ -63,9 +63,21 @@ class SensitiveFileAccessTest extends TestCase
             'birth_date'  => '1992-06-06',
         ]);
 
-        $this->doctor = $this->makeUser('doctor', 1);
-        $this->nurseRhu1 = $this->makeUser('nurse', 1);
-        $this->nurseRhu2 = $this->makeUser('nurse', 2);
+        // users.assigned_rhu_id is a foreign key to barangays, so staff are placed
+        // in an RHU through a barangay mapped to it (barangays.rhu_id); see
+        // Rhu::resolveRhuIdFromUser. Ids 1 and 2 are skipped because the helper
+        // would read those as facility ids directly.
+        [$rhu1Barangay, $rhu2Barangay] = Barangay::whereNotIn('barangay_id', [1, 2])
+            ->orderBy('barangay_id')
+            ->limit(2)
+            ->pluck('barangay_id')
+            ->all();
+        DB::table('barangays')->where('barangay_id', $rhu1Barangay)->update(['rhu_id' => 1]);
+        DB::table('barangays')->where('barangay_id', $rhu2Barangay)->update(['rhu_id' => 2]);
+
+        $this->doctor = $this->makeUser('doctor', $rhu1Barangay);
+        $this->nurseRhu1 = $this->makeUser('nurse', $rhu1Barangay);
+        $this->nurseRhu2 = $this->makeUser('nurse', $rhu2Barangay);
         $this->superAdmin = $this->makeUser('super_admin');
 
         $this->rxRhu1 = $this->makePrescription($patientProfile->getKey(), 1, 'RHU1-RX-TEST-0001');
@@ -225,7 +237,7 @@ class SensitiveFileAccessTest extends TestCase
 
     // ---------------------------------------------------------------- helpers
 
-    private function makeUser(string $role, ?int $rhuId = null): User
+    private function makeUser(string $role, ?int $assignedBarangayId = null): User
     {
         $roleRow = UserRole::firstOrCreate(['name' => $role], ['permissions' => []]);
 
@@ -238,8 +250,8 @@ class SensitiveFileAccessTest extends TestCase
             'account_status' => 'active',
         ];
 
-        if ($rhuId !== null) {
-            $attributes['assigned_rhu_id'] = $rhuId;
+        if ($assignedBarangayId !== null) {
+            $attributes['assigned_rhu_id'] = $assignedBarangayId;
         }
 
         return User::create($attributes);
