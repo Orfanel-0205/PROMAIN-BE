@@ -127,10 +127,13 @@ php artisan jitsi:doctor    # presence, path, permissions, validity — never pr
    ```
    Then move any ID photos or prescription PDFs still on the public disk
    (§9 "Sensitive files"). A no-op once everything is moved, so it is safe on
-   every deploy:
+   every deploy. **Run it as `www-data`**: run as root, it creates
+   `storage/app/private` owned by root with private permissions, and PHP-FPM
+   can then no longer save new ID uploads there.
    ```bash
-   php artisan storage:privatize-sensitive
+   sudo -u www-data php artisan storage:privatize-sensitive
    ```
+   If it was ever run as root: `sudo chown -R www-data:www-data storage/app/private`.
 6. Rebuild caches and reload. **Clear before caching** — a stale config cache
    holding an old API key is a common and confusing failure.
    ```bash
