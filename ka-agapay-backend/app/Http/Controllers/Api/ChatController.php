@@ -49,6 +49,16 @@ class ChatController extends Controller
         $intent = $this->detectIntent($message, $audience);
         $suggestedAction = $this->suggestAction($message, $audience, $intent);
 
+        // "look for Clifford" asks the assistant to DO something, not to
+        // explain how. Those are answered by opening the right page with the
+        // search already filled in, instead of listing steps the staff member
+        // then has to follow by hand.
+        $searchRequest = $audience === 'staff' ? $this->searchRequest($message) : null;
+
+        if ($searchRequest !== null) {
+            $suggestedAction = $searchRequest['action'];
+        }
+
         $session = $this->resolveSession($request, $audience, $language);
 
         $userMessage = ChatMessage::create([
@@ -66,7 +76,9 @@ class ChatController extends Controller
         $context['audience'] = $audience;
         $context['source'] = $validated['source'] ?? ($audience === 'staff' ? 'admin' : 'mobile');
 
-        $reply = $this->geminiService->chat($message, $history, $audience, $context);
+        $reply = $searchRequest !== null
+            ? $this->searchReply($searchRequest, (string) ($context['ui_language'] ?? ''))
+            : $this->geminiService->chat($message, $history, $audience, $context);
 
         if ($audience === 'staff') {
             $reply = $this->normalizeStaffButtonLanguage($reply);
@@ -102,7 +114,9 @@ class ChatController extends Controller
             'suggested_action' => $suggestedAction,
             // Lets the dashboard not just open the page but arrive with the
             // search already filled in, e.g. "find patient Clifford".
-            'action_params' => $this->actionParams($message, $suggestedAction),
+            'action_params' => $searchRequest !== null
+                ? ['search' => $searchRequest['term']]
+                : $this->actionParams($message, $suggestedAction),
             'tutorial_cards' => $audience === 'staff'
                 ? $this->tutorialCards($suggestedAction, $intent)
                 : [],
@@ -642,6 +656,88 @@ class ChatController extends Controller
             'user_management_guidance' => 'open_users',
             'settings_guidance' => 'open_settings',
             default => null,
+        };
+    }
+
+    /**
+     * Which page's search box to fill, keyed by the words staff use for it.
+     * Order matters: the first match wins.
+     */
+    private const SEARCH_TARGETS = [
+        'open_prescriptions' => ['prescription', 'reseta', 'lab request', 'laboratory'],
+        'open_users' => ['user account', 'staff account', 'user', 'staff'],
+        'open_followups' => ['follow-up', 'follow up', 'followup', 'bantay'],
+        'open_inventory' => ['inventory', 'medicine', 'gamot', 'stock', 'supply'],
+        'open_events' => ['event', 'program', 'announcement', 'activity'],
+        'open_registrations' => ['registration', 'approval', 'applicant'],
+        'open_patient_registry' => ['patient', 'pasyente', 'resident', 'registry'],
+    ];
+
+    /**
+     * A request to look someone or something up, rather than a question about
+     * how the system works. Returns the page to open and the term to search.
+     *
+     * @return array{action: string, term: string}|null
+     */
+    private function searchRequest(string $message): ?array
+    {
+        // "How do I search for a patient?" wants instructions, not a search.
+        if (preg_match('/^\s*(how|what|where|why|when|paano|ano|iner|akin|panon)\b/iu', $message)) {
+            return null;
+        }
+
+        $term = $this->extractSearchTerm($message);
+
+        if ($term === null) {
+            return null;
+        }
+
+        // Strip a leading article left by phrases like "find a patient Maria".
+        $term = trim((string) preg_replace('/^(a|an|the|ang|si|so|say)\s+/iu', '', $term));
+
+        if ($term === '' || mb_strlen($term) < 2) {
+            return null;
+        }
+
+        $lower = mb_strtolower($message);
+
+        foreach (self::SEARCH_TARGETS as $action => $keywords) {
+            if ($this->containsAny($lower, $keywords)) {
+                return ['action' => $action, 'term' => $term];
+            }
+        }
+
+        // A bare name: people are what staff look for most often.
+        return ['action' => 'open_patient_registry', 'term' => $term];
+    }
+
+    /**
+     * What the assistant says while it opens the page. Short and specific, in
+     * the language the staff member chose, and it names what to do when the
+     * search finds nothing.
+     */
+    private function searchReply(array $search, string $language): string
+    {
+        $pages = [
+            'open_patient_registry' => 'Patient Registry',
+            'open_prescriptions' => 'E-Prescription / Lab Requests',
+            'open_users' => 'Users',
+            'open_followups' => 'Health Follow-up',
+            'open_inventory' => 'Inventory',
+            'open_events' => 'Events',
+            'open_registrations' => 'Registration Approvals',
+        ];
+
+        $page = $pages[$search['action']] ?? 'the page';
+        $term = $search['term'];
+
+        return match (strtolower(trim($language))) {
+            'tag', 'tl', 'fil', 'tagalog', 'filipino' =>
+                "Bubuksan ko po ang {$page} at hahanapin ang \"{$term}\". Kung walang lumabas, pakisuri po ang baybay o subukan ang apelyido.",
+            'pag', 'pangasinan', 'pangasinense' =>
+                "Lukasan ko so {$page} tan anapen ko so \"{$term}\". No anggapoy ompaway, nengnengen so espeling odino usar so apelyido.",
+            default =>
+                "Opening {$page} and searching for \"{$term}\". If nothing appears, check the spelling or try the surname.",
         };
     }
 
