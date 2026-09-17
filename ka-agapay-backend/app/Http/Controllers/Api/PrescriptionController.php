@@ -5,7 +5,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\DispensePrescriptionRequest;
 use App\Http\Resources\Prescription\PrescriptionResource;
 use App\Models\Prescription;
 use App\Services\Prescription\PrescriptionService;
@@ -107,6 +106,53 @@ class PrescriptionController extends Controller
         abort_unless($row && $this->canView($request->user(), $row), 404, 'Prescription not found.');
 
         return $row;
+    }
+
+    /**
+     * Who may release or dispense: staff who run the drug room or hand over
+     * prescriptions. Prescribing stays with the Doctor/MHO (PRESCRIBER_ROLES).
+     * BHWs are not included; add 'bhw' here if they should be.
+     */
+    private const DISPENSER_ROLES = [
+        'doctor', 'mho', 'mho_admin', 'nurse', 'head_nurse', 'midwife', 'pharmacist',
+        'staff_admin', 'rhu_admin', 'super_admin', 'superadmin',
+    ];
+
+    /**
+     * The prescription, if the caller may release or dispense it: dispensing
+     * staff at the RHU that issued it (the MHO and super admin: either RHU).
+     * Every release and dispense is recorded against this account, so the
+     * record is only worth something if the account really is responsible
+     * staff. People who cannot see the prescription at all get a 404.
+     */
+    private function findDispensable(Request $request, int $id): object
+    {
+        $row = $this->findViewable($request, $id);
+        $user = $request->user();
+
+        abort_unless(
+            $user->hasAnyRole(self::DISPENSER_ROLES) && Rhu::canAccessRhu($user, (int) $row->rhu_id),
+            403,
+            'Only doctors, the MHO, nurses, midwives, the pharmacist and RHU admin staff at the RHU that issued this prescription can release or dispense it.'
+        );
+
+        return $row;
+    }
+
+    /** Every dispense names who took the medicine. */
+    private function receiptRules(): array
+    {
+        return [
+            'received_by_name' => ['required', 'string', 'max:150'],
+            'received_by_relationship' => ['nullable', 'string', 'max:50'],
+        ];
+    }
+
+    private function receiptMessages(): array
+    {
+        return [
+            'received_by_name.required' => 'Enter who received the medicine: the patient, or the person collecting for them.',
+        ];
     }
 
     public function index(Request $request): JsonResponse
@@ -505,47 +551,61 @@ class PrescriptionController extends Controller
         ]);
     }
 
+    /**
+     * POST /prescriptions/{id}/release
+     *
+     * Hands the prescription to the patient as a PDF. With dispense_from_rhu the
+     * medicine is also handed over from the RHU drug room now and stock is
+     * deducted; without it the patient fills it elsewhere, e.g. after a
+     * telemedicine consult. Both are recorded against the signed-in staff member.
+     */
     public function release(Request $request, int $id): JsonResponse
     {
-        abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        $row = $this->findDispensable($request, $id);
 
-        $row = DB::table('prescriptions')->where('id', $id)->first();
-        abort_unless($row, 404, 'Prescription not found.');
-
-        // Only release/dispense prescriptions that have been approved by a doctor/MHO.
+        // Only release prescriptions a Doctor/MHO issued, and not voided ones.
         abort_unless(
-            in_array($row->status ?? '', ['approved', 'active', 'dispensed'], true),
+            in_array($row->status ?? '', ['approved', 'active', 'partially_dispensed', 'dispensed'], true),
             422,
             'This prescription has not been approved yet and cannot be released. Only a Doctor or MHO can approve prescriptions.'
         );
 
-        $pdfPath = $this->generateAndStoreModernPdf($row);
+        $isLabRequest = ($row->form_type ?? 'medicine') === 'lab_request';
+        $dispenseNow = !$isLabRequest && $request->boolean('dispense_from_rhu');
+
+        if ($dispenseNow) {
+            $request->validate($this->receiptRules(), $this->receiptMessages());
+
+            $this->service->dispense(Prescription::findOrFail($id), [
+                'deduct_inventory' => true,
+                'strict_inventory' => $request->boolean('strict_inventory', true),
+                'fail_on_insufficient_stock' => true,
+                'received_by_name' => $request->input('received_by_name'),
+                'received_by_relationship' => $request->input('received_by_relationship'),
+                'notes' => $request->input(
+                    'dispensing_notes',
+                    'Dispensed from the RHU drug room during e-prescription release.'
+                ),
+            ]);
+        }
+
+        $this->service->recordRelease(
+            Prescription::findOrFail($id),
+            $isLabRequest ? 'lab_request_pdf' : ($dispenseNow ? 'rhu_drug_room' : 'outside_pharmacy')
+        );
+
+        // Generated after dispensing, so the PDF shows the current status.
+        $pdfPath = $this->generateAndStoreModernPdf(DB::table('prescriptions')->where('id', $id)->first());
 
         DB::table('prescriptions')->where('id', $id)->update([
             'file_path' => $pdfPath,
             'updated_at' => now(),
         ]);
 
-        $isLabRequest = ($row->form_type ?? 'medicine') === 'lab_request';
-
-        if (!$isLabRequest && $request->boolean('dispense_from_rhu')) {
-            $prescription = Prescription::findOrFail($id);
-
-            $this->service->dispense($prescription->fresh(), [
-                'deduct_inventory' => true,
-                'strict_inventory' => $request->boolean('strict_inventory', true),
-                'fail_on_insufficient_stock' => true,
-                'notes' => $request->input(
-                    'dispensing_notes',
-                    'Auto-dispensed from RHU drug room during e-prescription release.'
-                ),
-            ]);
-        }
-
         return response()->json([
             'message' => $isLabRequest
                 ? 'Lab request PDF released.'
-                : ($request->boolean('dispense_from_rhu')
+                : ($dispenseNow
                 ? 'Prescription PDF released and inventory deducted.'
                 : 'Prescription PDF released.'),
             'data' => $this->formatPrescription(
@@ -554,11 +614,18 @@ class PrescriptionController extends Controller
         ]);
     }
 
-    public function dispense(DispensePrescriptionRequest|Request $request, Prescription|int $prescription): JsonResponse
+    /**
+     * POST /prescriptions/{id}/dispense
+     *
+     * Medicine handed over from the RHU drug room, in full or in part
+     * (dispensed_items). Previously typed as a union of request classes, which
+     * Laravel cannot inject, so every call failed before reaching this code.
+     */
+    public function dispense(Request $request, int $id): JsonResponse
     {
-        $prescriptionModel = $prescription instanceof Prescription
-            ? $prescription
-            : Prescription::findOrFail($prescription);
+        $this->findDispensable($request, $id);
+
+        $prescriptionModel = Prescription::findOrFail($id);
 
         if (($prescriptionModel->form_type ?? 'medicine') === 'lab_request') {
             return response()->json([
@@ -566,17 +633,16 @@ class PrescriptionController extends Controller
             ], 422);
         }
 
-        $validated = method_exists($request, 'validated')
-            ? $request->validated()
-            : $request->validate([
-                'dispensed_items' => ['nullable', 'array'],
-                'is_partial_dispense' => ['nullable', 'boolean'],
-                'notes' => ['nullable', 'string', 'max:1000'],
-                'dispensing_notes' => ['nullable', 'string', 'max:1000'],
-                'deduct_inventory' => ['nullable', 'boolean'],
-                'strict_inventory' => ['nullable', 'boolean'],
-                'fail_on_insufficient_stock' => ['nullable', 'boolean'],
-            ]);
+        $validated = $request->validate([
+            'dispensed_items' => ['nullable', 'array'],
+            'dispensed_items.*.name' => ['required_with:dispensed_items', 'string', 'max:200'],
+            'dispensed_items.*.quantity_dispensed' => ['required_with:dispensed_items', 'integer', 'min:1'],
+            'notes' => ['nullable', 'string', 'max:1000'],
+            'dispensing_notes' => ['nullable', 'string', 'max:1000'],
+            'deduct_inventory' => ['nullable', 'boolean'],
+            'strict_inventory' => ['nullable', 'boolean'],
+            'fail_on_insufficient_stock' => ['nullable', 'boolean'],
+        ] + $this->receiptRules(), $this->receiptMessages());
 
         $prescriptionModel = $this->service->dispense($prescriptionModel, array_merge($validated, [
             'deduct_inventory' => $request->boolean('deduct_inventory', true),

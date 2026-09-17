@@ -15,6 +15,8 @@ class PrescriptionDispensingLog extends Model
         'dispensed_by',
         'dispensed_items',
         'is_partial_dispense',
+        'received_by_name',
+        'received_by_relationship',
         'notes',
         'dispensed_at',
     ];

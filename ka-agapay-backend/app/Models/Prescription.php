@@ -59,6 +59,8 @@ class Prescription extends Model
         'status',
         'dispensed_at',
         'dispensed_by',
+        'released_at',
+        'released_by',
         'voided_at',
         'voided_by',
         'void_reason',
@@ -71,6 +73,7 @@ class Prescription extends Model
         'prescription_date'         => 'date',
         'valid_until'               => 'date',
         'dispensed_at'              => 'datetime',
+        'released_at'               => 'datetime',
         'voided_at'                 => 'datetime',
         'has_controlled_substances' => 'boolean',
     ];
@@ -100,6 +103,11 @@ class Prescription extends Model
     public function dispensedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'dispensed_by', 'user_id');
+    }
+
+    public function releasedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'released_by', 'user_id');
     }
 
     public function voidedBy(): BelongsTo
@@ -146,10 +154,34 @@ class Prescription extends Model
         return in_array($this->status, self::TERMINAL_STATUSES);
     }
 
+    /** Active, or partly handed over with the rest still to come, and not expired. */
     public function isDispensable(): bool
     {
-        return $this->status === self::STATUS_ACTIVE
+        return in_array($this->status, [self::STATUS_ACTIVE, self::STATUS_PARTIALLY_DISPENSED], true)
             && !$this->isExpired();
+    }
+
+    /** Prescribed quantity of one medication entry; the same reading the stock deduction uses. */
+    public static function prescribedQuantity(array $medicine): int
+    {
+        return max(1, (int) ($medicine['dispense_quantity'] ?? $medicine['quantity'] ?? $medicine['qty'] ?? 1));
+    }
+
+    /**
+     * Quantity still to be handed over, per medication (list index => quantity).
+     * `dispensed_quantity` on each entry is the running total already given.
+     * Entries without a name cannot be matched to stock and count as nothing.
+     *
+     * @return array<int, int>
+     */
+    public function remainingQuantities(): array
+    {
+        return array_map(
+            fn ($medicine) => is_array($medicine) && trim((string) ($medicine['name'] ?? '')) !== ''
+                ? max(0, self::prescribedQuantity($medicine) - (int) ($medicine['dispensed_quantity'] ?? 0))
+                : 0,
+            array_values($this->medications ?? [])
+        );
     }
 
     public function getAuditLabel(): string

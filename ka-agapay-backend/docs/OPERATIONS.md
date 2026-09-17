@@ -483,13 +483,40 @@ ls storage/app/private         # ocr/ and prescriptions/ live here
 unfixed *Temporary Signed URL Path Confusion* advisory (below), so files stream
 through the authenticated routes instead.
 
-**Still open:**
+**Still open:** team-chat attachments (`chat/attachments`) are on the public
+disk. Staff chat can carry patient details. Move them the same way.
 
-- `POST /prescriptions/{id}/release` and `/dispense` have no role check. Any
-  approved account can mark a prescription dispensed and deduct stock. Restrict
-  them to dispensing staff in the prescription's RHU.
-- Team-chat attachments (`chat/attachments`) are on the public disk. Staff chat
-  can carry patient details. Move them the same way.
+### Dispensing: accountability
+
+The rule is accountability, not gatekeeping. Every hand-over must trace to a
+responsible staff member, name who received the medicine, and leave the stock
+count matching what actually left the drug room.
+
+| Action | Route | Recorded |
+|---|---|---|
+| Release online (filled at an outside pharmacy) | `POST /prescriptions/{id}/release` | `released_by`, `released_at`; audit `prescription.released`, channel `outside_pharmacy` |
+| Release and dispense onsite | same, with `dispense_from_rhu: true` | the above (channel `rhu_drug_room`), plus everything in the next row |
+| Dispense onsite, full or partial | `POST /prescriptions/{id}/dispense` | a `prescription_dispensing_logs` row (dispensed by, received by and relationship, items and quantities); `inventory_transactions.performed_by`; audit `prescription.dispensed` |
+
+- **Who:** `PrescriptionController::DISPENSER_ROLES`: doctor, MHO, nurse, head
+  nurse, midwife, pharmacist, staff admin, RHU admin and super admin, at the RHU
+  that issued the prescription (MHO and super admin: either RHU). BHWs are not
+  included. Prescribing stays with the Doctor/MHO. Anyone else gets 403, or 404
+  if they cannot see the prescription at all.
+- **Received by** is required on every dispense.
+- **Partial dispensing** deducts only what was handed over. Each medication
+  entry keeps a running `dispensed_quantity`, the status stays
+  `partially_dispensed` until everything is given, and more than remains is
+  refused.
+- **No double dispensing:** the prescription row is locked for the whole
+  dispense, so a double click or two staff at once cannot deduct stock twice.
+- **Dispensing without deducting stock** (`deduct_inventory: false`) needs a
+  written reason in `notes`.
+- Audit entries are written after the dispense commits (on Postgres a failed
+  write inside the transaction would abort the dispense) and carry ids and
+  changes only, not the prescription's medical content.
+- Before 18 September 2026 `/dispense` failed on every call: its parameters
+  were typed as a union of request classes, which Laravel cannot inject.
 
 ### Dependency scanning
 

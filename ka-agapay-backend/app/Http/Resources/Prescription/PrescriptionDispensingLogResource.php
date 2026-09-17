@@ -14,6 +14,8 @@ class PrescriptionDispensingLogResource extends JsonResource
             'id'                 => $this->id,
             'dispensed_items'    => $this->dispensed_items,
             'is_partial_dispense'=> $this->is_partial_dispense,
+            'received_by_name'   => $this->received_by_name,
+            'received_by_relationship' => $this->received_by_relationship,
             'notes'              => $this->notes,
             'dispensed_by'       => $this->whenLoaded('dispensedBy', fn() => [
                 'id'   => $this->dispensedBy->user_id,

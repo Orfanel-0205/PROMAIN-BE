@@ -61,6 +61,7 @@ class AuditActions
     // Prescriptions
     public const PRESCRIPTION_ISSUED = 'prescription.issued';
     public const PRESCRIPTION_DISPENSED = 'prescription.dispensed';
+    public const PRESCRIPTION_RELEASED = 'prescription.released';
     public const PRESCRIPTION_VOIDED = 'prescription.voided';
     public const PRESCRIPTION_CANCELLED = 'prescription.cancelled';
     public const PRESCRIPTION_EXPIRED = 'prescription.expired';

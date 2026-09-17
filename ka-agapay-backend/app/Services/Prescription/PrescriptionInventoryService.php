@@ -27,7 +27,13 @@ class PrescriptionInventoryService
         $strictInventory = (bool) ($options['strict_inventory'] ?? true);
         $failOnInsufficient = (bool) ($options['fail_on_insufficient_stock'] ?? true);
 
-        $medications = $this->normalizeMedications($prescription->medications ?? []);
+        $medications = array_values($this->normalizeMedications($prescription->medications ?? []));
+
+        // Optional list index => quantity actually handed over now (partial
+        // dispensing). Entries not listed are left untouched. Without it,
+        // each medication's full prescribed quantity is deducted.
+        $quantities = $options['quantities'] ?? null;
+
         $updatedMedications = [];
         $dispensedItems = [];
         $transactions = [];
@@ -43,6 +49,16 @@ class PrescriptionInventoryService
             );
 
             $quantity = max($quantity, 1);
+
+            if ($quantities !== null) {
+                if (empty($quantities[$index])) {
+                    $updatedMedications[] = $medicine;
+
+                    continue;
+                }
+
+                $quantity = (int) $quantities[$index];
+            }
 
             if ($medicineName === '') {
                 $updatedMedications[] = array_merge($medicine, [
