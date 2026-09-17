@@ -114,11 +114,16 @@ class DispensingAccountabilityTest extends TestCase
 
     public function test_staff_from_the_other_rhu_and_bhws_cannot_dispense(): void
     {
-        foreach ([$this->nurseRhu2, $this->bhwRhu1] as $user) {
-            $this->actingAs($user)
-                ->postJson("/api/v1/prescriptions/{$this->rx}/dispense", ['received_by_name' => 'Maria Reyes'])
-                ->assertForbidden();
-        }
+        // The other RHU's staff cannot even see this prescription, so they get
+        // the same 404 as a missing one (ids cannot be probed).
+        $this->actingAs($this->nurseRhu2)
+            ->postJson("/api/v1/prescriptions/{$this->rx}/dispense", ['received_by_name' => 'Maria Reyes'])
+            ->assertNotFound();
+
+        // A BHW at the same RHU can see it but may not dispense it.
+        $this->actingAs($this->bhwRhu1)
+            ->postJson("/api/v1/prescriptions/{$this->rx}/dispense", ['received_by_name' => 'Maria Reyes'])
+            ->assertForbidden();
 
         $this->assertUntouched();
     }
