@@ -54,7 +54,9 @@ class GeminiService
 
         $mode = $this->resolveMode($context, $audience);
 
-        $ruleBased = $this->ruleBasedResponse($message, $audience, $mode);
+        $ruleBased = $this->prefersModelReply($context)
+            ? null
+            : $this->ruleBasedResponse($message, $audience, $mode);
 
         if ($ruleBased !== null) {
             return $ruleBased;
@@ -399,7 +401,55 @@ class GeminiService
         $dateText = "\n\nToday's date is {$today}. Any date you propose for an event, "
             . 'program, or deadline MUST be on or after this date.';
 
-        return "{$audienceText}{$dateText}{$contextText}\n\nUser message:\n{$message}";
+        $preferenceText = $this->preferenceInstructions($context);
+
+        return "{$audienceText}{$dateText}{$preferenceText}{$contextText}\n\nUser message:\n{$message}";
+    }
+
+    /**
+     * The dashboard language and simple mode are instructions to the model, not
+     * something to fix afterwards: the reply itself must come back in that
+     * language and at that reading level.
+     */
+    private function preferenceInstructions(array $context): string
+    {
+        $lines = [];
+        $language = strtolower(trim((string) ($context['ui_language'] ?? '')));
+
+        $languageRule = match ($language) {
+            'tag', 'tl', 'fil', 'tagalog', 'filipino' =>
+                'REPLY LANGUAGE: Tagalog, magalang (gumamit ng "po" at "opo"). Keep button and menu names exactly as they appear on screen, in English.',
+            'pag', 'pangasinan', 'pangasinense' =>
+                'REPLY LANGUAGE: Pangasinan (Pangasinense), the language spoken in Malasiqui. Keep button and menu names exactly as they appear on screen, in English. If you are not sure of a Pangasinan word, use the Tagalog word rather than inventing one.',
+            'taglish' =>
+                'REPLY LANGUAGE: Taglish, the way Malasiqui RHU staff actually speak. Keep button and menu names in English.',
+            'en', 'english' => 'REPLY LANGUAGE: English, plain and short.',
+            default => '',
+        };
+
+        if ($languageRule !== '') {
+            $lines[] = $languageRule;
+        }
+
+        if (!empty($context['simple_mode'])) {
+            $lines[] = 'READING LEVEL: this user is not comfortable with computers. Answer in at most three short sentences, '
+                . 'one step at a time, in everyday words. No technical terms, no lists of options, no markdown, no asterisks and no emoji '
+                . '(the reply is also read aloud). Name the one button to press and say what will happen after pressing it.';
+        }
+
+        return $lines === [] ? '' : "\n\n" . implode("\n", $lines);
+    }
+
+    /**
+     * Canned answers are written in English at a normal reading level, so a
+     * request for another language or for simple mode has to reach the model.
+     */
+    private function prefersModelReply(array $context): bool
+    {
+        $language = strtolower(trim((string) ($context['ui_language'] ?? '')));
+
+        return !empty($context['simple_mode'])
+            || ($language !== '' && !in_array($language, ['en', 'english'], true));
     }
 
     private function ruleBasedResponse(

@@ -100,6 +100,9 @@ class ChatController extends Controller
             'audience' => $audience,
             'intent' => $intent,
             'suggested_action' => $suggestedAction,
+            // Lets the dashboard not just open the page but arrive with the
+            // search already filled in, e.g. "find patient Clifford".
+            'action_params' => $this->actionParams($message, $suggestedAction),
             'tutorial_cards' => $audience === 'staff'
                 ? $this->tutorialCards($suggestedAction, $intent)
                 : [],
@@ -501,6 +504,13 @@ class ChatController extends Controller
                 // 'tutorial' switches the staff assistant to the Getting
                 // Started onboarding persona; any other value is operations.
                 'assistant_mode',
+                // The language the dashboard is set to (en / tag / pag). The
+                // reply comes back in this language, whatever the question was
+                // typed in.
+                'ui_language',
+                // Set when the user turned on simple mode: short, spoken-style
+                // answers for staff who are not comfortable with computers.
+                'simple_mode',
             ])
             ->filter(fn ($value) => is_scalar($value) && trim((string) $value) !== '')
             ->map(fn ($value) => trim((string) $value))
@@ -633,6 +643,61 @@ class ChatController extends Controller
             'settings_guidance' => 'open_settings',
             default => null,
         };
+    }
+
+    /**
+     * Extra instructions for the page the assistant is about to open. Only
+     * searching is supported: it changes nothing, so a misheard name is
+     * harmless — the staff member simply sees no results and retypes.
+     *
+     * @return array<string, string>
+     */
+    private function actionParams(string $message, ?string $suggestedAction): array
+    {
+        $searchable = [
+            'open_patient_registry',
+            'open_prescriptions',
+            'open_users',
+            'open_followups',
+            'open_registrations',
+            'open_inventory',
+            'open_events',
+        ];
+
+        if (!$suggestedAction || !in_array($suggestedAction, $searchable, true)) {
+            return [];
+        }
+
+        $term = $this->extractSearchTerm($message);
+
+        return $term === null ? [] : ['search' => $term];
+    }
+
+    /**
+     * The thing the user asked to look for, in English, Tagalog or Pangasinan
+     * ("find patient Maria", "hanapin si Maria", "anapen si Maria"). Returns
+     * null when the message is a general question rather than a search.
+     */
+    private function extractSearchTerm(string $message): ?string
+    {
+        $pattern = '/\b(?:search|find|look\s+up|look\s+for|show\s+me|hanap|hanapin|hanapen|anapen|nengnengen|ipakita)\b'
+            . '\s*(?:for|si|sina|ang|so|say|the)?\s*'
+            . '(?:patient|pasyente|resident|user|staff|record|reseta|prescription|item|medicine|gamot|event)?\s*'
+            . '(?:named|na|ya)?\s*[:\-]?\s*(.+)$/iu';
+
+        if (!preg_match($pattern, $message, $matches)) {
+            return null;
+        }
+
+        // Drop trailing politeness and punctuation: "hanapin si Maria po, salamat".
+        $term = preg_replace('/\b(po|please|salamat|thanks|thank you)\b/iu', ' ', $matches[1]);
+        $term = trim((string) preg_replace('/[\p{P}\p{S}]+$/u', '', trim((string) $term)));
+
+        if ($term === '' || mb_strlen($term) < 2 || mb_strlen($term) > 60) {
+            return null;
+        }
+
+        return $term;
     }
 
     private function tutorialCards(?string $suggestedAction, string $intent): array
