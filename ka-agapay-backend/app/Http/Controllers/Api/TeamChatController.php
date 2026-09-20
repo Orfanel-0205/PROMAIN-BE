@@ -15,6 +15,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\ConversationCall;
 use App\Models\ConversationCallParticipant;
+use App\Models\ConversationCallSignal;
 use App\Models\ConversationParticipant;
 use App\Models\Message;
 use App\Models\MessageReaction;
@@ -897,6 +898,136 @@ class TeamChatController extends Controller
         ];
     }
 
+    // =====================================================================
+    // CALL SIGNALLING — how two browsers agree to talk directly
+    //
+    // The audio and video travel browser to browser and never touch this
+    // server. Only the handshake passes through: an offer, an answer, and the
+    // network routes each side can be reached on. That is what replaces
+    // sending staff out to a Jitsi window for an internal call.
+    // =====================================================================
+
+    /**
+     * POST /team-chat/calls/{call}/signal — one step of the handshake.
+     */
+    public function postCallSignal(Request $request, int $call): JsonResponse
+    {
+        $me = $request->user();
+        $callRow = ConversationCall::findOrFail($call);
+        $convo = Conversation::findOrFail($callRow->conversation_id);
+
+        $this->ensureParticipant($convo, $me);
+        abort_if($callRow->ended_at !== null, 409, 'This call has already ended.');
+
+        $validated = $request->validate([
+            'type' => ['required', 'string', 'in:offer,answer,ice,hangup'],
+            // Null addresses everyone else in the call, which is how a hang-up
+            // is announced without naming each participant.
+            'to_user_id' => ['nullable', 'integer'],
+            'payload' => ['nullable', 'array'],
+        ]);
+
+        if (!empty($validated['to_user_id'])) {
+            $inCall = ConversationCallParticipant::where('call_id', $callRow->id)
+                ->where('user_id', $validated['to_user_id'])
+                ->exists();
+
+            abort_unless($inCall, 422, 'That person is not in this call.');
+        }
+
+        $signal = ConversationCallSignal::create([
+            'call_id' => $callRow->id,
+            'from_user_id' => $me->user_id,
+            'to_user_id' => $validated['to_user_id'] ?? null,
+            'type' => $validated['type'],
+            'payload' => $validated['payload'] ?? null,
+        ]);
+
+        return response()->json(['data' => ['id' => $signal->id]], 201);
+    }
+
+    /**
+     * GET /team-chat/calls/{call}/signals
+     *
+     * Everything addressed to me since I last asked. Delivered signals are
+     * stamped consumed in the same breath, so a network route is never applied
+     * twice — which would tear down a working connection.
+     */
+    public function getCallSignals(Request $request, int $call): JsonResponse
+    {
+        $me = $request->user();
+        $callRow = ConversationCall::findOrFail($call);
+        $convo = Conversation::findOrFail($callRow->conversation_id);
+
+        $this->ensureParticipant($convo, $me);
+
+        $signals = ConversationCallSignal::query()
+            ->where('call_id', $callRow->id)
+            ->where('from_user_id', '!=', $me->user_id)
+            ->whereNull('consumed_at')
+            ->where(function ($query) use ($me) {
+                $query->whereNull('to_user_id')->orWhere('to_user_id', $me->user_id);
+            })
+            ->orderBy('id')
+            ->limit(50)
+            ->get();
+
+        if ($signals->isNotEmpty()) {
+            ConversationCallSignal::whereIn('id', $signals->pluck('id'))
+                ->update(['consumed_at' => now()]);
+        }
+
+        return response()->json([
+            'data' => $signals->map(fn (ConversationCallSignal $signal) => [
+                'id' => $signal->id,
+                'from_user_id' => (int) $signal->from_user_id,
+                'type' => $signal->type,
+                'payload' => $signal->payload,
+            ]),
+            // Sent every poll so a browser notices a call ending even if the
+            // hang-up signal itself was missed.
+            'call_active' => $callRow->fresh()->ended_at === null,
+        ]);
+    }
+
+    /**
+     * The network settings a browser needs to find the other one.
+     *
+     * STUN alone connects two browsers on friendly networks, which covers
+     * staff on the same RHU wifi. A nurse on mobile data calling someone
+     * behind a home router usually needs TURN — a relay both sides can reach.
+     * Set TURN_URL, TURN_USERNAME and TURN_CREDENTIAL once a coturn server
+     * exists and calls start working across networks with no code change.
+     * Until then `relay_configured` is false, and the dashboard says plainly
+     * that calls between networks may not connect.
+     *
+     * @return array<string, mixed>
+     */
+    private function iceServers(): array
+    {
+        $servers = [
+            ['urls' => [
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302',
+            ]],
+        ];
+
+        $turnUrl = trim((string) config('services.turn.url', ''));
+
+        if ($turnUrl !== '') {
+            $servers[] = array_filter([
+                'urls' => $turnUrl,
+                'username' => trim((string) config('services.turn.username', '')) ?: null,
+                'credential' => trim((string) config('services.turn.credential', '')) ?: null,
+            ]);
+        }
+
+        return [
+            'ice_servers' => $servers,
+            'relay_configured' => $turnUrl !== '',
+        ];
+    }
+
     /**
      * POST /team-chat/messages/{message}/reactions
      *
@@ -1092,6 +1223,15 @@ class TeamChatController extends Controller
                 $call,
                 $withJoinToken ? $me : null
             ),
+
+            // What the browser needs to place the call itself, in-app, without
+            // sending anyone to a separate video window.
+            'peer' => $this->iceServers() + [
+                'participants' => ConversationCallParticipant::where('call_id', $call->id)
+                    ->pluck('user_id')
+                    ->map(fn ($id) => (int) $id)
+                    ->all(),
+            ],
         ];
     }
 

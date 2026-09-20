@@ -8,6 +8,26 @@ return [
     |--------------------------------------------------------------------------
     */
 
+    /*
+     * TURN relay for in-app Team Chat calls.
+     *
+     * Calls go browser to browser: the audio never touches this server, and
+     * two staff on the same RHU wifi connect directly using free public STUN
+     * servers. A call between different networks — mobile data to a home
+     * connection — often cannot, because neither side can be reached
+     * directly. A TURN server is a relay both sides can reach.
+     *
+     * Leave these empty and calls still work inside a facility; the dashboard
+     * warns staff that calls across networks may not connect. Install coturn
+     * on the droplet, fill these in, and cross-network calls start working
+     * with no code change.
+     */
+    'turn' => [
+        'url' => env('TURN_URL', ''),
+        'username' => env('TURN_USERNAME', ''),
+        'credential' => env('TURN_CREDENTIAL', ''),
+    ],
+
     'mailgun' => [
         'domain'   => env('MAILGUN_DOMAIN'),
         'secret'   => env('MAILGUN_SECRET'),

@@ -885,6 +885,15 @@ Route::prefix('v1')->group(function () {
                 Route::post('/conversations/{conversation}/messages',  [TeamChatController::class, 'sendMessage'])
                     ->middleware('throttle:30,1');
 
+                // In-app call handshake. Browsers exchange an offer, an answer
+                // and their network routes through here; the audio and video
+                // go directly between them. Polled while a call is being set
+                // up, so the limit is generous.
+                Route::post('/calls/{call}/signal',  [TeamChatController::class, 'postCallSignal'])
+                    ->middleware('throttle:240,1');
+                Route::get('/calls/{call}/signals',  [TeamChatController::class, 'getCallSignals'])
+                    ->middleware('throttle:240,1');
+
                 // Emoji reactions. Toggling: the same emoji twice removes it.
                 // Throttled like sending, because a tap is as cheap to repeat
                 // as a message is to type.
