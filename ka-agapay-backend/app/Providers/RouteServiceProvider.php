@@ -26,8 +26,29 @@ class RouteServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        /*
+         * The general API limit.
+         *
+         * This read `$request->user()?->id`, and a user in this system has
+         * no `id`: the key is `user_id`. So the left side was always null
+         * and every signed-in request fell through to being counted by IP.
+         * An RHU sits behind one municipal connection, so the whole
+         * building shared a single sixty-a-minute allowance -- one person
+         * with Team Chat open could have everyone else refused.
+         *
+         * Signed-in staff are now counted individually, and the allowance
+         * reflects what the dashboard actually does: chat updates,
+         * notifications and unread counts each poll on their own timer,
+         * and a call adds about a request a second on top. Sixty was below
+         * what one person sitting still uses. Requests with no session are
+         * still counted by address, where sixty is the right ceiling.
+         */
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
+            $user = $request->user();
+
+            return $user
+                ? Limit::perMinute(300)->by('user:' . $user->getAuthIdentifier())
+                : Limit::perMinute(60)->by('ip:' . $request->ip());
         });
 
         /*

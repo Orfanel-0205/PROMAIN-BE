@@ -3,6 +3,9 @@
 
 namespace App\Providers;
 
+use Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull;
+use Illuminate\Foundation\Http\Middleware\TrimStrings;
+use Illuminate\Http\Request;
 use Illuminate\Support\ServiceProvider;
 
 use App\Services\Audit\AuditService;
@@ -35,6 +38,23 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        /*
+         * Leave the call handshake exactly as the browser wrote it.
+         *
+         * Laravel tidies every string that arrives in a request, which is
+         * right for a name typed into a form and wrong for a session
+         * description. An SDP is a protocol document whose every line,
+         * including the last, must end in a carriage return and newline.
+         * Trimming took that final pair off, and the browser at the other
+         * end could not parse what it was handed -- it received the offer,
+         * failed to read it, and never answered. Every call died there,
+         * with a message about networks that had nothing to do with it.
+         */
+        $isCallHandshake = fn (Request $request) => $request->is('api/*/team-chat/calls/*/signal');
+
+        TrimStrings::skipWhen($isCallHandshake);
+        ConvertEmptyStringsToNull::skipWhen($isCallHandshake);
+
         /*
         |--------------------------------------------------------------------------
         | Model Observers for Ka-Agapay Notifications
