@@ -99,7 +99,9 @@ class ChatController extends Controller
             $searchRequest !== null => $this->searchReply($searchRequest, $uiLanguage),
             $filterRequest !== null => $this->filterReply($filterRequest, $uiLanguage),
             $countQuestion !== null => $this->countReply($countQuestion, $uiLanguage),
-            default => $this->geminiService->chat($message, $history, $audience, $context),
+            // The staff member goes with the question: the assistant may then
+            // read counts from their own RHU's records rather than guess.
+            default => $this->geminiService->chat($message, $history, $audience, $context, $user),
         };
 
         if ($audience === 'staff') {

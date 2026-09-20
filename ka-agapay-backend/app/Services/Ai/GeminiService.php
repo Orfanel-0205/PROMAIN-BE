@@ -3,6 +3,7 @@
 
 namespace App\Services\Ai;
 
+use App\Models\User;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -29,7 +30,7 @@ class GeminiService
     private string $model = 'gemini-2.5-flash';
     private string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-    public function __construct()
+    public function __construct(private readonly AssistantTools $tools = new AssistantTools())
     {
         $this->apiKey = (string) (
             config('services.google.gemini_api_key')
@@ -40,11 +41,17 @@ class GeminiService
     /**
      * Shared chatbot for mobile residents and RHU admin/staff.
      */
+    /**
+     * @param ?User $actor The signed-in staff member. Given one, the assistant
+     *                     may look up counts in this RHU's own records
+     *                     (AssistantTools) instead of guessing.
+     */
     public function chat(
         string $message,
         array $history = [],
         string $audience = 'resident',
-        array $context = []
+        array $context = [],
+        ?User $actor = null
     ): string {
         $message = trim($message);
 
@@ -74,7 +81,7 @@ class GeminiService
         }
 
         try {
-            return $this->callGeminiApi($message, $history, $audience, $context, $mode);
+            return $this->callGeminiApi($message, $history, $audience, $context, $mode, $actor);
         } catch (ConnectionException $e) {
             Log::warning('[GeminiService] Connection failed', [
                 'error' => $e->getMessage(),
@@ -96,7 +103,8 @@ class GeminiService
         array $history,
         string $audience,
         array $context,
-        string $mode = self::MODE_OPERATIONS
+        string $mode = self::MODE_OPERATIONS,
+        ?User $actor = null
     ): string {
         $history = array_slice($history, -8);
         // Onboarding walkthroughs are inherently multi-step, so they always get
@@ -131,6 +139,13 @@ class GeminiService
 
         $url = "{$this->baseUrl}/{$this->model}:generateContent?key={$this->apiKey}";
 
+        // Staff questions can be answered from Ka-Agapay's own data rather than
+        // guessed at: counts, stock levels, follow-ups. Read-only, aggregate
+        // only, and scoped to the staff member's RHU — see AssistantTools.
+        $tools = $audience === 'staff' && $actor !== null
+            ? [['functionDeclarations' => $this->tools->declarations()]]
+            : [];
+
         // gemini-2.5-flash is a THINKING model: its internal "thoughts" tokens are
         // billed against maxOutputTokens. The old flat cap of 700 left almost
         // nothing for the visible answer once the staff system prompt grew - a
@@ -151,7 +166,8 @@ class GeminiService
                 ->withHeaders([
                     'Content-Type' => 'application/json',
                 ])
-                ->post($url, [
+                ->post($url, array_filter([
+                    'tools' => $tools,
                     'contents' => $contents,
                     'systemInstruction' => [
                         'parts' => [
@@ -185,7 +201,7 @@ class GeminiService
                             'threshold' => 'BLOCK_ONLY_HIGH',
                         ],
                     ],
-                ]);
+                ]));
 
             if ($response->status() === 429) {
                 Cache::put('gemini_cooldown', true, now()->addMinutes(2));
@@ -204,8 +220,20 @@ class GeminiService
             $payload = $response->json();
             $candidate = $payload['candidates'][0] ?? [];
             $finishReason = (string) ($candidate['finishReason'] ?? '');
-            $reply = $candidate['content']['parts'][0]['text'] ?? null;
-            $reply = is_string($reply) ? trim($reply) : '';
+
+            // The model asked for a lookup before answering. Run it, hand the
+            // result back, and let it write the reply around real numbers.
+            $call = $this->functionCallIn($candidate);
+
+            if ($call !== null && $actor !== null) {
+                $answer = $this->answerWithToolResult($call, $actor, $contents, $candidate, $url, $audience, $mode, $maxOutputTokens);
+
+                if ($answer !== null) {
+                    return $answer;
+                }
+            }
+
+            $reply = $this->textIn($candidate);
 
             if ($reply !== '') {
                 $lastReply = $reply;
@@ -227,6 +255,111 @@ class GeminiService
         }
 
         return $lastReply ?? $this->fallbackResponse($message, $audience);
+    }
+
+    /**
+     * The lookup the model asked for, if it asked for one.
+     *
+     * @return array{name: string, args: array<string, mixed>}|null
+     */
+    private function functionCallIn(array $candidate): ?array
+    {
+        foreach ($candidate['content']['parts'] ?? [] as $part) {
+            $name = $part['functionCall']['name'] ?? null;
+
+            if (is_string($name) && $this->tools->has($name)) {
+                return [
+                    'name' => $name,
+                    'args' => (array) ($part['functionCall']['args'] ?? []),
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    private function textIn(array $candidate): string
+    {
+        $text = '';
+
+        foreach ($candidate['content']['parts'] ?? [] as $part) {
+            if (isset($part['text']) && is_string($part['text'])) {
+                $text .= $part['text'];
+            }
+        }
+
+        return trim($text);
+    }
+
+    /**
+     * Run the lookup and ask the model again with the answer in hand.
+     *
+     * One round only: enough for "how many are waiting?", and it bounds both
+     * the wait and the number of queries a single question can trigger.
+     */
+    private function answerWithToolResult(
+        array $call,
+        User $actor,
+        array $contents,
+        array $candidate,
+        string $url,
+        string $audience,
+        string $mode,
+        int $maxOutputTokens
+    ): ?string {
+        try {
+            $result = $this->tools->run($call['name'], $call['args'], $actor);
+        } catch (\Throwable $e) {
+            Log::warning('[GeminiService] Assistant tool failed', [
+                'tool' => $call['name'],
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $contents[] = $candidate['content'];
+        $contents[] = [
+            'role' => 'user',
+            'parts' => [[
+                'functionResponse' => [
+                    'name' => $call['name'],
+                    'response' => ['result' => $result],
+                ],
+            ]],
+        ];
+
+        try {
+            $response = Http::timeout(25)
+                ->withHeaders(['Content-Type' => 'application/json'])
+                ->post($url, [
+                    'contents' => $contents,
+                    'systemInstruction' => [
+                        'parts' => [[
+                            'text' => $this->systemPrompt($audience, $mode)
+                                . ' The figures you were just given are live from this RHU\'s own records. '
+                                . 'State them plainly with the time they were read, and never invent a number that was not returned.',
+                        ]],
+                    ],
+                    'generationConfig' => [
+                        'temperature' => 0.2,
+                        'maxOutputTokens' => $maxOutputTokens,
+                        'thinkingConfig' => ['thinkingBudget' => 0],
+                    ],
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('[GeminiService] Follow-up call failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+        $reply = $this->textIn($response->json()['candidates'][0] ?? []);
+
+        return $reply !== '' ? $reply : null;
     }
 
     /**
