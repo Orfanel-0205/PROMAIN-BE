@@ -423,6 +423,12 @@ Route::prefix('v1')->group(function () {
 
         Route::prefix('chat')->group(function () {
             Route::post('/message',               [ChatController::class, 'sendMessage']);
+
+            // Same answer, streamed, so the first words arrive in about a
+            // second. Holds a PHP worker for the length of the reply, which
+            // is why it keeps its own tighter throttle.
+            Route::post('/stream',                [ChatController::class, 'stream'])
+                ->middleware('throttle:20,1');
             Route::get('/history',                [ChatController::class, 'history']);
             Route::delete('/history/{sessionId}', [ChatController::class, 'destroySession']);
             Route::post('/end',                   [ChatController::class, 'endSession']);

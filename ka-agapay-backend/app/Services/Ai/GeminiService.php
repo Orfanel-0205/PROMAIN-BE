@@ -260,6 +260,124 @@ class GeminiService
     }
 
     /**
+     * Same answer as chat(), delivered a piece at a time.
+     *
+     * Staff wait less: the first words appear in about a second instead of the
+     * whole paragraph arriving after four. $onChunk receives each new piece as
+     * it comes; the complete text is returned for storing.
+     *
+     * Deliberately without tools. A mid-stream function call would mean
+     * stopping, querying, and starting a second stream, and the questions that
+     * need a lookup ("how many are waiting?") are short enough that the
+     * ordinary path already answers them quickly.
+     */
+    public function streamChat(
+        string $message,
+        array $history,
+        string $audience,
+        array $context,
+        callable $onChunk
+    ): string {
+        $message = trim($message);
+
+        if ($message === '' || $this->apiKey === '') {
+            return $this->fallbackResponse($message, $audience);
+        }
+
+        $mode = $this->resolveMode($context, $audience);
+        $ruleBased = $this->prefersModelReply($context)
+            ? null
+            : $this->ruleBasedResponse($message, $audience, $mode);
+
+        if ($ruleBased !== null) {
+            $onChunk($ruleBased);
+
+            return $ruleBased;
+        }
+
+        $contents = [];
+
+        foreach (array_slice($history, -8) as $item) {
+            $text = trim((string) ($item['content'] ?? ''));
+
+            if ($text !== '') {
+                $contents[] = [
+                    'role' => ($item['role'] ?? 'user') === 'assistant' ? 'model' : 'user',
+                    'parts' => [['text' => $text]],
+                ];
+            }
+        }
+
+        $contents[] = [
+            'role' => 'user',
+            'parts' => [['text' => $this->buildUserPrompt($message, $audience, $context)]],
+        ];
+
+        $url = "{$this->baseUrl}/{$this->model}:streamGenerateContent?alt=sse&key={$this->apiKey}";
+        $full = '';
+
+        try {
+            $response = Http::timeout(45)
+                ->withOptions(['stream' => true])
+                ->withHeaders(['Content-Type' => 'application/json'])
+                ->post($url, [
+                    'contents' => $contents,
+                    'systemInstruction' => [
+                        'parts' => [['text' => $this->systemPrompt($audience, $mode)]],
+                    ],
+                    'generationConfig' => [
+                        'temperature' => 0.35,
+                        'maxOutputTokens' => self::LONG_FORM_OUTPUT_TOKENS,
+                        'thinkingConfig' => ['thinkingBudget' => 0],
+                    ],
+                ]);
+
+            if (!$response->successful()) {
+                Log::warning('[GeminiService] Stream request failed', ['status' => $response->status()]);
+
+                return $this->fallbackResponse($message, $audience);
+            }
+
+            $body = $response->toPsrResponse()->getBody();
+            $buffer = '';
+
+            while (!$body->eof()) {
+                $buffer .= $body->read(1024);
+
+                // Server-sent events arrive as "data: {...}" lines, and a chunk
+                // can split mid-line, so only whole lines are parsed.
+                while (($newline = strpos($buffer, "\n")) !== false) {
+                    $line = trim(substr($buffer, 0, $newline));
+                    $buffer = substr($buffer, $newline + 1);
+
+                    if (!str_starts_with($line, 'data:')) {
+                        continue;
+                    }
+
+                    $json = json_decode(trim(substr($line, 5)), true);
+
+                    if (!is_array($json)) {
+                        continue;
+                    }
+
+                    $piece = $this->textIn($json['candidates'][0] ?? []);
+
+                    if ($piece !== '') {
+                        $full .= $piece;
+                        $onChunk($piece);
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[GeminiService] Stream failed', ['error' => $e->getMessage()]);
+
+            return $full !== '' ? $full : $this->fallbackResponse($message, $audience);
+        }
+
+        return $full !== '' ? $full : $this->fallbackResponse($message, $audience);
+    }
+
+    /**
      * The lookup the model asked for, if it asked for one.
      *
      * @return array{name: string, args: array<string, mixed>}|null

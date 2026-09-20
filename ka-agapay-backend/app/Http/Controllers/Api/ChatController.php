@@ -12,8 +12,10 @@ use App\Services\Ai\GeminiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ChatController extends Controller
 {
@@ -170,6 +172,188 @@ class ChatController extends Controller
      * - Without session_id: returns separate chat sessions.
      * - With session_id: returns messages inside that one chat only.
      */
+    /**
+     * POST /chat/stream
+     *
+     * The same answer as /chat/message, sent a piece at a time so the first
+     * words appear in about a second instead of the whole paragraph arriving
+     * after four. Server-sent events: "chunk" carries text, "done" carries the
+     * session, the page to open and any search or filter for it.
+     *
+     * Deterministic answers (a search, a filter, a count question) arrive in
+     * one chunk — they were never slow. Only the model's own prose streams.
+     *
+     * This holds a PHP worker open for the length of the answer, which is fine
+     * for a few dozen staff and would not be for thousands.
+     */
+    public function stream(Request $request): StreamedResponse
+    {
+        $validated = $request->validate([
+            'message' => ['required', 'string', 'max:2000'],
+            'session_id' => ['nullable', 'string', 'max:120'],
+            'history' => ['nullable', 'array'],
+            'history.*.role' => ['nullable', 'string', 'in:user,assistant'],
+            'history.*.content' => ['nullable', 'string', 'max:4000'],
+            'audience' => ['nullable', 'string', 'in:resident,staff'],
+            'source' => ['nullable', 'string', 'max:40'],
+            'context' => ['nullable', 'array'],
+        ]);
+
+        $start = microtime(true);
+        $user = $request->user();
+        $message = trim($validated['message']);
+        $audience = $this->resolveAudience($request);
+        $language = $this->detectLanguage($message);
+        $intent = $this->detectIntent($message, $audience);
+        $suggestedAction = $this->suggestAction($message, $audience, $intent);
+
+        $searchRequest = $audience === 'staff' ? $this->searchRequest($message) : null;
+        $filterRequest = $audience === 'staff' && $searchRequest === null
+            ? $this->filterRequest($message)
+            : null;
+        $countQuestion = $audience === 'staff' && $searchRequest === null && $filterRequest === null
+            ? $this->countQuestion($message)
+            : null;
+
+        if ($searchRequest !== null) {
+            $suggestedAction = $searchRequest['action'];
+        } elseif ($filterRequest !== null) {
+            $suggestedAction = $filterRequest['action'];
+        } elseif ($countQuestion !== null) {
+            $suggestedAction = $countQuestion['action'];
+        }
+
+        $session = $this->resolveSession($request, $audience, $language);
+
+        $userMessage = ChatMessage::create([
+            'chat_session_id' => $session->id,
+            'role' => 'user',
+            'message' => $message,
+            'language' => $language,
+            'intent' => $intent,
+            'created_at' => now(),
+        ]);
+
+        $history = $this->historyForAi($session->id, $userMessage->id);
+        $context = $this->safeContext($validated['context'] ?? []);
+        $context['audience'] = $audience;
+        $context['source'] = $validated['source'] ?? ($audience === 'staff' ? 'admin' : 'mobile');
+        $uiLanguage = (string) ($context['ui_language'] ?? '');
+
+        $actionParams = match (true) {
+            $searchRequest !== null => ['search' => $searchRequest['term']],
+            $filterRequest !== null => $filterRequest['params'],
+            $countQuestion !== null => $countQuestion['params'],
+            default => $this->actionParams($message, $suggestedAction),
+        };
+
+        $deterministic = match (true) {
+            $searchRequest !== null => $this->searchReply($searchRequest, $uiLanguage),
+            $filterRequest !== null => $this->filterReply($filterRequest, $uiLanguage),
+            $countQuestion !== null => $this->countReply($countQuestion, $uiLanguage),
+            default => null,
+        };
+
+        return response()->stream(function () use (
+            $deterministic, $message, $history, $audience, $context, $user,
+            $session, $language, $intent, $suggestedAction, $actionParams, $start
+        ) {
+            $send = function (string $event, array $data): void {
+                echo "event: {$event}\n";
+                echo 'data: ' . json_encode($data) . "\n\n";
+
+                // Push it to the browser now rather than at the end, which is
+                // the entire point of streaming.
+                if (ob_get_level() > 0) {
+                    @ob_flush();
+                }
+
+                flush();
+            };
+
+            $reply = '';
+
+            try {
+                if ($deterministic !== null) {
+                    $reply = $deterministic;
+                    $send('chunk', ['text' => $reply]);
+                } elseif ($audience === 'staff' && $this->countQuestion($message) === null && $this->needsLiveData($message)) {
+                    // Questions about numbers go the ordinary route, where the
+                    // assistant may read this RHU's records before answering.
+                    $reply = $this->geminiService->chat($message, $history, $audience, $context, $user);
+                    $send('chunk', ['text' => $reply]);
+                } else {
+                    $reply = $this->geminiService->streamChat(
+                        $message,
+                        $history,
+                        $audience,
+                        $context,
+                        function (string $piece) use ($send, &$reply) {
+                            $send('chunk', ['text' => $piece]);
+                        }
+                    );
+                }
+
+                if ($audience === 'staff') {
+                    $reply = $this->normalizeStaffButtonLanguage($reply);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[ChatController] Stream failed', ['error' => $e->getMessage()]);
+
+                $reply = $reply !== '' ? $reply : 'Sorry, I could not finish that answer. Please try again.';
+                $send('chunk', ['text' => $reply === '' ? '' : '']);
+            }
+
+            $responseMs = (int) ((microtime(true) - $start) * 1000);
+
+            $assistantMessage = ChatMessage::create([
+                'chat_session_id' => $session->id,
+                'role' => 'assistant',
+                'message' => $reply,
+                'language' => $language,
+                'intent' => $intent,
+                'suggested_action' => $suggestedAction,
+                'response_time_ms' => $responseMs,
+                'created_at' => now(),
+            ]);
+
+            $session->update([
+                'title' => $session->title ?: $this->makeSessionTitle($message),
+                'status' => 'active',
+                'last_activity_at' => now(),
+            ]);
+
+            $this->mirrorToChatLogs($user?->user_id ?? $user?->id, $session, 'user', $message, $intent, $language, null);
+            $this->mirrorToChatLogs($user?->user_id ?? $user?->id, $session, 'assistant', $reply, $intent, $language, $responseMs);
+
+            $send('done', [
+                'message' => $this->formatMessage($assistantMessage),
+                'session_id' => $session->session_token,
+                'suggested_action' => $suggestedAction,
+                'action_params' => $actionParams,
+            ]);
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache, no-transform',
+            'X-Accel-Buffering' => 'no', // nginx must not hold the pieces back
+            'Connection' => 'keep-alive',
+        ]);
+    }
+
+    /**
+     * Whether the question is about live figures, which the streaming path
+     * cannot look up (it runs without tools) and the ordinary path can.
+     */
+    private function needsLiveData(string $message): bool
+    {
+        $lower = mb_strtolower($message);
+
+        return $this->containsAny($lower, [
+            'how many', 'how much', 'ilan', 'pigara', 'total', 'count',
+            'low stock', 'out of stock', 'waiting', 'overdue', 'pending',
+        ]);
+    }
+
     public function history(Request $request): JsonResponse
     {
         $validated = $request->validate([
