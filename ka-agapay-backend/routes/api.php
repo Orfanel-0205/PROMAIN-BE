@@ -143,6 +143,32 @@ Route::prefix('v1')->group(function () {
     // AUTHENTICATED ROUTES
     // =========================================================================
 
+    /*
+     * CALL SIGNALLING — deliberately outside the 60-a-minute group below.
+     *
+     * Setting up a call is chatty by nature: each browser asks for waiting
+     * signals about once a second and posts every network route it discovers,
+     * which is easily a hundred requests in the first half minute. Inside the
+     * ordinary group those requests hit the 60-a-minute ceiling within
+     * seconds, the handshake never completed, and both callers saw a call that
+     * rang and then connected to nothing.
+     *
+     * A route-level limit cannot fix that: when two throttles apply, the
+     * stricter one wins. So these two routes get their own group and their
+     * own ceiling. Nothing else is relaxed: the same staff roles are
+     * required as for the rest of Team Chat, and the controller still
+     * refuses anyone who is not a participant in that call.
+     */
+    Route::middleware([
+        'auth:sanctum',
+        'check.status',
+        'throttle:600,1',
+        'role:doctor,nurse,midwife,bhw,head_nurse,rhu_staff,staff,staff_admin,rhu_admin,admin,mho,it_staff,super_admin',
+    ])->group(function () {
+        Route::post('/team-chat/calls/{call}/signal', [TeamChatController::class, 'postCallSignal']);
+        Route::get('/team-chat/calls/{call}/signals', [TeamChatController::class, 'getCallSignals']);
+    });
+
     Route::middleware(['auth:sanctum', 'check.status', 'throttle:60,1'])->group(function () {
 
         // =====================================================================
@@ -884,15 +910,6 @@ Route::prefix('v1')->group(function () {
                 // Tighter throttle on send specifically (Part 1.4).
                 Route::post('/conversations/{conversation}/messages',  [TeamChatController::class, 'sendMessage'])
                     ->middleware('throttle:30,1');
-
-                // In-app call handshake. Browsers exchange an offer, an answer
-                // and their network routes through here; the audio and video
-                // go directly between them. Polled while a call is being set
-                // up, so the limit is generous.
-                Route::post('/calls/{call}/signal',  [TeamChatController::class, 'postCallSignal'])
-                    ->middleware('throttle:240,1');
-                Route::get('/calls/{call}/signals',  [TeamChatController::class, 'getCallSignals'])
-                    ->middleware('throttle:240,1');
 
                 // Emoji reactions. Toggling: the same emoji twice removes it.
                 // Throttled like sending, because a tap is as cheap to repeat
