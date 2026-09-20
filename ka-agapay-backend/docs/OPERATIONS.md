@@ -606,6 +606,37 @@ cannot be switched off.
 
 ---
 
+## 9b. Smoke test after every deploy
+
+One script answers "is it working right now", in two halves.
+
+```bash
+# From anywhere, over the internet: what residents and staff can reach.
+./scripts/smoke-test.sh
+
+# On the droplet, as root: services, migrations, scheduler, backups, disk.
+./scripts/smoke-test.sh --server
+```
+
+It checks health, the admin page, the HTTP→HTTPS redirect, that patient data
+and settings files refuse anonymous callers, and how many days the certificate
+has left. On the server it also checks nginx, PHP-FPM, Postgres and cron are
+running, that no migration is pending, that the scheduler is in cron, that a
+backup exists from the last 48 hours, disk use, and that no ID photos or
+prescriptions have reappeared in public storage.
+
+Add a test staff account to include the signed-in half — sign-in, RHU list,
+queue, prescriptions, notifications, the assistant, and sign-out:
+
+```bash
+SMOKE_MOBILE=09XXXXXXXXX SMOKE_PASSWORD='...' ./scripts/smoke-test.sh
+```
+
+Use a dedicated test account, never a real staff member's, and never commit
+the password. Exit code 0 means everything checked passed.
+
+---
+
 ## 10. When something breaks
 
 ```bash
