@@ -93,19 +93,58 @@ return new class extends Migration
         }
 
         // Free the facility columns from the barangay table.
+        //
+        // Each constraint is looked up before it is dropped rather than
+        // dropped-and-caught: on PostgreSQL a failed statement aborts the
+        // whole migration transaction, so "constraint does not exist" would
+        // take down everything after it. Names are read from the catalogue
+        // because not every installation used Laravel's default naming.
         foreach (self::LEGACY_FOREIGN_KEYS as $table => $column) {
             if (!Schema::hasTable($table) || !Schema::hasColumn($table, $column)) {
                 continue;
             }
 
-            try {
-                Schema::table($table, function (Blueprint $blueprint) use ($column) {
-                    $blueprint->dropForeign([$column]);
-                });
-            } catch (\Throwable) {
-                // Already dropped, or never created on this installation.
+            foreach ($this->foreignKeyNames($table, $column) as $constraint) {
+                DB::statement(sprintf(
+                    'ALTER TABLE %s DROP CONSTRAINT %s',
+                    $this->quote($table),
+                    $this->quote($constraint)
+                ));
             }
         }
+    }
+
+    /**
+     * Foreign key constraints on one column, by name.
+     *
+     * @return array<int, string>
+     */
+    private function foreignKeyNames(string $table, string $column): array
+    {
+        if (DB::getDriverName() !== 'pgsql') {
+            // SQLite has no named constraints to drop; MySQL installations of
+            // this project do not exist. Nothing to do either way.
+            return [];
+        }
+
+        return DB::table('information_schema.table_constraints as tc')
+            ->join('information_schema.key_column_usage as kcu', function ($join) {
+                $join->on('tc.constraint_name', '=', 'kcu.constraint_name')
+                    ->on('tc.table_schema', '=', 'kcu.table_schema');
+            })
+            ->where('tc.constraint_type', 'FOREIGN KEY')
+            ->where('tc.table_name', $table)
+            ->where('kcu.column_name', $column)
+            ->pluck('tc.constraint_name')
+            ->map(fn ($name) => (string) $name)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function quote(string $identifier): string
+    {
+        return '"' . str_replace('"', '""', $identifier) . '"';
     }
 
     public function down(): void
