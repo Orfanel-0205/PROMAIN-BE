@@ -879,6 +879,12 @@ Route::prefix('v1')->group(function () {
                 Route::post('/conversations/{conversation}/messages',  [TeamChatController::class, 'sendMessage'])
                     ->middleware('throttle:30,1');
 
+                // Emoji reactions. Toggling: the same emoji twice removes it.
+                // Throttled like sending, because a tap is as cheap to repeat
+                // as a message is to type.
+                Route::post('/messages/{message}/reactions', [TeamChatController::class, 'toggleReaction'])
+                    ->middleware('throttle:60,1');
+
                 // Soft content-redaction of a single message — SENDER ONLY.
                 // The former Super Admin override was removed on purpose: no role
                 // may redact another staff member's words.

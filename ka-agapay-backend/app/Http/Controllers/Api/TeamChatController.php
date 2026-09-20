@@ -17,6 +17,7 @@ use App\Models\ConversationCall;
 use App\Models\ConversationCallParticipant;
 use App\Models\ConversationParticipant;
 use App\Models\Message;
+use App\Models\MessageReaction;
 use App\Models\User;
 use App\Services\Telemedicine\WebRtcService;
 use App\Support\Rhu;
@@ -160,7 +161,10 @@ class TeamChatController extends Controller
                     ->get();
 
                 $payload['active_conversation_id'] = $activeId;
-                $payload['active_messages'] = $tail->map(fn (Message $m) => $this->messagePayload($m));
+                $tailReactions = $this->reactionsFor($tail->pluck('id')->all(), $me);
+                $payload['active_messages'] = $tail->map(
+                    fn (Message $m) => $this->messagePayload($m, $tailReactions[$m->id] ?? [])
+                );
             }
         }
 
@@ -190,8 +194,12 @@ class TeamChatController extends Controller
                 ->limit(100)
                 ->get();
 
+            $rowReactions = $this->reactionsFor($rows->pluck('id')->all(), $me);
+
             return response()->json([
-                'data' => $rows->map(fn (Message $m) => $this->messagePayload($m)),
+                'data' => $rows->map(
+                    fn (Message $m) => $this->messagePayload($m, $rowReactions[$m->id] ?? [])
+                ),
                 'has_more' => false,
             ]);
         }
@@ -208,9 +216,12 @@ class TeamChatController extends Controller
         $rows = $query->get();
         $hasMore = $rows->count() > $limit;
         $rows = $rows->take($limit)->reverse()->values();
+        $rowReactions = $this->reactionsFor($rows->pluck('id')->all(), $me);
 
         return response()->json([
-            'data' => $rows->map(fn (Message $m) => $this->messagePayload($m)),
+            'data' => $rows->map(
+                fn (Message $m) => $this->messagePayload($m, $rowReactions[$m->id] ?? [])
+            ),
             'has_more' => $hasMore,
             'conversation' => $this->conversationSummary($convo, $me),
         ]);
@@ -886,7 +897,96 @@ class TeamChatController extends Controller
         ];
     }
 
-    private function messagePayload(Message $m): array
+    /**
+     * POST /team-chat/messages/{message}/reactions
+     *
+     * Toggle one emoji on one message. Reacting again with the same emoji
+     * removes it, which is what every chat app does and what staff expect.
+     *
+     * Reactions are how a busy thread stays readable: "noted" and "salamat"
+     * become a tap instead of three more messages to scroll past.
+     */
+    public function toggleReaction(Request $request, int $message): JsonResponse
+    {
+        $me = $request->user();
+        $row = Message::findOrFail($message);
+        $convo = Conversation::findOrFail($row->conversation_id);
+
+        // Only people in the thread, same rule as reading it.
+        $this->ensureParticipant($convo, $me);
+
+        $validated = $request->validate([
+            // Emoji are several bytes each, and some are code points joined
+            // together; the length cap is generous on purpose.
+            'emoji' => ['required', 'string', 'max:32'],
+        ]);
+
+        $emoji = trim($validated['emoji']);
+
+        abort_if($emoji === '', 422, 'Choose an emoji.');
+
+        $existing = MessageReaction::where('message_id', $row->id)
+            ->where('user_id', $me->user_id)
+            ->where('emoji', $emoji)
+            ->first();
+
+        if ($existing) {
+            $existing->delete();
+        } else {
+            MessageReaction::create([
+                'message_id' => $row->id,
+                'user_id' => $me->user_id,
+                'emoji' => $emoji,
+            ]);
+        }
+
+        return response()->json([
+            'data' => [
+                'message_id' => $row->id,
+                'reactions' => $this->reactionsFor([$row->id], $me)[$row->id] ?? [],
+            ],
+        ]);
+    }
+
+    /**
+     * Reaction summaries for a batch of messages: which emoji, how many, and
+     * whether I am one of them. Batched because a thread page renders 30
+     * messages at once and one query per message would be 30 queries.
+     *
+     * @param  array<int, int>  $messageIds
+     * @return array<int, array<int, array{emoji: string, count: int, reacted: bool}>>
+     */
+    private function reactionsFor(array $messageIds, ?User $me): array
+    {
+        if ($messageIds === [] || !\Illuminate\Support\Facades\Schema::hasTable('message_reactions')) {
+            return [];
+        }
+
+        $rows = MessageReaction::whereIn('message_id', $messageIds)->get();
+        $myId = (int) ($me?->user_id ?? 0);
+        $summary = [];
+
+        foreach ($rows as $row) {
+            $key = (int) $row->message_id;
+            $emoji = (string) $row->emoji;
+
+            $summary[$key][$emoji]['emoji'] = $emoji;
+            $summary[$key][$emoji]['count'] = ($summary[$key][$emoji]['count'] ?? 0) + 1;
+            $summary[$key][$emoji]['reacted'] = ($summary[$key][$emoji]['reacted'] ?? false)
+                || (int) $row->user_id === $myId;
+        }
+
+        // Most-used first, so the common "noted" tick leads.
+        return array_map(function (array $emojis) {
+            $values = array_values($emojis);
+
+            usort($values, fn ($a, $b) => $b['count'] <=> $a['count']);
+
+            return $values;
+        }, $summary);
+    }
+
+    private function messagePayload(Message $m, array $reactions = []): array
     {
         // A content-deleted message keeps its row (and original body) in the DB
         // but is never returned to the client — only a placeholder — so it shows
@@ -903,6 +1003,7 @@ class TeamChatController extends Controller
                 : null,
             'attachment_meta' => $isDeleted ? null : $m->attachment_meta,
             'deleted' => $isDeleted,
+            'reactions' => $reactions,
             'created_at' => optional($m->created_at)->toISOString(),
         ];
     }
