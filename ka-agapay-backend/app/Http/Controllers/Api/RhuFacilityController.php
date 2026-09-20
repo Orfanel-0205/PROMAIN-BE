@@ -23,6 +23,7 @@ use App\Services\Audit\AuditService;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
@@ -159,6 +160,10 @@ class RhuFacilityController extends Controller
                 DB::table('barangays')->whereIn('barangay_id', $ids)->update(['rhu_id' => $facility->id]);
             }
         });
+
+        // The barangay list is cached for a day and carries rhu_id, so without
+        // this the app and the dashboard would route residents by the old map.
+        Cache::forget('barangays_list_v2');
 
         $this->audit->info(AuditActions::RHU_UPDATED, 'rhu', [
             'subject_type' => 'rhu',

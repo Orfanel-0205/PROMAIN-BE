@@ -563,6 +563,49 @@ isolation guarantee this system's data privacy rests on.
 
 ---
 
+## 9a. Adding or closing an RHU
+
+Malasiqui runs RHU 1 and RHU 2, but the system no longer assumes two. A super
+admin opens a third in **Administration → RHU Facilities**; no deploy, no
+migration, no developer.
+
+**To open one:**
+
+1. **Add the facility** — short name (what every picker shows), a code with no
+   spaces, full name, address, contact.
+2. **Assign its barangays.** This is the step that matters: a resident's
+   barangay decides their RHU, so a new facility serves nobody until barangays
+   are moved to it. Ticking a barangay moves it from its current RHU;
+   unticking returns it to the default (lowest-numbered) facility.
+3. **Assign staff** in Administration → Users, and set opening hours and queue
+   settings for the new facility in Settings.
+
+**To close one:** switch it off. It leaves every picker, and its queue tickets,
+appointments, prescriptions and stock stay readable. Facilities are never
+deleted, because those records carry the facility id. The last active facility
+cannot be switched off.
+
+**What this touches underneath:**
+
+- Facilities live in the `rhus` table. `App\Support\Rhu::ids()` and
+  `defaultId()` read it, cached for 5 minutes; every write flushes that cache
+  and the 24-hour `barangays_list_v2` cache, which carries the barangay → RHU
+  map the mobile app reads.
+- Before 20 September 2026, `rhu_id` was a **foreign key to `barangays`** on
+  queue tickets, queue counters, telemedicine requests, inventory,
+  appointments, consultations and staff assignments. RHU ids 1 and 2 only
+  worked because barangays 1 and 2 exist, so a third facility was impossible.
+  Those foreign keys are dropped; the columns and values are unchanged.
+- Nothing replaced them, because the columns differ in type across tables
+  (tinyint, integer, bigint) and rewriting six live columns carries more risk
+  than the constraint removed. **Facility ids are validated in the
+  application** (`Rhu::ids()`), so anything writing `rhu_id` directly in SQL
+  must check it itself.
+- `tests/Feature/Rhu/RhuFacilityTest.php` covers opening RHU 3, its id being
+  accepted everywhere, barangays moving, and residents following.
+
+---
+
 ## 10. When something breaks
 
 ```bash
