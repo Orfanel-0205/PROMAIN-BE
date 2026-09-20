@@ -165,11 +165,11 @@ class PatientController extends Controller
         // RHU scoping by the patient's barangay facility (RHU 1 also owns
         // legacy/unmapped barangays), matching every other module's discipline.
         if ($effectiveRhu !== null) {
-            if ($effectiveRhu === Rhu::DEFAULT_ID) {
+            if ($effectiveRhu === Rhu::defaultId()) {
                 $query->where(function ($w) {
-                    $w->where('b.rhu_id', Rhu::DEFAULT_ID)
+                    $w->where('b.rhu_id', Rhu::defaultId())
                         ->orWhereNull('b.rhu_id')
-                        ->orWhereNotIn('b.rhu_id', Rhu::IDS);
+                        ->orWhereNotIn('b.rhu_id', Rhu::ids());
                 });
             } else {
                 $query->where('b.rhu_id', $effectiveRhu);

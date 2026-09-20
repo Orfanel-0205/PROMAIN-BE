@@ -654,11 +654,11 @@ class AnalyticsController extends Controller
             return $query;
         }
 
-        if ($rhuId === Rhu::DEFAULT_ID) {
+        if ($rhuId === Rhu::defaultId()) {
             return $query->where(function ($q) use ($column) {
-                $q->where($column, Rhu::DEFAULT_ID)
+                $q->where($column, Rhu::defaultId())
                     ->orWhereNull($column)
-                    ->orWhereNotIn($column, Rhu::IDS);
+                    ->orWhereNotIn($column, Rhu::ids());
             });
         }
 

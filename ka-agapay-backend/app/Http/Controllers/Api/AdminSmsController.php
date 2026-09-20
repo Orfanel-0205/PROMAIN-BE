@@ -601,7 +601,7 @@ class AdminSmsController extends Controller
     private function applyRhuScope($query, int $rhuId, string $primaryKey): void
     {
         if (!Schema::hasTable('barangays') || !Schema::hasColumn('barangays', 'rhu_id')) {
-            if ($rhuId !== Rhu::DEFAULT_ID) {
+            if ($rhuId !== Rhu::defaultId()) {
                 $query->whereRaw('1 = 0');
             }
 

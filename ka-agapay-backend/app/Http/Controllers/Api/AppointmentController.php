@@ -175,7 +175,7 @@ class AppointmentController extends Controller
 
             // RHU is a FACILITY id (1 or 2), not a barangay id. It is optional —
             // the resident's RHU is derived from their barangay when omitted.
-            'rhu_id' => ['nullable', 'integer', Rule::in(Rhu::IDS)],
+            'rhu_id' => ['nullable', 'integer', Rule::in(Rhu::ids())],
             'urgency_level' => ['nullable', Rule::in(['routine', 'urgent', 'emergency'])],
         ]);
 
@@ -249,7 +249,7 @@ class AppointmentController extends Controller
         $rhuId = Rhu::normalizeRhuId($validated['rhu_id'] ?? null)
             ?? Rhu::deriveRhuIdFromBarangayId($barangayId)
             ?? Rhu::resolveRhuIdFromUser($user)
-            ?? Rhu::DEFAULT_ID;
+            ?? Rhu::defaultId();
 
         // Block a duplicate only for the SAME date + SAME consultation type while it
         // is still active. This lets a resident keep one online and one onsite
@@ -490,12 +490,12 @@ class AppointmentController extends Controller
         $effectiveRhu = Rhu::filterRhuId($request->user(), $requestedRhu);
 
         if ($effectiveRhu !== null) {
-            if ($effectiveRhu === Rhu::DEFAULT_ID) {
+            if ($effectiveRhu === Rhu::defaultId()) {
                 // RHU 1 also owns legacy/unmapped rows from the pre-RHU2 era.
                 $query->where(function ($q) {
-                    $q->where('rhu_id', Rhu::DEFAULT_ID)
+                    $q->where('rhu_id', Rhu::defaultId())
                         ->orWhereNull('rhu_id')
-                        ->orWhereNotIn('rhu_id', Rhu::IDS);
+                        ->orWhereNotIn('rhu_id', Rhu::ids());
                 });
             } else {
                 $query->where('rhu_id', $effectiveRhu);
@@ -652,8 +652,8 @@ class AppointmentController extends Controller
             return null;
         }
 
-        $userRhu = Rhu::resolveRhuIdFromUser($user) ?? Rhu::DEFAULT_ID;
-        $apptRhu = Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0)) ?? Rhu::DEFAULT_ID;
+        $userRhu = Rhu::resolveRhuIdFromUser($user) ?? Rhu::defaultId();
+        $apptRhu = Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0)) ?? Rhu::defaultId();
 
         if ($apptRhu !== $userRhu) {
             return response()->json([
@@ -1109,7 +1109,7 @@ class AppointmentController extends Controller
                     'appointment_id' => $appointment->id,
                     'rhu_id' => Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0))
                         ?? Rhu::deriveRhuIdFromBarangayId((int) ($residentProfile->barangay_id ?? 0))
-                        ?? Rhu::DEFAULT_ID,
+                        ?? Rhu::defaultId(),
 
                     'endorsed_by_bhw' => null,
                     'is_bhw_assisted' => false,
@@ -1148,7 +1148,7 @@ class AppointmentController extends Controller
                         'rhu_id' => $telemedicineRequest->rhu_id
                             ?: (Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0))
                                 ?? Rhu::deriveRhuIdFromBarangayId((int) ($residentProfile->barangay_id ?? 0))
-                                ?? Rhu::DEFAULT_ID),
+                                ?? Rhu::defaultId()),
                         'screened_by' => $telemedicineRequest->screened_by ?: $staffId,
                         'screening_notes' => $telemedicineRequest->screening_notes ?: 'Opened directly from approved online appointment.',
                         'screened_at' => $telemedicineRequest->screened_at ?: now(),

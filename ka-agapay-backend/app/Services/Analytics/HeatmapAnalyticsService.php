@@ -207,7 +207,7 @@ class HeatmapAnalyticsService
                     return;
                 }
 
-                if ($rhuId !== Rhu::DEFAULT_ID) {
+                if ($rhuId !== Rhu::defaultId()) {
                     $query->whereRaw('1 = 0');
                 }
             })
@@ -452,11 +452,11 @@ class HeatmapAnalyticsService
 
     private function scopeFacilityRhuColumn($query, string $column, int $rhuId): void
     {
-        if ($rhuId === Rhu::DEFAULT_ID) {
+        if ($rhuId === Rhu::defaultId()) {
             $query->where(function ($inner) use ($column) {
-                $inner->where($column, Rhu::DEFAULT_ID)
+                $inner->where($column, Rhu::defaultId())
                     ->orWhereNull($column)
-                    ->orWhereNotIn($column, Rhu::IDS);
+                    ->orWhereNotIn($column, Rhu::ids());
             });
 
             return;
@@ -474,7 +474,7 @@ class HeatmapAnalyticsService
         }
 
         if (!Schema::hasTable('barangays') || !Schema::hasColumn('barangays', 'rhu_id')) {
-            if ($rhuId !== Rhu::DEFAULT_ID) {
+            if ($rhuId !== Rhu::defaultId()) {
                 $query->whereRaw('1 = 0');
             }
 

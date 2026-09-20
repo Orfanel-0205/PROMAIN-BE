@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminRegistrationController;
 use App\Http\Controllers\Api\StaffAnnouncementNotificationController;
 use App\Http\Controllers\Api\ReferralController;
+use App\Http\Controllers\Api\RhuFacilityController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\WebRtcController;
@@ -213,6 +214,23 @@ Route::prefix('v1')->group(function () {
         // GET   /api/v1/admin/registration-invites          list recent invites
         // PATCH /api/v1/admin/registration-invites/{id}/revoke
         // =====================================================================
+
+        // =====================================================================
+        // RHU FACILITIES
+        //
+        // Everyone signed in can read the list: every RHU picker in the
+        // dashboard and the app is built from it. Only a super admin can open
+        // a new facility, rename one, switch it off, or move barangays between
+        // facilities — that decides who sees which patients.
+        // =====================================================================
+
+        Route::get('/rhus', [RhuFacilityController::class, 'index']);
+
+        Route::middleware('role:super_admin,superadmin')->group(function () {
+            Route::post('/rhus',               [RhuFacilityController::class, 'store']);
+            Route::put('/rhus/{id}',           [RhuFacilityController::class, 'update']);
+            Route::put('/rhus/{id}/barangays', [RhuFacilityController::class, 'assignBarangays']);
+        });
 
         Route::prefix('admin/registration-invites')
             ->middleware('role:super_admin,superadmin')

@@ -38,11 +38,11 @@ class ConsultationController extends Controller
             );
 
             if ($effectiveRhu !== null) {
-                if ($effectiveRhu === Rhu::DEFAULT_ID) {
+                if ($effectiveRhu === Rhu::defaultId()) {
                     $query->where(function ($q) {
-                        $q->where('rhu_id', Rhu::DEFAULT_ID)
+                        $q->where('rhu_id', Rhu::defaultId())
                             ->orWhereNull('rhu_id')
-                            ->orWhereNotIn('rhu_id', Rhu::IDS);
+                            ->orWhereNotIn('rhu_id', Rhu::ids());
                     });
                 } else {
                     $query->where('rhu_id', $effectiveRhu);

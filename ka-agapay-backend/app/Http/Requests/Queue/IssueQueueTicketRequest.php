@@ -39,7 +39,7 @@ class IssueQueueTicketRequest extends FormRequest
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::in(Rhu::IDS),
+                Rule::in(Rhu::ids()),
             ],
 
             'service_type' => [

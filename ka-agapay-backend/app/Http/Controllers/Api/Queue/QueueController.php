@@ -66,7 +66,7 @@ class QueueController extends Controller
     {
         return Rhu::normalizeRhuId($request->integer('rhu_id'))
             ?? Rhu::resolveRhuIdFromUser($request->user())
-            ?? Rhu::DEFAULT_ID;
+            ?? Rhu::defaultId();
     }
 
     /**
@@ -442,7 +442,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::in(Rhu::IDS),
+                Rule::in(Rhu::ids()),
             ],
             'service_type' => [
                 'nullable',
@@ -481,7 +481,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::in(Rhu::IDS),
+                Rule::in(Rhu::ids()),
             ],
             'service_type' => [
                 'nullable',
@@ -518,7 +518,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::in(Rhu::IDS),
+                Rule::in(Rhu::ids()),
             ],
             'service_type' => [
                 'nullable',
@@ -551,7 +551,7 @@ class QueueController extends Controller
             'rhu_id' => [
                 'nullable',
                 'integer',
-                Rule::in(Rhu::IDS),
+                Rule::in(Rhu::ids()),
             ],
             'date' => [
                 'nullable',

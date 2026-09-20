@@ -195,7 +195,7 @@ class AdminUserController extends Controller
 
             'barangay' => ['nullable', 'string', 'max:150'],
             'barangay_id' => ['nullable', 'integer', 'exists:barangays,barangay_id'],
-            'assigned_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::IDS)],
+            'assigned_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::ids())],
 
             'role' => ['required', 'string', 'max:50'],
 
@@ -504,7 +504,7 @@ class AdminUserController extends Controller
 
             'barangay' => ['nullable', 'string', 'max:150'],
             'barangay_id' => ['nullable', 'integer', 'exists:barangays,barangay_id'],
-            'assigned_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::IDS)],
+            'assigned_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::ids())],
 
             'role' => ['nullable', 'string', 'max:50'],
 

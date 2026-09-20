@@ -5,37 +5,107 @@ namespace App\Support;
 
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
  * Central RHU (facility) helper for Ka-Agapay.
  *
- * RHU IDs are FACILITY ids — NOT barangay ids:
- *   1 = RHU 1 Malasiqui
- *   2 = RHU 2 Malasiqui (Don Pedro)
+ * RHU IDs are FACILITY ids — NOT barangay ids. They are rows in the `rhus`
+ * table: Malasiqui runs RHU 1 and RHU 2 today, and a super admin can open a
+ * third without a developer (Administration → RHU Facilities).
  *
  * The barangay a resident belongs to determines their RHU via the
  * `barangays.rhu_id` mapping column. Appointments and queue tickets store the
- * facility rhu_id (1 or 2), never a barangay id.
+ * facility rhu_id, never a barangay id.
  *
- * Everything here is Schema-guarded so it degrades safely if the mapping column
- * has not been migrated yet (it falls back to RHU 1).
+ * Everything here is Schema-guarded so it degrades safely if a table or column
+ * has not been migrated yet (it falls back to the two original facilities).
  */
 final class Rhu
 {
-    /** Active facility ids. Add 3 here only when RHU 3 becomes operational. */
-    public const IDS = [1, 2];
+    /**
+     * Facilities come from the rhus table, so a municipality can open RHU 3
+     * without a developer. These two are only the fallback for the moment
+     * before that table exists: a fresh database mid-migration, or a test that
+     * has not seeded it. See the 2026_09_20 create_rhus_table migration.
+     */
+    private const FALLBACK = [
+        ['id' => 1, 'name' => 'RHU 1 Malasiqui', 'short' => 'RHU 1'],
+        ['id' => 2, 'name' => 'RHU 2 Malasiqui (Don Pedro)', 'short' => 'RHU 2'],
+    ];
 
-    public const DEFAULT_ID = 1;
+    private const CACHE_KEY = 'rhu.facilities.active';
+    private const CACHE_TTL_SECONDS = 300;
 
-    /** @return array<int, array{id:int,name:string,short:string}> */
+    /**
+     * Every active facility, cheapest-first: cached, because this is asked on
+     * nearly every request that lists or scopes anything.
+     *
+     * @return array<int, array{id:int,name:string,short:string}>
+     */
     public static function all(): array
     {
-        return [
-            ['id' => 1, 'name' => 'RHU 1 Malasiqui', 'short' => 'RHU 1'],
-            ['id' => 2, 'name' => 'RHU 2 Malasiqui', 'short' => 'RHU 2'],
-        ];
+        try {
+            return Cache::remember(self::CACHE_KEY, self::CACHE_TTL_SECONDS, function () {
+                if (!Schema::hasTable('rhus')) {
+                    return self::FALLBACK;
+                }
+
+                $rows = DB::table('rhus')
+                    ->where('is_active', true)
+                    ->orderBy('id')
+                    ->get(['id', 'name', 'short_name']);
+
+                if ($rows->isEmpty()) {
+                    return self::FALLBACK;
+                }
+
+                return $rows
+                    ->map(fn ($row) => [
+                        'id' => (int) $row->id,
+                        'name' => (string) $row->name,
+                        'short' => (string) ($row->short_name ?: $row->name),
+                    ])
+                    ->all();
+            });
+        } catch (\Throwable) {
+            // A missing table or an unavailable cache store must not take the
+            // whole API down: fall back to the facilities that always existed.
+            return self::FALLBACK;
+        }
+    }
+
+    /** Forget the cached list. Called whenever a facility is added or changed. */
+    public static function flushCache(): void
+    {
+        try {
+            Cache::forget(self::CACHE_KEY);
+        } catch (\Throwable) {
+            // Nothing cached.
+        }
+    }
+
+    /**
+     * Active facility ids.
+     *
+     * @return array<int, int>
+     */
+    public static function ids(): array
+    {
+        return array_map(static fn (array $rhu) => $rhu['id'], self::all());
+    }
+
+    /**
+     * The facility that anything unassigned belongs to: the lowest active id,
+     * which stays RHU 1 unless it is ever switched off.
+     */
+    public static function defaultId(): int
+    {
+        $ids = self::ids();
+
+        return $ids === [] ? 1 : min($ids);
     }
 
     /** Return the id only if it is a real facility id, else null. */
@@ -45,14 +115,24 @@ final class Rhu
             return null;
         }
 
-        return in_array((int) $rhuId, self::IDS, true) ? (int) $rhuId : null;
+        return in_array((int) $rhuId, self::ids(), true) ? (int) $rhuId : null;
     }
 
     public static function rhuLabel(?int $rhuId): ?string
     {
         $id = self::normalizeRhuId($rhuId);
 
-        return $id ? "RHU {$id}" : null;
+        if (!$id) {
+            return null;
+        }
+
+        foreach (self::all() as $rhu) {
+            if ($rhu['id'] === $id) {
+                return $rhu['short'];
+            }
+        }
+
+        return "RHU {$id}";
     }
 
     /**
@@ -150,12 +230,12 @@ final class Rhu
         if (self::isGlobalScope($user)) {
             return $requested
                 ?? self::resolveRhuIdFromUser($user)
-                ?? self::DEFAULT_ID;
+                ?? self::defaultId();
         }
 
         return self::resolveRhuIdFromUser($user)
             ?? $requested
-            ?? self::DEFAULT_ID;
+            ?? self::defaultId();
     }
 
     /**
@@ -170,7 +250,7 @@ final class Rhu
             return $requested; // null => all RHUs
         }
 
-        return self::resolveRhuIdFromUser($user) ?? self::DEFAULT_ID;
+        return self::resolveRhuIdFromUser($user) ?? self::defaultId();
     }
 
     public static function canAccessRhu(?User $user, ?int $rhuId): bool

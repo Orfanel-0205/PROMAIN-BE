@@ -107,7 +107,7 @@ final class AppSettings
             return AppSetting::SHARED_RHU_ID;
         }
 
-        return Rhu::normalizeRhuId($rhuId) ?? Rhu::DEFAULT_ID;
+        return Rhu::normalizeRhuId($rhuId) ?? Rhu::defaultId();
     }
 
     /**

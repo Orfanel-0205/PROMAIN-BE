@@ -58,6 +58,10 @@ class AuditActions
     public const TELE_NOTES_FINALIZED = 'telemedicine_notes.finalized';
     public const TELE_REFERRAL_ISSUED = 'telemedicine_referral.issued';
 
+    // RHU facilities (Administration → RHU Facilities)
+    public const RHU_CREATED = 'rhu.created';
+    public const RHU_UPDATED = 'rhu.updated';
+
     // Prescriptions
     public const PRESCRIPTION_ISSUED = 'prescription.issued';
     public const PRESCRIPTION_DISPENSED = 'prescription.dispensed';

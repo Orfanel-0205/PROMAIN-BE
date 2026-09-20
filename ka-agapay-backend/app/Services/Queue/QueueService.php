@@ -288,7 +288,7 @@ class QueueService
             return $derived;
         }
 
-        return \App\Support\Rhu::DEFAULT_ID;
+        return \App\Support\Rhu::defaultId();
     }
 
     private function resolveAppointmentServiceType(Appointment $appointment): string
