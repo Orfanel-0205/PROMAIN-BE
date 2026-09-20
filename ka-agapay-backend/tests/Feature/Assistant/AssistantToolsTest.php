@@ -30,6 +30,7 @@ class AssistantToolsTest extends TestCase
     private User $nurseRhu2;
     private User $superAdmin;
     private int $phone = 0;
+    private int $ticketCounter = 0;
 
     protected function setUp(): void
     {
@@ -158,9 +159,11 @@ class AssistantToolsTest extends TestCase
     {
         for ($i = 0; $i < $count; $i++) {
             DB::table('queue_tickets')->insert([
-                'ticket_number' => sprintf('RHU%d-OPD-%s-%04d', $rhuId, now()->format('Y'), ++$this->phone),
+                // ticket_number is unique, and service_type is a checked enum:
+                // 'opd_consultation' is the everyday walk-in value.
+                'ticket_number' => sprintf('RHU%d-OPD-%s-%04d', $rhuId, now()->format('Y'), ++$this->ticketCounter),
                 'rhu_id' => $rhuId,
-                'service_type' => 'consultation',
+                'service_type' => 'opd_consultation',
                 'status' => $status,
                 'issued_at' => now(),
                 'created_at' => now(),
