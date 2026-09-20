@@ -925,7 +925,26 @@ class TeamChatController extends Controller
             // is announced without naming each participant.
             'to_user_id' => ['nullable', 'integer'],
             'payload' => ['nullable', 'array'],
+            // A fresh offer starts the handshake over; see below.
+            'reset' => ['nullable', 'boolean'],
         ]);
+
+        /*
+         * A new offer makes everything before it rubbish.
+         *
+         * A call row is reused while it is still running, so a second
+         * attempt on the same call used to find the previous attempt's
+         * offer still queued. The other browser would answer that dead
+         * offer, the reply would arrive for a connection that no longer
+         * existed, and the call failed the same way every time -- which is
+         * why retrying never helped. Clearing the queue at the moment a
+         * fresh offer is posted keeps each attempt to itself.
+         */
+        if (!empty($validated['reset']) && $validated['type'] === 'offer') {
+            ConversationCallSignal::where('call_id', $callRow->id)
+                ->whereNull('consumed_at')
+                ->update(['consumed_at' => now()]);
+        }
 
         if (!empty($validated['to_user_id'])) {
             $inCall = ConversationCallParticipant::where('call_id', $callRow->id)
