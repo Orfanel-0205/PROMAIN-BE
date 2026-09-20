@@ -30,8 +30,10 @@ class GeminiService
     private string $model = 'gemini-2.5-flash';
     private string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-    public function __construct(private readonly AssistantTools $tools = new AssistantTools())
-    {
+    public function __construct(
+        private readonly AssistantTools $tools = new AssistantTools(),
+        private readonly AnswerBook $answers = new AnswerBook(),
+    ) {
         $this->apiKey = (string) (
             config('services.google.gemini_api_key')
             ?: env('GEMINI_API_KEY', '')
@@ -540,7 +542,20 @@ class GeminiService
 
         $preferenceText = $this->preferenceInstructions($context);
 
-        return "{$audienceText}{$dateText}{$preferenceText}{$contextText}\n\nUser message:\n{$message}";
+        // Written reference for the screen being asked about. The model is good
+        // at conversation and bad at remembering which buttons THIS system has,
+        // so where the answer book covers a screen, it wins.
+        $reference = '';
+
+        if ($audience === 'staff') {
+            $entry = $this->answers->find($message);
+
+            if ($entry !== null) {
+                $reference = "\n\n" . $this->answers->brief($entry);
+            }
+        }
+
+        return "{$audienceText}{$dateText}{$preferenceText}{$reference}{$contextText}\n\nUser message:\n{$message}";
     }
 
     /**
@@ -788,7 +803,25 @@ class GeminiService
         return null;
     }
 
+    /**
+     * When the model cannot be reached — no key, a rate limit, a timeout — a
+     * staff member asking about a screen still gets the right steps, straight
+     * from the answer book, instead of an apology.
+     */
     private function fallbackResponse(string $message, string $audience): string
+    {
+        if ($audience === 'staff') {
+            $entry = $this->answers->find($message);
+
+            if ($entry !== null) {
+                return $this->answers->plainAnswer($entry);
+            }
+        }
+
+        return $this->genericFallback($message, $audience);
+    }
+
+    private function genericFallback(string $message, string $audience): string
     {
         if ($audience === 'staff') {
             return
