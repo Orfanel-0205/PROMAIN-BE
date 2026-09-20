@@ -73,13 +73,28 @@ class AnswerBookTest extends TestCase
 
     public function test_every_entry_names_real_steps_and_avoids_vague_wording(): void
     {
-        $screens = ['queue', 'appointments', 'prescriptions', 'patients', 'registrations',
-            'inventory', 'followups', 'events', 'reports', 'users', 'rhus', 'teamchat'];
+        // Probed the way a person would ask, not by the entry's internal key:
+        // "rhus" and "teamchat" are names in the code, not words staff type.
+        $screens = [
+            'queue' => 'queue',
+            'appointments' => 'appointment',
+            'prescriptions' => 'prescription',
+            'patients' => 'patient registry',
+            'registrations' => 'registration',
+            'inventory' => 'inventory',
+            'followups' => 'follow-up',
+            'events' => 'announcement',
+            'reports' => 'report',
+            'users' => 'staff account',
+            'rhus' => 'rhu facility',
+            'teamchat' => 'team chat',
+        ];
 
-        foreach ($screens as $screen) {
-            $entry = $this->book->find($screen === 'patients' ? 'patient registry' : $screen);
+        foreach ($screens as $screen => $question) {
+            $entry = $this->book->find($question);
 
             $this->assertNotNull($entry, "No entry for {$screen}");
+            $this->assertSame($screen, $entry['key'], "\"{$question}\" should reach the {$screen} entry");
             $this->assertNotEmpty($entry['steps'], "{$screen} has no steps");
             $this->assertNotEmpty($entry['summary'], "{$screen} has no summary");
 
