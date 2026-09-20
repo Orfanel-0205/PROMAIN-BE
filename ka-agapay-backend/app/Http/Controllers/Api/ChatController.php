@@ -61,10 +61,19 @@ class ChatController extends Controller
             ? $this->filterRequest($message)
             : null;
 
+        // "How many patients are waiting?" — the assistant cannot read records,
+        // and guessing or lecturing about where to click is worse than saying
+        // so and opening the screen that shows the number.
+        $countQuestion = $audience === 'staff' && $searchRequest === null && $filterRequest === null
+            ? $this->countQuestion($message)
+            : null;
+
         if ($searchRequest !== null) {
             $suggestedAction = $searchRequest['action'];
         } elseif ($filterRequest !== null) {
             $suggestedAction = $filterRequest['action'];
+        } elseif ($countQuestion !== null) {
+            $suggestedAction = $countQuestion['action'];
         }
 
         $session = $this->resolveSession($request, $audience, $language);
@@ -89,6 +98,7 @@ class ChatController extends Controller
         $reply = match (true) {
             $searchRequest !== null => $this->searchReply($searchRequest, $uiLanguage),
             $filterRequest !== null => $this->filterReply($filterRequest, $uiLanguage),
+            $countQuestion !== null => $this->countReply($countQuestion, $uiLanguage),
             default => $this->geminiService->chat($message, $history, $audience, $context),
         };
 
@@ -129,6 +139,7 @@ class ChatController extends Controller
             'action_params' => match (true) {
                 $searchRequest !== null => ['search' => $searchRequest['term']],
                 $filterRequest !== null => $filterRequest['params'],
+                $countQuestion !== null => $countQuestion['params'],
                 default => $this->actionParams($message, $suggestedAction),
             },
             'tutorial_cards' => $audience === 'staff'
@@ -804,6 +815,65 @@ class ChatController extends Controller
         }
 
         return $params === [] ? null : ['action' => $action, 'params' => $params];
+    }
+
+    /**
+     * A question about numbers the assistant cannot see ("how many patients
+     * are waiting?", "ilan ang pending appointments?").
+     *
+     * The honest answer is that it has no access to records, followed by the
+     * screen where the figure is, with the filter already applied where the
+     * question implies one.
+     *
+     * @return array{action: string, params: array<string, string>}|null
+     */
+    private function countQuestion(string $message): ?array
+    {
+        $lower = mb_strtolower($message);
+
+        if (!$this->containsAny($lower, ['how many', 'how much', 'ilan', 'pigara', 'total ng', 'count of'])) {
+            return null;
+        }
+
+        foreach (self::FILTER_TARGETS as $action => $keywords) {
+            if ($this->containsAny($lower, $keywords)) {
+                $params = [];
+
+                foreach (self::FILTER_WORDS as $status => $words) {
+                    if ($this->containsAny($lower, $words)) {
+                        $params['status'] = $status;
+                        break;
+                    }
+                }
+
+                if ($this->containsAny($lower, ['today', 'ngayon', 'natan'])) {
+                    $params[$action === 'open_followups' ? 'status' : 'date'] = 'today';
+                }
+
+                return ['action' => $action, 'params' => $params];
+            }
+        }
+
+        if ($this->containsAny($lower, ['patient', 'pasyente', 'resident'])) {
+            return ['action' => 'open_patient_registry', 'params' => []];
+        }
+
+        return null;
+    }
+
+    /** Admitting the limit, then opening the screen that holds the answer. */
+    private function countReply(array $question, string $language): string
+    {
+        $page = self::PAGE_LABELS[$question['action']] ?? 'the page';
+
+        return match (strtolower(trim($language))) {
+            'tag', 'tl', 'fil', 'tagalog', 'filipino' =>
+                "Hindi ko po mabasa ang mga record, kaya hindi ko masasabi ang bilang. Bubuksan ko po ang {$page} — nasa itaas ng listahan ang kabuuan.",
+            'pag', 'pangasinan', 'pangasinense' =>
+                "Agko nabasa so saray record, kanian agko nibaga so bilang. Lukasan ko so {$page} — walad tagey na listaan so kabuoan.",
+            default =>
+                "I cannot read the records, so I cannot give you the number. Opening {$page} — the total is shown above the list.",
+        };
     }
 
     /** What the assistant says while it opens a filtered list. */
