@@ -55,8 +55,16 @@ class ChatController extends Controller
         // then has to follow by hand.
         $searchRequest = $audience === 'staff' ? $this->searchRequest($message) : null;
 
+        // "show pending appointments", "today's queue": open the page with the
+        // filter already applied. Filtering changes no records either.
+        $filterRequest = $audience === 'staff' && $searchRequest === null
+            ? $this->filterRequest($message)
+            : null;
+
         if ($searchRequest !== null) {
             $suggestedAction = $searchRequest['action'];
+        } elseif ($filterRequest !== null) {
+            $suggestedAction = $filterRequest['action'];
         }
 
         $session = $this->resolveSession($request, $audience, $language);
@@ -76,9 +84,13 @@ class ChatController extends Controller
         $context['audience'] = $audience;
         $context['source'] = $validated['source'] ?? ($audience === 'staff' ? 'admin' : 'mobile');
 
-        $reply = $searchRequest !== null
-            ? $this->searchReply($searchRequest, (string) ($context['ui_language'] ?? ''))
-            : $this->geminiService->chat($message, $history, $audience, $context);
+        $uiLanguage = (string) ($context['ui_language'] ?? '');
+
+        $reply = match (true) {
+            $searchRequest !== null => $this->searchReply($searchRequest, $uiLanguage),
+            $filterRequest !== null => $this->filterReply($filterRequest, $uiLanguage),
+            default => $this->geminiService->chat($message, $history, $audience, $context),
+        };
 
         if ($audience === 'staff') {
             $reply = $this->normalizeStaffButtonLanguage($reply);
@@ -114,9 +126,11 @@ class ChatController extends Controller
             'suggested_action' => $suggestedAction,
             // Lets the dashboard not just open the page but arrive with the
             // search already filled in, e.g. "find patient Clifford".
-            'action_params' => $searchRequest !== null
-                ? ['search' => $searchRequest['term']]
-                : $this->actionParams($message, $suggestedAction),
+            'action_params' => match (true) {
+                $searchRequest !== null => ['search' => $searchRequest['term']],
+                $filterRequest !== null => $filterRequest['params'],
+                default => $this->actionParams($message, $suggestedAction),
+            },
             'tutorial_cards' => $audience === 'staff'
                 ? $this->tutorialCards($suggestedAction, $intent)
                 : [],
@@ -711,6 +725,110 @@ class ChatController extends Controller
         return ['action' => 'open_patient_registry', 'term' => $term];
     }
 
+    /** Screen names as staff see them in the sidebar. */
+    private const PAGE_LABELS = [
+        'open_patient_registry' => 'Patient Registry',
+        'open_prescriptions' => 'E-Prescription / Lab Requests',
+        'open_users' => 'Users',
+        'open_followups' => 'Health Follow-up',
+        'open_inventory' => 'Inventory',
+        'open_events' => 'Events',
+        'open_registrations' => 'Registration Approvals',
+        'open_appointments' => 'Appointments',
+        'open_queue' => 'Queue',
+        'open_consultations' => 'Consultations',
+    ];
+
+    /** Which page each list word belongs to. */
+    private const FILTER_TARGETS = [
+        'open_appointments' => ['appointment', 'tipanan', 'booking', 'schedule'],
+        'open_queue' => ['queue', 'pila', 'ticket'],
+        'open_consultations' => ['consultation', 'konsulta', 'check-up', 'checkup'],
+        'open_prescriptions' => ['prescription', 'reseta'],
+        'open_followups' => ['follow-up', 'follow up', 'followup'],
+        'open_registrations' => ['registration', 'approval', 'applicant'],
+    ];
+
+    /** List filters the pages understand, and the words staff use for them. */
+    private const FILTER_WORDS = [
+        'pending' => ['pending', 'naghihintay', 'nakabinbin', 'akaalagar'],
+        'approved' => ['approved', 'aprubado'],
+        'completed' => ['completed', 'finished', 'tapos', 'asumpal'],
+        'cancelled' => ['cancelled', 'canceled', 'kanselado'],
+        'overdue' => ['overdue', 'late', 'lampas'],
+        'missed' => ['missed', 'no show', 'no-show'],
+        'upcoming' => ['upcoming', 'paparating', 'onsabi'],
+        'dispensed' => ['dispensed', 'naibigay'],
+        'active' => ['active', 'aktibo', 'ongoing'],
+        'waiting' => ['waiting', 'naghihintay na pasyente'],
+    ];
+
+    /**
+     * A request to see a filtered list rather than a question about the system.
+     *
+     * @return array{action: string, params: array<string, string>}|null
+     */
+    private function filterRequest(string $message): ?array
+    {
+        if (preg_match('/^\s*(how|what|where|why|when|paano|ano|iner|akin|panon)\b/iu', $message)) {
+            return null;
+        }
+
+        $lower = mb_strtolower($message);
+        $action = null;
+
+        foreach (self::FILTER_TARGETS as $candidate => $keywords) {
+            if ($this->containsAny($lower, $keywords)) {
+                $action = $candidate;
+                break;
+            }
+        }
+
+        if ($action === null) {
+            return null;
+        }
+
+        $params = [];
+
+        foreach (self::FILTER_WORDS as $status => $words) {
+            if ($this->containsAny($lower, $words)) {
+                $params['status'] = $status;
+                break;
+            }
+        }
+
+        if ($this->containsAny($lower, ['today', 'ngayon', 'natan', 'this morning'])) {
+            // The follow-up board has "today" as one of its tabs; the
+            // appointment board keeps the day separate from the status.
+            $params[$action === 'open_followups' ? 'status' : 'date'] = 'today';
+        }
+
+        return $params === [] ? null : ['action' => $action, 'params' => $params];
+    }
+
+    /** What the assistant says while it opens a filtered list. */
+    private function filterReply(array $filter, string $language): string
+    {
+        $page = self::PAGE_LABELS[$filter['action']] ?? 'the page';
+        $status = $filter['params']['status'] ?? null;
+        $today = ($filter['params']['date'] ?? '') === 'today';
+
+        $what = match (true) {
+            $status !== null && $today => "{$status}, today",
+            $status !== null => $status,
+            default => 'today',
+        };
+
+        return match (strtolower(trim($language))) {
+            'tag', 'tl', 'fil', 'tagalog', 'filipino' =>
+                "Bubuksan ko po ang {$page} at ipapakita ang \"{$what}\". Pwede pong baguhin ang filter sa itaas ng listahan.",
+            'pag', 'pangasinan', 'pangasinense' =>
+                "Lukasan ko so {$page} tan ipanengneng so \"{$what}\". Nayarian mon umanen so filter ed tagey na listaan.",
+            default =>
+                "Opening {$page}, showing {$what}. You can change the filter at the top of the list.",
+        };
+    }
+
     /**
      * What the assistant says while it opens the page. Short and specific, in
      * the language the staff member chose, and it names what to do when the
@@ -718,17 +836,7 @@ class ChatController extends Controller
      */
     private function searchReply(array $search, string $language): string
     {
-        $pages = [
-            'open_patient_registry' => 'Patient Registry',
-            'open_prescriptions' => 'E-Prescription / Lab Requests',
-            'open_users' => 'Users',
-            'open_followups' => 'Health Follow-up',
-            'open_inventory' => 'Inventory',
-            'open_events' => 'Events',
-            'open_registrations' => 'Registration Approvals',
-        ];
-
-        $page = $pages[$search['action']] ?? 'the page';
+        $page = self::PAGE_LABELS[$search['action']] ?? 'the page';
         $term = $search['term'];
 
         return match (strtolower(trim($language))) {
