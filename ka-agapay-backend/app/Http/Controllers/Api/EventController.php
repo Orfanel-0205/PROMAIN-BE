@@ -6,7 +6,9 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Event;
 use App\Models\EventRegistration;
+use App\Models\User;
 use App\Services\Audit\AuditService;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +37,8 @@ class EventController extends Controller
                 },
             ])
             ->latest('published_at');
+
+        $this->restrictToResidentsFacility($query, $user);
 
         if ($request->filled('search')) {
             $search = $request->query('search');
@@ -720,10 +724,44 @@ class EventController extends Controller
             'sms_summary' => ['nullable', 'string', 'max:160'],
 
             'priority' => ['nullable', Rule::in(['normal', 'high', 'urgent'])],
-            'visibility' => ['nullable', Rule::in(['public', 'rhu1', 'rhu2'])],
+            // public, or one value per facility (rhu1, rhu2, rhu3…), so a newly
+            // opened RHU can restrict posts the day it exists.
+            'visibility' => ['nullable', Rule::in(Rhu::visibilityValues())],
 
             'is_published' => ['nullable', 'boolean'],
         ]);
+    }
+
+    /**
+     * Keep a post marked for one RHU away from the other RHUs' residents.
+     *
+     * Until 2026-09-20 the visibility field was stored, shown in the form and
+     * never used in a single query: "RHU 1 residents only" appeared on every
+     * resident's phone regardless. With a third facility possible, that label
+     * has to mean something.
+     *
+     * Staff are not filtered here — they answer for posts across facilities,
+     * and the staff listing has its own RHU scoping.
+     */
+    private function restrictToResidentsFacility($query, ?User $user): void
+    {
+        if (!$user || !$user->hasAnyRole(['resident', 'patient'])) {
+            return;
+        }
+
+        $rhuId = Rhu::resolveRhuIdFromUser($user);
+
+        $query->where(function ($builder) use ($rhuId) {
+            // Anything without a visibility value predates the field and stays
+            // public, which is how it has behaved all along.
+            $builder->whereNull('visibility')
+                ->orWhere('visibility', '')
+                ->orWhere('visibility', 'public');
+
+            if ($rhuId !== null) {
+                $builder->orWhere('visibility', Rhu::visibilityTag($rhuId));
+            }
+        });
     }
 
     private function formatEvent(Event $event, ?EventRegistration $registration = null): array

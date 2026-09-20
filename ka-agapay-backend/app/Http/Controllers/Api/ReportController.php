@@ -355,6 +355,10 @@ class ReportController extends Controller
         return $string !== '' ? $string : 'No';
     }
 
+    /**
+     * The facility's own short name, so a report exported after a new RHU
+     * opens carries that RHU's name rather than a guessed "RHU 3".
+     */
     private function rhuLabel(mixed $value): string
     {
         $string = trim((string) ($value ?? ''));
@@ -367,7 +371,7 @@ class ReportController extends Controller
             return $string;
         }
 
-        return 'RHU ' . $string;
+        return \App\Support\Rhu::rhuLabel((int) $string) ?? ('RHU ' . $string);
     }
 
     private function dohAgeGroup(mixed $age): string

@@ -136,6 +136,46 @@ final class Rhu
     }
 
     /**
+     * How a facility is written in a post's `visibility` column: "rhu1",
+     * "rhu2", "rhu3"… Kept in this shape because rows already store rhu1 and
+     * rhu2, and a third facility must slot in beside them.
+     */
+    public static function visibilityTag(int $rhuId): string
+    {
+        return 'rhu' . $rhuId;
+    }
+
+    /** The facility a visibility value restricts to, or null for "public". */
+    public static function visibilityRhuId(?string $visibility): ?int
+    {
+        $value = strtolower(trim((string) $visibility));
+
+        if ($value === '' || $value === 'public') {
+            return null;
+        }
+
+        // Accepts rhu1, rhu 1, rhu:1 and rhu-1: hand-written values exist.
+        if (preg_match('/^rhu[\s:_-]*(\d+)$/', $value, $matches)) {
+            return self::normalizeRhuId((int) $matches[1]);
+        }
+
+        return null;
+    }
+
+    /**
+     * Every value the visibility field accepts: public, plus one per facility.
+     *
+     * @return array<int, string>
+     */
+    public static function visibilityValues(): array
+    {
+        return array_merge(
+            ['public'],
+            array_map(static fn (int $id) => self::visibilityTag($id), self::ids())
+        );
+    }
+
+    /**
      * Map a barangay id to the facility RHU that serves it (barangays.rhu_id).
      * Returns null when the mapping is unavailable/unknown.
      */
