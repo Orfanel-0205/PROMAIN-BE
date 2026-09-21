@@ -151,11 +151,13 @@ class AttendanceReportTest extends TestCase
     {
         $user = $this->makeUser('resident');
 
+        // A resident profile carries no name of its own: the name lives on
+        // the user row. The model's $fillable lists first_name and friends
+        // for other shapes of data, and following it here produced a column
+        // that does not exist.
         return ResidentProfile::create([
             'user_id' => $user->user_id,
             'barangay_id' => $this->rhuId,
-            'first_name' => 'Resident',
-            'last_name' => 'Tester' . $this->phone,
         ]);
     }
 
