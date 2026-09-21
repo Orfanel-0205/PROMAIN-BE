@@ -1036,8 +1036,14 @@ class TeamChatController extends Controller
         if ($turnUrl !== '') {
             [$username, $credential] = $this->turnCredentials();
 
+            // Several addresses may be listed, separated by commas. It is
+            // worth listing the TCP one as well: a few networks block the
+            // UDP port outright, and a call that falls back to TCP is
+            // slightly worse than one that does not happen.
+            $urls = array_values(array_filter(array_map('trim', explode(',', $turnUrl))));
+
             $servers[] = array_filter([
-                'urls' => $turnUrl,
+                'urls' => count($urls) === 1 ? $urls[0] : $urls,
                 'username' => $username ?: null,
                 'credential' => $credential ?: null,
             ]);
