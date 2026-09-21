@@ -64,6 +64,23 @@ class Kernel extends ConsoleKernel
             ->dailyAt('00:05')
             ->onFailure(fn () => $this->reportScheduleFailure('Expire stale prescriptions'));
 
+        /*
+         * Appointment reminders. Events and follow-ups have had these for
+         * months; appointments, which are what most patients actually book,
+         * had none -- one approval message and then silence until the day.
+         *
+         * Evening, for tomorrow: late enough that the day is settled, early
+         * enough to rearrange. Morning, for today: before people leave home.
+         */
+        $schedule->command('appointments:send-reminders --stage=day_before')
+            ->dailyAt('17:00')
+            ->withoutOverlapping()
+            ->onFailure(fn () => $this->reportScheduleFailure('Appointment reminders (day before)'));
+
+        $schedule->command('appointments:send-reminders --stage=day_of')
+            ->dailyAt('06:30')
+            ->withoutOverlapping()
+            ->onFailure(fn () => $this->reportScheduleFailure('Appointment reminders (day of)'));
         $schedule->command('followups:send-reminders')
             ->name('Send follow-up reminder push notifications')
             ->dailyAt('08:00')

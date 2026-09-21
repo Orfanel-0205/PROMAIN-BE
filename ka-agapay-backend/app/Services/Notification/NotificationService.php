@@ -791,6 +791,158 @@ class NotificationService
         }
     }
 
+    /**
+     * Remind a patient that they have an appointment.
+     *
+     * Events and follow-ups have had reminders for months; appointments,
+     * which are the thing most patients actually book, had none. Somebody
+     * booked, received one approval message, and then heard nothing until
+     * the day -- which is how a booking system quietly turns into a
+     * no-show problem that looks like patients being unreliable.
+     *
+     * Two stages, matching how people remember things: the day before, so
+     * there is time to rearrange, and the morning of, so it is not
+     * forgotten. De-duplicated per appointment, per stage, per date, so a
+     * job that runs twice does not text anyone twice.
+     *
+     * @return array<string, mixed>
+     */
+    public function notifyAppointmentReminder(Appointment $appointment, string $stage): array
+    {
+        $result = [
+            'database_created' => false,
+            'duplicate' => false,
+            'push_configured' => Schema::hasTable('user_device_tokens'),
+            'push_tokens' => 0,
+            'push_sent' => false,
+            'message' => 'Appointment reminder was not sent.',
+        ];
+
+        try {
+            $appointment->loadMissing('resident');
+
+            $resident = $appointment->resident;
+            $userId = $resident ? $this->userKey($resident) : null;
+
+            if (!$userId) {
+                $result['message'] = 'Appointment has no linked resident account.';
+
+                return $result;
+            }
+
+            $stage = $stage === 'day_of' ? 'day_of' : 'day_before';
+            $date = $appointment->appointment_date
+                ? \Illuminate\Support\Carbon::parse($appointment->appointment_date)
+                : now();
+
+            $dedupeKey = "appointment_reminder:{$appointment->id}:{$stage}:" . $date->toDateString();
+
+            if ($this->notificationDedupeExists($userId, $dedupeKey)) {
+                $result['duplicate'] = true;
+                $result['message'] = 'Appointment reminder already sent for this stage.';
+
+                return $result;
+            }
+
+            // The time is included when there is one: "tomorrow" without an
+            // hour still leaves someone guessing when to leave home.
+            $timeText = $this->appointmentTimeText($appointment);
+            $where = $appointment->consultation_type === 'online' || $appointment->consultation_type === 'telemedicine'
+                ? 'This is an online consultation, so watch for the call in the app.'
+                : 'Please arrive a few minutes early and bring a valid ID.';
+
+            $title = $stage === 'day_of'
+                ? 'Your RHU appointment is today'
+                : 'RHU appointment tomorrow';
+
+            $message = $stage === 'day_of'
+                ? "Your appointment at the RHU is today{$timeText}. {$where}"
+                : "You have an appointment at the RHU tomorrow, "
+                    . $date->format('F j') . "{$timeText}. {$where}"
+            ;
+
+            $payload = [
+                'type' => 'appointment_reminder',
+                'screen' => 'appointments',
+                'appointment_id' => $appointment->id,
+                'reminder_stage' => $stage,
+                'appointment_date' => $date->toDateString(),
+                'dedupe_key' => $dedupeKey,
+                'related_type' => 'appointment',
+                'related_id' => $appointment->id,
+            ];
+
+            $notificationId = $this->notifyUser(
+                $resident,
+                NotificationTypes::APPOINTMENT_REMINDER,
+                $title,
+                $message,
+                $payload,
+                '/appointments'
+            );
+
+            $result['database_created'] = (bool) $notificationId;
+
+            // A resident who muted in-app notifications still gets the row
+            // written for de-duplication, or the job would resend daily.
+            if (!$notificationId && !$this->notificationDedupeExists($userId, $dedupeKey)) {
+                $notificationId = $this->storeNotificationDedupeRow(
+                    $userId,
+                    NotificationTypes::APPOINTMENT_REMINDER,
+                    $title,
+                    $message,
+                    $payload,
+                    '/appointments'
+                );
+
+                $result['database_created'] = (bool) $notificationId;
+            }
+
+            if (Schema::hasTable('user_device_tokens')) {
+                $result['push_tokens'] = (int) UserDeviceToken::query()
+                    ->where('user_id', $userId)
+                    ->where('provider', 'expo')
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($result['push_tokens'] > 0) {
+                    $sent = app(ExpoPushService::class)->sendToUser(
+                        userId: $userId,
+                        title: $title,
+                        body: $message,
+                        data: $payload,
+                        channelId: 'appointment-reminders'
+                    );
+
+                    $result['push_sent'] = $sent > 0;
+                }
+            }
+
+            $result['message'] = 'Appointment reminder processed.';
+        } catch (\Throwable $e) {
+            report($e);
+
+            $result['message'] = 'Appointment reminder failed: ' . $e->getMessage();
+        }
+
+        return $result;
+    }
+
+    /** " at 9:00 AM", or nothing when no time was recorded. */
+    private function appointmentTimeText(Appointment $appointment): string
+    {
+        $raw = $appointment->appointment_time ?? null;
+
+        if (!$raw) {
+            return '';
+        }
+
+        try {
+            return ' at ' . \Illuminate\Support\Carbon::parse((string) $raw)->format('g:i A');
+        } catch (\Throwable) {
+            return '';
+        }
+    }
     public function notifyFollowUpReminder(FollowUpReminder $reminder, string $stage): array
     {
         $result = [

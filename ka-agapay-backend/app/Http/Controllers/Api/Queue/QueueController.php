@@ -934,6 +934,101 @@ class QueueController extends Controller
 
         return response()->json([
             'data' => new QueueTicketResource($ticket),
+
+            // Where they stand, and roughly how long that is.
+            'position' => $this->positionFor($ticket),
         ]);
+    }
+
+    /**
+     * How many people are ahead of this patient, and what that means in
+     * minutes.
+     *
+     * A patient could previously see only their ticket number and, when it
+     * was finally their turn, a push saying so. Between those two moments
+     * they knew nothing, which is why people stand in the corridor rather
+     * than sit down, and why they ask staff instead of looking at a phone.
+     *
+     * "Ahead" counts by the same order the desk calls in -- priority score
+     * first, then the order tickets were taken -- so the number a patient
+     * reads matches what actually happens next. A guess that flatters the
+     * wait is worse than no guess: somebody leaves, comes back late, and is
+     * marked a no-show.
+     *
+     * @return array<string, mixed>
+     */
+    private function positionFor(QueueTicket $ticket): array
+    {
+        $waitingAhead = 0;
+
+        if (Schema::hasTable('queue_tickets')) {
+            $query = QueueTicket::query()
+                ->where('rhu_id', $ticket->rhu_id)
+                ->where('service_type', $ticket->service_type)
+                ->whereDate('issued_at', $ticket->issued_at)
+                ->where('status', 'waiting')
+                ->where(function ($q) use ($ticket) {
+                    // Higher priority is called first; equal priority falls
+                    // back to who took their ticket first.
+                    $q->where('priority_score', '>', (int) $ticket->priority_score)
+                        ->orWhere(function ($q2) use ($ticket) {
+                            $q2->where('priority_score', (int) $ticket->priority_score)
+                                ->where('id', '<', $ticket->id);
+                        });
+                });
+
+            $waitingAhead = (int) $query->count();
+        }
+
+        $averageWait = $this->averageWaitMinutesForDesk($ticket);
+
+        return [
+            'people_ahead' => $waitingAhead,
+
+            // 1-based, so it reads the way a person would say it out loud.
+            'place_in_line' => $waitingAhead + 1,
+            'is_next' => $waitingAhead === 0,
+            'average_wait_minutes' => $averageWait,
+
+            // Null rather than zero when there is nothing to base it on. A
+            // confident "0 minutes" on a desk that has served nobody today
+            // is a promise the RHU cannot keep.
+            'estimated_minutes' => $averageWait === null ? null : $waitingAhead * $averageWait,
+        ];
+    }
+
+    /**
+     * Average minutes from being called to finishing, at this desk today.
+     *
+     * Today only, because a Monday morning and a Friday afternoon are not
+     * the same clinic, and because an average over weeks hides exactly the
+     * day a patient is standing in.
+     */
+    private function averageWaitMinutesForDesk(QueueTicket $ticket): ?int
+    {
+        if (!Schema::hasTable('queue_tickets')) {
+            return null;
+        }
+
+        $rows = QueueTicket::query()
+            ->where('rhu_id', $ticket->rhu_id)
+            ->where('service_type', $ticket->service_type)
+            ->whereDate('issued_at', $ticket->issued_at)
+            ->where('status', 'completed')
+            ->whereNotNull('called_at')
+            ->whereNotNull('service_ended_at')
+            ->get(['called_at', 'service_ended_at']);
+
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        $total = 0;
+
+        foreach ($rows as $row) {
+            $total += max(0, $row->called_at->diffInMinutes($row->service_ended_at));
+        }
+
+        return max(1, (int) round($total / $rows->count()));
     }
 }
