@@ -1034,10 +1034,12 @@ class TeamChatController extends Controller
         $turnUrl = trim((string) config('services.turn.url', ''));
 
         if ($turnUrl !== '') {
+            [$username, $credential] = $this->turnCredentials();
+
             $servers[] = array_filter([
                 'urls' => $turnUrl,
-                'username' => trim((string) config('services.turn.username', '')) ?: null,
-                'credential' => trim((string) config('services.turn.credential', '')) ?: null,
+                'username' => $username ?: null,
+                'credential' => $credential ?: null,
             ]);
         }
 
@@ -1045,6 +1047,39 @@ class TeamChatController extends Controller
             'ice_servers' => $servers,
             'relay_configured' => $turnUrl !== '',
         ];
+    }
+
+    /**
+     * A username and password for the relay.
+     *
+     * With a shared secret these are made fresh for each request and
+     * expire on their own: the username is the moment they stop working,
+     * and the password is that timestamp signed with the secret, which is
+     * the scheme coturn implements under `use-auth-secret`. The secret
+     * itself never leaves this server. A browser holding one of these
+     * cannot use the relay tomorrow, and a credential copied out of a
+     * network tab is worthless within hours.
+     *
+     * Without a secret we fall back to whatever fixed account is
+     * configured, which works but never expires.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function turnCredentials(): array
+    {
+        $secret = trim((string) config('services.turn.secret', ''));
+
+        if ($secret === '') {
+            return [
+                trim((string) config('services.turn.username', '')),
+                trim((string) config('services.turn.credential', '')),
+            ];
+        }
+
+        $ttl = max(300, (int) config('services.turn.ttl', 43200));
+        $username = (string) (time() + $ttl);
+
+        return [$username, base64_encode(hash_hmac('sha1', $username, $secret, true))];
     }
 
     /**

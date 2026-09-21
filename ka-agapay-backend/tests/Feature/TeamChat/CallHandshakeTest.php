@@ -179,6 +179,49 @@ class CallHandshakeTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_the_relay_password_expires_and_the_secret_never_leaves_the_server(): void
+    {
+        config([
+            'services.turn.url' => 'turn:127.0.0.1:3478',
+            'services.turn.secret' => 'a-shared-secret',
+            'services.turn.ttl' => 3600,
+        ]);
+
+        $servers = $this->actingAs($this->callee, 'sanctum')
+            ->postJson("/api/v1/team-chat/calls/{$this->call->id}/join")
+            ->assertOk()
+            ->json('data.peer.ice_servers');
+
+        $relay = collect($servers)->firstWhere('urls', 'turn:127.0.0.1:3478');
+
+        $this->assertNotNull($relay, 'the relay was not offered to the browser');
+
+        // The username IS the expiry, and the password is that timestamp
+        // signed with the secret. A credential copied out of a network tab
+        // stops working on its own, and the secret is never sent anywhere.
+        $this->assertGreaterThan(time(), (int) $relay['username']);
+        $this->assertLessThanOrEqual(time() + 3600, (int) $relay['username']);
+        $this->assertSame(
+            base64_encode(hash_hmac('sha1', $relay['username'], 'a-shared-secret', true)),
+            $relay['credential']
+        );
+
+        $this->assertStringNotContainsString('a-shared-secret', json_encode($servers));
+    }
+
+    public function test_without_a_relay_the_dashboard_is_told_so_plainly(): void
+    {
+        config(['services.turn.url' => '', 'services.turn.secret' => '']);
+
+        $peer = $this->actingAs($this->callee, 'sanctum')
+            ->postJson("/api/v1/team-chat/calls/{$this->call->id}/join")
+            ->assertOk()
+            ->json('data.peer');
+
+        // Staff get an honest warning that a call between networks may not
+        // connect, rather than a call that rings and reaches nothing.
+        $this->assertFalse($peer['relay_configured']);
+    }
     private function makeStaff(string $role): User
     {
         $roleRow = UserRole::firstOrCreate(['name' => $role], ['permissions' => []]);

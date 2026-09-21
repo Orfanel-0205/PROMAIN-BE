@@ -24,6 +24,20 @@ return [
      */
     'turn' => [
         'url' => env('TURN_URL', ''),
+
+        /*
+         * Preferred: the shared secret coturn is started with, under
+         * `use-auth-secret`. Each staff member is then handed a username
+         * that is simply an expiry time and a password derived from it,
+         * so nothing long-lived is ever sent to a browser and a leaked
+         * credential stops working on its own.
+         */
+        'secret' => env('TURN_SECRET', ''),
+        'ttl' => (int) env('TURN_TTL', 12 * 3600),
+
+        // Fallback for a relay that only does fixed accounts. Simpler to
+        // set up and worse: the password never expires and is visible to
+        // anyone who can open the browser's network tab.
         'username' => env('TURN_USERNAME', ''),
         'credential' => env('TURN_CREDENTIAL', ''),
     ],
