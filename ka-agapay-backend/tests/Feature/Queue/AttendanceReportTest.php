@@ -47,9 +47,24 @@ class AttendanceReportTest extends TestCase
         $this->seed(\Database\Seeders\UserRoleSeeder::class);
         $this->seed(\Database\Seeders\BarangaySeeder::class);
 
-        $this->rhuId = (int) \App\Models\Barangay::orderBy('barangay_id')->value('barangay_id');
-
         $this->nurse = $this->makeUser('nurse');
+
+        // Ask the endpoint which facility it scopes this nurse to, rather
+        // than working it out here. The rule lives in Rhu::scopeRhuId and
+        // guessing at it from the test is how this file's tickets ended up
+        // filed under a facility the report was never going to look at.
+        $this->rhuId = (int) ($this->attendance()['rhu_id'] ?? 1);
+
+        // queue_tickets.rhu_id is a foreign key to BARANGAYS, so that id has
+        // to exist there as well.
+        if (!DB::table('barangays')->where('barangay_id', $this->rhuId)->exists()) {
+            DB::table('barangays')->insert([
+                'barangay_id' => $this->rhuId,
+                'name' => 'Test Facility Barangay',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
     }
 
     public function test_it_counts_people_served_not_tickets_taken(): void
