@@ -69,10 +69,27 @@ class QueueService
             $rhuId = (int) $data['rhu_id'];
             $serviceType = (string) $data['service_type'];
 
+            /*
+             * WHICH DAY THIS TICKET IS FOR.
+             *
+             * A walk-in is for today. A booked appointment is for the day it
+             * was booked, which is very often not today: staff approve on
+             * Monday for a visit on Friday.
+             *
+             * This used to be unconditionally now(). Approving next week's
+             * appointment put a ticket into TODAY's queue, where it waited,
+             * was counted as a patient standing in the building, and was
+             * never called because nobody was there to call. That is where
+             * the phantom "10 waiting" on an empty desk came from.
+             */
+            $serviceDate = !empty($data['service_date'])
+                ? \Illuminate\Support\Carbon::parse($data['service_date'])->startOfDay()
+                : today();
+
             $existing = QueueTicket::query()
                 ->forRhu($rhuId)
                 ->byServiceType($serviceType)
-                ->forToday()
+                ->whereDate('issued_at', $serviceDate->toDateString())
                 ->where('resident_profile_id', $residentProfile->id)
                 ->whereIn('status', self::ACTIVE_STATUSES)
                 ->lockForUpdate()
@@ -122,7 +139,12 @@ class QueueService
                 'status' => 'waiting',
                 'queue_position' => 0,
                 'call_attempt' => 0,
-                'issued_at' => now(),
+                // Dated for the visit, not for the moment the paperwork was
+                // approved, so the queue board for that day is the one it
+                // appears on.
+                'issued_at' => $serviceDate->isToday()
+                    ? now()
+                    : $serviceDate->copy()->setTime(8, 0),
                 'notes' => $data['notes'] ?? null,
             ];
 
@@ -213,9 +235,27 @@ class QueueService
                 }
 
                 $existing->update($updates);
+
+                return $existing->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
             }
 
-            return $existing->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
+            /*
+             * The linked ticket is finished -- cancelled, or closed by the
+             * end-of-day sweep because it was wrongly dated to the day the
+             * appointment was approved rather than the day of the visit.
+             *
+             * If the visit itself has not happened yet, that dead ticket
+             * must not be handed back: doing so leaves a patient who booked
+             * properly with no way into the queue on the day they arrive,
+             * and nothing on screen to explain why. Issue a fresh one.
+             */
+            $visitDate = $appointment->appointment_date
+                ? \Illuminate\Support\Carbon::parse($appointment->appointment_date)->startOfDay()
+                : null;
+
+            if ($visitDate === null || $visitDate->lt(today())) {
+                return $existing->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
+            }
         }
 
         // 2) No ticket yet — issue one tied to this appointment.
@@ -225,6 +265,10 @@ class QueueService
             'service_type' => $serviceType,
             'appointment_id' => $appointment->id,
             'source' => 'online_appointment',
+
+            // The visit is on the booked date, whatever date it was
+            // approved on.
+            'service_date' => $appointment->appointment_date,
         ]);
 
         // issueTicket() dedups by resident/service/day, so it may have returned a
