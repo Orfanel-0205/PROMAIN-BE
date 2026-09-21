@@ -736,6 +736,42 @@ class TeamChatController extends Controller
     }
 
     /**
+     * GET /team-chat/conversations/{conversation}/image
+     *
+     * A group's picture. Less sensitive than what is sent inside the
+     * conversation -- staff chose it, and it is shown beside the group
+     * everywhere -- but it is read through the same guarded path so that
+     * it does not matter which disk it lives on.
+     */
+    public function conversationImage(Request $request, int $conversation): StreamedResponse
+    {
+        $me = $request->user();
+        $convo = Conversation::findOrFail($conversation);
+
+        $this->ensureParticipant($convo, $me);
+
+        abort_if(empty($convo->image_path), 404, 'That conversation has no picture.');
+
+        $disk = SensitiveFiles::locate($convo->image_path);
+
+        abort_unless($disk, 404, 'The picture file is missing.');
+
+        $ext = strtolower((string) pathinfo($convo->image_path, PATHINFO_EXTENSION));
+
+        $mimeByExt = [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+        ];
+
+        return $disk->response($convo->image_path, "group.{$ext}", [
+            'Content-Type' => $mimeByExt[$ext] ?? 'application/octet-stream',
+            'Cache-Control' => 'private, max-age=600',
+        ]);
+    }
+
+    /**
      * GET /team-chat/messages/{message}/attachment
      *
      * The only way a private chat attachment is read. Being staff is not
@@ -956,7 +992,13 @@ class TeamChatController extends Controller
         $groupAvatar = $convo->image_path
             ? (str_starts_with((string) $convo->image_path, 'http')
                 ? $convo->image_path
-                : Storage::disk('public')->url($convo->image_path))
+                // Through this API, not a disk URL. The sweep that made
+                // message attachments private moved these too -- they were
+                // written to the same folder -- and every avatar pointing
+                // at /storage/ broke at once. Reading them through a route
+                // that looks on both disks means it cannot happen again,
+                // whichever disk a given file has ended up on.
+                : "/team-chat/conversations/{$convo->id}/image")
             : null;
 
         return [
