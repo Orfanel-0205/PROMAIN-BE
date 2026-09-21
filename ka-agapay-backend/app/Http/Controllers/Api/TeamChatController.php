@@ -20,6 +20,7 @@ use App\Models\ConversationParticipant;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Models\User;
+use App\Services\Notification\NotificationService;
 use App\Services\Telemedicine\WebRtcService;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
@@ -497,10 +498,49 @@ class TeamChatController extends Controller
         });
 
         $this->markCallJoined($call, $me);
+        $this->announceCall($call, $me);
 
         return response()->json(['data' => $this->callPayload($call->fresh(), $me, true)], 201);
     }
 
+    /**
+     * Tell the other person their phone is ringing.
+     *
+     * A call used to be visible only to someone already sitting on the Team
+     * Chat page. Anyone working in Appointments, the Queue or a consultation
+     * -- which is most people, most of the time -- was never told at all, and
+     * the caller sat listening to nothing.
+     *
+     * A notification reaches every screen, because the dashboard shell polls
+     * for them everywhere, and "call" already counts as urgent so it arrives
+     * with the loud alert rather than the soft one.
+     */
+    private function announceCall(ConversationCall $call, User $caller): void
+    {
+        $recipientIds = ConversationParticipant::where("conversation_id", $call->conversation_id)
+            ->whereNull("left_at")
+            ->where("user_id", "!=", $caller->user_id)
+            ->pluck("user_id");
+
+        if ($recipientIds->isEmpty()) {
+            return;
+        }
+
+        $name = trim(($caller->first_name ?? "") . " " . ($caller->last_name ?? ""));
+        $name = $name !== "" ? $name : "A staff member";
+        $kind = $call->mode === "video" ? "video call" : "call";
+
+        foreach (User::whereIn("user_id", $recipientIds)->get() as $recipient) {
+            app(NotificationService::class)->notifyUser(
+                $recipient,
+                "team_chat_call",
+                "Incoming {$kind}",
+                "{$name} is calling you on Team Chat.",
+                ["call_id" => $call->id, "conversation_id" => $call->conversation_id],
+                "/team-chat"
+            );
+        }
+    }
     /**
      * POST /team-chat/calls/{call}/join — recipient accepted.
      */
