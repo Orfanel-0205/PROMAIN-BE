@@ -577,6 +577,10 @@ Route::prefix('v1')->group(function () {
             // The figure the municipality asks for, which staff have until
             // now counted by hand.
             Route::get('/attendance', [QueueController::class, 'attendance']);
+
+            // Who came, one row each, walk-in and remote together. Declared
+            // before the /{ticket} route below or it would be swallowed by it.
+            Route::get('/attendance/log', [QueueController::class, 'attendanceLog']);
             Route::get('/my-ticket', [QueueController::class, 'myTicket']);
 
             Route::post('/call-next', [QueueController::class, 'callNext'])

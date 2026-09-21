@@ -677,6 +677,149 @@ class QueueController extends Controller
     }
 
     /**
+     * GET /queue/attendance/log — who actually came, one row per person.
+     *
+     * The totals answer "how many"; a health office also has to be able to
+     * show WHO, and by which route. Two routes exist and they are counted in
+     * different tables: somebody who walked in and took a number lives in
+     * queue_tickets, somebody seen remotely lives only in appointments and
+     * never gets a ticket at all. A log built from either table alone is
+     * wrong, and wrong in a way that looks complete.
+     *
+     * Names are shown because staff need to recognise their own patients.
+     * The CSV can be taken masked, for the same reason the ITR export can:
+     * a list of who attended a health facility on a given day is sensitive
+     * in its own right, whatever the visit was for.
+     */
+    public function attendanceLog(Request $request): JsonResponse
+    {
+        $this->authorize('viewSummary', QueueTicket::class);
+
+        $validated = $request->validate([
+            'rhu_id' => ['nullable', 'integer', Rule::in(Rhu::ids())],
+            'from' => ['nullable', 'date', 'date_format:Y-m-d'],
+            'to' => ['nullable', 'date', 'date_format:Y-m-d', 'after_or_equal:from'],
+            'channel' => ['nullable', 'string', 'in:all,walk_in,booked,online'],
+        ]);
+
+        $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
+        $from = isset($validated['from']) ? \Carbon\Carbon::parse($validated['from']) : today();
+        $to = isset($validated['to']) ? \Carbon\Carbon::parse($validated['to']) : $from->copy();
+        $channel = $validated['channel'] ?? 'all';
+
+        $rows = collect();
+
+        if (Schema::hasTable('queue_tickets')) {
+            $rows = $rows->concat($this->walkInAttendance($from, $to, $rhuId));
+        }
+
+        if (Schema::hasTable('appointments')) {
+            $rows = $rows->concat($this->remoteAttendance($from, $to, $rhuId));
+        }
+
+        if ($channel !== 'all') {
+            $rows = $rows->where('channel', $channel)->values();
+        }
+
+        $rows = $rows->sortBy('seen_at')->values();
+
+        return response()->json([
+            'data' => $rows,
+            'meta' => [
+                'from' => $from->toDateString(),
+                'to' => $to->toDateString(),
+                'rhu_id' => $rhuId,
+                'channel' => $channel,
+                'total' => $rows->count(),
+                'walk_in' => $rows->where('channel', 'walk_in')->count(),
+                'booked' => $rows->where('channel', 'booked')->count(),
+                'online' => $rows->where('channel', 'online')->count(),
+            ],
+        ]);
+    }
+
+    /**
+     * People served at a desk: walk-ins, and booked patients who came in.
+     *
+     * A ticket with no appointment behind it is somebody who simply turned
+     * up, which is most of an RHU morning.
+     */
+    private function walkInAttendance($from, $to, ?int $rhuId)
+    {
+        $query = DB::table('queue_tickets as qt')
+            ->leftJoin('resident_profiles as rp', 'rp.id', '=', 'qt.resident_profile_id')
+            ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
+            ->whereDate('qt.issued_at', '>=', $from->toDateString())
+            ->whereDate('qt.issued_at', '<=', $to->toDateString())
+            ->where('qt.status', 'completed');
+
+        if ($rhuId !== null && Schema::hasColumn('queue_tickets', 'rhu_id')) {
+            $query->where('qt.rhu_id', $rhuId);
+        }
+
+        return $query
+            ->orderBy('qt.issued_at')
+            ->get([
+                'qt.id', 'qt.ticket_number', 'qt.service_type', 'qt.issued_at',
+                'qt.appointment_id', 'u.first_name', 'u.last_name',
+            ])
+            ->map(fn ($row) => [
+                'reference' => (string) ($row->ticket_number ?? ('#' . $row->id)),
+                'patient' => $this->personName($row->first_name ?? null, $row->last_name ?? null),
+                'channel' => $row->appointment_id ? 'booked' : 'walk_in',
+                'service' => (string) ($row->service_type ?? 'unspecified'),
+                'seen_at' => (string) $row->issued_at,
+            ]);
+    }
+
+    /**
+     * People seen without ever entering the building.
+     *
+     * An online or telemedicine consultation never produces a queue ticket,
+     * so counting attendance from the queue alone silently omits everyone
+     * the RHU reached remotely -- exactly the group a facility is most often
+     * asked to show it is reaching.
+     */
+    private function remoteAttendance($from, $to, ?int $rhuId)
+    {
+        if (!Schema::hasColumn('appointments', 'consultation_type')) {
+            return collect();
+        }
+
+        $query = DB::table('appointments as a')
+            ->leftJoin('users as u', 'u.user_id', '=', 'a.user_id')
+            ->whereDate('a.appointment_date', '>=', $from->toDateString())
+            ->whereDate('a.appointment_date', '<=', $to->toDateString())
+            ->where('a.status', 'completed')
+            ->whereIn('a.consultation_type', ['online', 'telemedicine']);
+
+        if ($rhuId !== null && Schema::hasColumn('appointments', 'rhu_id')) {
+            $query->where('a.rhu_id', $rhuId);
+        }
+
+        return $query
+            ->orderBy('a.appointment_date')
+            ->get([
+                'a.id', 'a.appointment_date', 'a.consultation_type', 'a.purpose',
+                'u.first_name', 'u.last_name',
+            ])
+            ->map(fn ($row) => [
+                'reference' => 'APPT-' . $row->id,
+                'patient' => $this->personName($row->first_name ?? null, $row->last_name ?? null),
+                'channel' => 'online',
+                'service' => (string) ($row->purpose ?: $row->consultation_type),
+                'seen_at' => (string) $row->appointment_date,
+            ]);
+    }
+
+    /** A walk-in recorded without a patient is still an attendance. */
+    private function personName(?string $first, ?string $last): string
+    {
+        $name = trim(($first ?? '') . ' ' . ($last ?? ''));
+
+        return $name !== '' ? $name : 'Unnamed walk-in';
+    }
+    /**
      * The booked half of a day.
      *
      * People reach an RHU two ways: they book, or they walk in and take a
