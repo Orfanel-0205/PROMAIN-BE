@@ -736,9 +736,24 @@ class ChatController extends Controller
                 // Set when the user turned on simple mode: short, spoken-style
                 // answers for staff who are not comfortable with computers.
                 'simple_mode',
+                /*
+                 * The figures drawn on the screen the question was asked
+                 * from, as a few labelled lines. Staff ask "what does this
+                 * mean?" while looking at a chart, and an assistant that
+                 * cannot see the chart can only answer in generalities.
+                 *
+                 * Aggregates only -- totals, percentages, the period in
+                 * view. The dashboard decides what a page may publish and
+                 * sends no patient, no record and no image of the screen.
+                 */
+                'screen',
             ])
             ->filter(fn ($value) => is_scalar($value) && trim((string) $value) !== '')
-            ->map(fn ($value) => trim((string) $value))
+            ->map(fn ($value, $key) => $key === 'screen'
+                // The screen block is several labelled lines and has to keep
+                // its shape; everything else here is a single short value.
+                ? mb_substr(trim((string) $value), 0, 2000)
+                : trim((string) $value))
             ->all();
     }
 

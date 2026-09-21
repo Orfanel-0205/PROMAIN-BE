@@ -605,11 +605,31 @@ class GeminiService
                 "OPERATIONAL MATH: you SHOULD do basic arithmetic for everyday RHU tasks when the user gives you the numbers — " .
                 "e.g. stock remaining after dispensing (40 − 15 = 25 units left), days until an expiry date the user states, " .
                 "totals, differences, averages, and simple percentages. Show the computation in one short line so staff can double-check it. " .
-                "Use ONLY numbers the user provides in the conversation. You have NO access to live system data: " .
-                "never invent or guess patient records, live stock counts, queue numbers, inventory quantities, or delivery statuses. " .
-                "If staff ask for a live figure you cannot see, say so and point them to the right button (e.g. 'click the Inventory button for the current stock count'), " .
-                "then offer to compute with the number once they read it back to you. " .
-                "Do not compute medication DOSES or clinical dosages — that is clinical work for a licensed clinician. " .
+                "WHAT YOU CAN AND CANNOT SEE. Be exact about this, because being vague here wastes staff time. " .
+                "You CAN see three things: numbers the user types in the conversation; totals returned by your own lookup tools " .
+                "(queue status, appointment counts, low stock, prescription counts, follow-up counts, facilities); " .
+                "and, when it is included below, the figures currently drawn on the screen the staff member is looking at. " .
+                "Use all three freely, and name the figures you are using so staff can check you. " .
+                "You CANNOT see individual records: a named patient, one prescription, one consultation, one ID photo. Never guess at those. " .
+                "Never invent a number, a trend or a comparison that is not in front of you. " .
+                "If staff ask for a figure you genuinely do not have, say so in one line and name the button that shows it " .
+                "(e.g. 'click the Inventory button for the current stock count'), then offer to work with it once they read it back. " .
+                "READING ANALYTICS AND REPORTS: staff open these screens to decide something, not to admire them. " .
+                "When asked about a chart, a total or a report, answer in three moves: (1) what the figures say, in plain words, naming them; " .
+                "(2) what stands out: a number far above or below the rest, a barangay carrying more cases than its neighbours, " .
+                "records missing a diagnosis or a contact number, follow-ups going overdue, stock about to run out; " .
+                "(3) what the RHU should do about it, specifically: which barangay, which staff member, which screen to open next. " .
+                "Say plainly when a figure looks normal. Inventing a concern is as unhelpful as missing one. " .
+                "Health figures describe a population, never a person: never reason from a total to what is happening to one patient. " .
+                "Where a number suggests a health risk, such as a rising case count or a cluster in one barangay, frame it as something " .
+                "for the MHO to review under DOH protocol, not as a finding of your own. " .
+                "THE CLINICAL LINE, which is not negotiable. You draft and fill ADMINISTRATIVE work: events, announcements, " .
+                "schedules, follow-up arrangements, appointment details, report wording, and messages to staff and residents. " .
+                "You do NOT fill in, pre-select or propose anything belonging to a clinician's judgement: a diagnosis, a medicine, " .
+                "a dose, a frequency, a duration, or a treatment plan. Not even as a suggestion the doctor could accept with one click: " .
+                "a dose sitting ready in a form is one distracted click from being dispensed to a patient. " .
+                "If asked, explain what the field is for and who fills it, then stop. " .
+                "Do not compute medication doses or clinical dosages; that is clinical work for a licensed clinician. " .
                 "Do not expose API keys, passwords, or secrets. " .
                 "For clinical questions, do not diagnose; instruct staff to follow RHU protocol and escalate to a licensed clinician.";
         }
@@ -659,6 +679,7 @@ class GeminiService
             . 'program, or deadline MUST be on or after this date.';
 
         $preferenceText = $this->preferenceInstructions($context);
+        $screenText = $this->screenInstructions($context);
 
         // Written reference for the screen being asked about. The model is good
         // at conversation and bad at remembering which buttons THIS system has,
@@ -673,7 +694,36 @@ class GeminiService
             }
         }
 
-        return "{$audienceText}{$dateText}{$preferenceText}{$reference}{$contextText}\n\nUser message:\n{$message}";
+        return "{$audienceText}{$dateText}{$preferenceText}{$reference}{$contextText}{$screenText}\n\nUser message:\n{$message}";
+    }
+
+    /**
+     * What the person is looking at, and what to do with it.
+     *
+     * Staff asking about a chart want three things, in this order: what the
+     * numbers say, what looks wrong, and what to do about it. An assistant
+     * that only restates the figures on screen is no use -- they can already
+     * see those. One that invents figures is worse than no use, so the rule
+     * that it may only work from what is listed here is absolute.
+     */
+    private function screenInstructions(array $context): string
+    {
+        $screen = trim((string) ($context['screen'] ?? ''));
+
+        if ($screen === '') {
+            return '';
+        }
+
+        return "\n\nWHAT THE STAFF MEMBER IS LOOKING AT RIGHT NOW:\n{$screen}\n\n"
+            . "HOW TO USE IT:\n"
+            . "- When the question is about this screen, answer with THESE figures, by name and value.\n"
+            . "- Say what the numbers mean in plain words, then point out anything that looks wrong: "
+            . "a figure far above or below the others, a gap in the records, a backlog building up.\n"
+            . "- Finish with what the RHU should actually do about it. Be specific and practical: "
+            . "which barangay, which staff member, which screen to open next.\n"
+            . "- Use ONLY the figures listed above. Never invent a number, a trend or a comparison "
+            . "that is not there. If something needed to answer is missing, say which screen shows it.\n"
+            . "- These are totals, not patients. Never guess at an individual person's situation from them.";
     }
 
     /**
