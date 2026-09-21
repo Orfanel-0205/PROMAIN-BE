@@ -1132,8 +1132,13 @@ class NotificationService
     }
 
     /**
-     * Daily scheduled sweep so alerts are not limited to items that happened to
-     * have a stock movement. Deduped, so it is safe to run repeatedly.
+     * Hourly scheduled sweep, so alerts are not limited to items that happened
+     * to have a stock movement, and so an item that crosses its reorder point
+     * mid-afternoon is not left unmentioned until the following morning.
+     *
+     * Safe to run as often as you like: each alert carries a key made of the
+     * item, the kind of problem and the date, and an alert whose key is
+     * already on a notification is not raised again.
      */
     public function sweepInventoryAlerts(): int
     {

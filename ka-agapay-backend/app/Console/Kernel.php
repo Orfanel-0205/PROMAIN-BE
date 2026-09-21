@@ -84,7 +84,13 @@ class Kernel extends ConsoleKernel
             $count = app(\App\Services\Notification\NotificationService::class)->sweepInventoryAlerts();
             logger()->info("Swept {$count} inventory item(s) for staff stock/expiry alerts.");
         })->name('Sweep inventory low-stock / expiry alerts')
-            ->dailyAt('07:30')
+            // Hourly, not once at dawn. An item crosses its reorder point or
+            // its expiry window at whatever hour the work happens, and waiting
+            // until the next morning to say so wastes a day of the warning.
+            // Alerts are de-duplicated per item, per kind, per day, so running
+            // this twenty-four times instead of once cannot produce a second
+            // notification about the same thing.
+            ->hourly()
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Sweep inventory low-stock / expiry alerts'));
 

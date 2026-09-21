@@ -243,6 +243,10 @@ class InventoryController extends Controller
             );
         }
 
+        // An item can be born already low or already close to expiry. Alert
+        // on it now rather than leaving it for the morning sweep.
+        $this->service->checkStockLevels($item->fresh() ?? $item);
+
         return response()->json([
             'message' => 'Inventory item created.',
             'data' => $item->fresh(),
@@ -410,6 +414,10 @@ class InventoryController extends Controller
             'info',
             $inventory->getAuditLabel()
         );
+
+        // Editing the stock figure or the expiry date changes whether this
+        // item needs attention, exactly as a stock movement would.
+        $this->service->checkStockLevels($inventory->fresh() ?? $inventory);
 
         return response()->json([
             'message' => 'Inventory item updated.',

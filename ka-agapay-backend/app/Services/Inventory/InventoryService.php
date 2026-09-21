@@ -171,6 +171,21 @@ class InventoryService
     }
 
     /**
+     * Check an item and alert staff if it is low, out, expiring or expired.
+     *
+     * Public because adding or editing an item can put it in exactly the
+     * state a stock movement would, and those paths used to raise nothing:
+     * a medicine entered with one box left, or given a nearer expiry date,
+     * sat silent until the next morning sweep. Staff saw a red row on the
+     * Inventory screen and no alert anywhere else, which is the worst
+     * combination -- it looks like the system noticed and said nothing.
+     */
+    public function checkStockLevels(InventoryItem $item): void
+    {
+        $this->raiseStockAlert($item);
+    }
+
+    /**
      * Raise a staff-only low/out/expiry notification for an item after a stock
      * change. Runs outside the stock transaction and never throws, so a
      * notification problem can never roll back or block the movement.
