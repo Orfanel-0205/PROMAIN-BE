@@ -749,6 +749,8 @@ class QueueController extends Controller
         $query = DB::table('queue_tickets as qt')
             ->leftJoin('resident_profiles as rp', 'rp.id', '=', 'qt.resident_profile_id')
             ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
+            ->leftJoin('barangays as b', 'b.barangay_id', '=', 'rp.barangay_id')
+            ->leftJoin('users as sv', 'sv.user_id', '=', 'qt.served_by')
             ->whereDate('qt.issued_at', '>=', $from->toDateString())
             ->whereDate('qt.issued_at', '<=', $to->toDateString())
             ->where('qt.status', 'completed');
@@ -761,7 +763,10 @@ class QueueController extends Controller
             ->orderBy('qt.issued_at')
             ->get([
                 'qt.id', 'qt.ticket_number', 'qt.service_type', 'qt.issued_at',
-                'qt.appointment_id', 'u.first_name', 'u.last_name',
+                'qt.called_at', 'qt.service_started_at', 'qt.service_ended_at',
+                'qt.appointment_id', 'qt.priority_score', 'qt.status',
+                'u.first_name', 'u.last_name', 'b.name as barangay',
+                'sv.first_name as served_first', 'sv.last_name as served_last',
             ])
             ->map(fn ($row) => [
                 'reference' => (string) ($row->ticket_number ?? ('#' . $row->id)),
@@ -769,6 +774,18 @@ class QueueController extends Controller
                 'channel' => $row->appointment_id ? 'booked' : 'walk_in',
                 'service' => (string) ($row->service_type ?? 'unspecified'),
                 'seen_at' => (string) $row->issued_at,
+
+                // The detail view answers "what happened to this person",
+                // which is a question about timings and who saw them.
+                'barangay' => $row->barangay ?: null,
+                'status' => (string) $row->status,
+                'priority_score' => (int) ($row->priority_score ?? 0),
+                'called_at' => $row->called_at,
+                'started_at' => $row->service_started_at,
+                'ended_at' => $row->service_ended_at,
+                'served_by' => ($row->served_first || $row->served_last)
+                    ? $this->personName($row->served_first, $row->served_last)
+                    : null,
             ]);
     }
 
@@ -788,6 +805,8 @@ class QueueController extends Controller
 
         $query = DB::table('appointments as a')
             ->leftJoin('users as u', 'u.user_id', '=', 'a.user_id')
+            ->leftJoin('resident_profiles as rp', 'rp.user_id', '=', 'a.user_id')
+            ->leftJoin('barangays as b', 'b.barangay_id', '=', 'rp.barangay_id')
             ->whereDate('a.appointment_date', '>=', $from->toDateString())
             ->whereDate('a.appointment_date', '<=', $to->toDateString())
             ->where('a.status', 'completed')
@@ -801,7 +820,7 @@ class QueueController extends Controller
             ->orderBy('a.appointment_date')
             ->get([
                 'a.id', 'a.appointment_date', 'a.consultation_type', 'a.purpose',
-                'u.first_name', 'u.last_name',
+                'a.status', 'u.first_name', 'u.last_name', 'b.name as barangay',
             ])
             ->map(fn ($row) => [
                 'reference' => 'APPT-' . $row->id,
@@ -809,6 +828,16 @@ class QueueController extends Controller
                 'channel' => 'online',
                 'service' => (string) ($row->purpose ?: $row->consultation_type),
                 'seen_at' => (string) $row->appointment_date,
+
+                // Same keys as a walk-in row, so one table renders both and
+                // a remote patient is not quietly a second-class record.
+                'barangay' => $row->barangay ?: null,
+                'status' => (string) $row->status,
+                'priority_score' => 0,
+                'called_at' => null,
+                'started_at' => null,
+                'ended_at' => null,
+                'served_by' => null,
             ]);
     }
 
