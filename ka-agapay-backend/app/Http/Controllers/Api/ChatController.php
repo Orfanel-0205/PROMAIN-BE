@@ -8,6 +8,7 @@ use App\Models\ChatLog;
 use App\Models\ChatMessage;
 use App\Models\ChatSession;
 use App\Services\Ai\CmsDraftParser;
+use App\Services\Ai\FormDraftParser;
 use App\Services\Ai\GeminiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,6 +23,7 @@ class ChatController extends Controller
     public function __construct(
         private readonly GeminiService $geminiService,
         private readonly CmsDraftParser $cmsDraftParser,
+        private readonly FormDraftParser $formDraftParser,
     ) {}
 
     /**
@@ -156,6 +158,16 @@ class ChatController extends Controller
             // by hand. Null for anything that is not a draft.
             'cms_draft' => $audience === 'staff'
                 ? $this->cmsDraftParser->parse($reply)
+                : null,
+
+            /*
+             * A follow-up the assistant drafted, for the form the staff
+             * member already has open. Administrative fields only: when,
+             * how urgent, whether to text the patient. The instructions
+             * field stays empty for the clinician to write.
+             */
+            'form_draft' => $audience === 'staff'
+                ? $this->formDraftParser->parse($reply)
                 : null,
             'detected_complaint' => $audience === 'resident' ? $this->detectComplaint($message) : null,
             'meta' => [
