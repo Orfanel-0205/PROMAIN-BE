@@ -869,10 +869,20 @@ class TeamChatController extends Controller
 
         abort_unless($convo->type === 'group', 422, 'Only group conversations can be edited.');
 
-        // Group admin = its creator; Super Admin may also manage any group.
-        $isCreator = (int) $convo->created_by === (int) $me->user_id;
-        $isSuperAdmin = $me->hasAnyRole(['super_admin', 'superadmin']);
-        abort_unless($isCreator || $isSuperAdmin, 403, 'Only the group creator can change the group.');
+        /*
+         * Any member may change the name and the picture.
+         *
+         * This was the creator only, which meant that in practice nobody
+         * could: the person who first made an RHU group is often no longer
+         * the one running it, and every other member simply found the
+         * option missing with nothing to say why. Staff read that as the
+         * upload being broken.
+         *
+         * A group name and picture are shared property of the people in the
+         * group, the way every chat application treats them. Membership is
+         * still required -- ensureParticipant above -- so an outsider cannot
+         * touch it, and who changed what is in the audit trail.
+         */
 
         $validated = $request->validate([
             'title' => ['nullable', 'string', 'max:150'],
@@ -1011,9 +1021,9 @@ class TeamChatController extends Controller
             'rhu_id' => $convo->rhu_id,
             'created_by' => $convo->created_by !== null ? (int) $convo->created_by : null,
             // Whether the viewer may rename / change this group's icon.
-            'can_manage' => $convo->type === 'group'
-                && ((int) $convo->created_by === (int) $me->user_id
-                    || $me->hasAnyRole(['super_admin', 'superadmin'])),
+            // Any member can, the way every chat application works. Being
+            // in the group is the permission.
+            'can_manage' => $convo->type === 'group',
             'participants' => $participants
                 ->filter(fn ($p) => $p->user)
                 ->map(fn ($p) => $this->userBrief($p->user))
