@@ -64,6 +64,24 @@ class ReportController extends Controller
         $filters = $this->filters($request);
         $rows = $this->diagnosisItr->rows($filters, $request->user());
 
+        /*
+         * Privacy mode for the export that actually carries identities.
+         *
+         * The dashboard offered a privacy toggle that masked the follow-up
+         * and staff-workload downloads, and said so in general terms: mask
+         * personal data, aggregate exports unaffected. Read plainly, that
+         * promises masking wherever there are names. This file was the one
+         * it did not touch, and it is the one that matters: full name,
+         * PhilHealth number, address, mobile, birthdate, guardian details
+         * and the SOAP notes. Staff could tick the box, download this, and
+         * hand out a complete patient dossier believing it was masked.
+         *
+         * The plaintext version stays, because formal DOH submission needs
+         * real identifiers. It is now a deliberate choice rather than the
+         * silent default.
+         */
+        $masked = $request->boolean('masked');
+
         $columns = [
             // ================================================================
             // SESSION / VISIT DETAILS
@@ -248,6 +266,11 @@ class ReportController extends Controller
             . ($detail ? 'full_' : 'core_')
             . now()->format('Y-m-d_His') . '.csv';
 
+        if ($masked) {
+            $columns = $this->maskIdentifyingColumns($columns);
+            $filename = str_replace('.csv', '_masked.csv', $filename);
+        }
+
         return response()->streamDownload(function () use ($columns, $rows) {
             $out = fopen('php://output', 'w');
 
@@ -275,6 +298,74 @@ class ReportController extends Controller
             'Pragma' => 'no-cache',
             'Expires' => '0',
         ]);
+    }
+
+    /**
+     * Wrap the columns that identify a person so their values come out
+     * partially hidden.
+     *
+     * Matched on the column LABEL rather than a list of field names,
+     * because the labels are what a person reads when deciding whether a
+     * file is safe to send, and a new identifying column added later will
+     * almost certainly be called Name, Contact or Number. Failing towards
+     * masking is the right way round for this file.
+     *
+     * @param  array<string, callable>  $columns
+     * @return array<string, callable>
+     */
+    private function maskIdentifyingColumns(array $columns): array
+    {
+        $identifying = [
+            'name', 'philhealth', 'mobile', 'contact', 'address',
+            'birthdate', 'guardian',
+        ];
+
+        $masked = [];
+
+        foreach ($columns as $label => $resolver) {
+            $needle = strtolower($label);
+
+            $hit = false;
+
+            foreach ($identifying as $word) {
+                if (str_contains($needle, $word)) {
+                    $hit = true;
+                    break;
+                }
+            }
+
+            $masked[$label] = $hit
+                ? fn (array $row) => $this->maskValue($resolver($row))
+                : $resolver;
+        }
+
+        return $masked;
+    }
+
+    /**
+     * Enough of a value to match a record you already hold, not enough to
+     * identify someone you do not. Mobile numbers keep the 09 prefix for
+     * the same reason: it reads as a phone number without being one.
+     */
+    private function maskValue(mixed $value): string
+    {
+        $text = trim((string) ($value ?? ''));
+
+        if ($text === '') {
+            return '';
+        }
+
+        if (preg_match('/^(09|\\+639)/', $text)) {
+            return '09' . str_repeat('*', max(0, mb_strlen($text) - 2));
+        }
+
+        // A date of birth is an identifier on its own; only the year is
+        // useful for the age bands a report is actually built on.
+        if (preg_match('/^(\\d{4})-\\d{2}-\\d{2}/', $text, $match)) {
+            return $match[1] . '-**-**';
+        }
+
+        return mb_substr($text, 0, 1) . str_repeat('*', max(1, mb_strlen($text) - 1));
     }
 
     private function filters(Request $request): array
