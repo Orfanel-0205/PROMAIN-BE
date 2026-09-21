@@ -139,6 +139,45 @@ class AttendanceReportTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_booked_patients_are_counted_alongside_walk_ins(): void
+    {
+        // People reach an RHU two ways. Counting only the queue answers "how
+        // busy were we" and misses everyone who was expected, which is the
+        // figure that says whether booking is working at all.
+        $this->makeAppointment('completed', today());
+        $this->makeAppointment('completed', today());
+        $this->makeAppointment('cancelled', today());
+        $this->makeAppointment('scheduled', today());
+
+        $appointments = $this->attendance()['appointments'];
+
+        $this->assertSame(4, $appointments['booked']);
+        $this->assertSame(2, $appointments['kept']);
+        $this->assertSame(1, $appointments['cancelled']);
+
+        // Booked, not seen, not called off. On a past date that is someone
+        // who did not arrive; on today they may still be on their way.
+        $this->assertSame(1, $appointments['did_not_arrive']);
+    }
+
+    private function makeAppointment(string $status, $date): void
+    {
+        $user = $this->makeUser('resident');
+
+        $row = [
+            'user_id' => $user->user_id,
+            'appointment_date' => $date->toDateString(),
+            'status' => $status,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        if (\Illuminate\Support\Facades\Schema::hasColumn('appointments', 'rhu_id')) {
+            $row['rhu_id'] = $this->rhuId;
+        }
+
+        DB::table('appointments')->insert($row);
+    }
     /** @return array<string, mixed> */
     private function attendance(array $params = []): array
     {

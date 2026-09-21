@@ -669,10 +669,59 @@ class QueueController extends Controller
                 'to' => $to->toDateString(),
                 'rhu_id' => $rhuId,
                 'totals' => $totals,
+                'appointments' => $this->appointmentAttendance($from, $to, $rhuId),
                 'by_day' => $byDay,
                 'by_service' => $byService,
             ],
         ]);
+    }
+
+    /**
+     * The booked half of a day.
+     *
+     * People reach an RHU two ways: they book, or they walk in and take a
+     * number. Counting only the queue answers "how busy were we" and misses
+     * every patient who was expected, which is the figure that says whether
+     * booking is working at all.
+     *
+     * BOOKED is how many were expected that day. KEPT is how many of those
+     * were seen through. The gap between them is the one worth acting on:
+     * a morning of empty slots is staff time already paid for.
+     *
+     * @return array<string, int>
+     */
+    private function appointmentAttendance($from, $to, ?int $rhuId): array
+    {
+        $empty = ['booked' => 0, 'kept' => 0, 'cancelled' => 0, 'did_not_arrive' => 0];
+
+        if (!Schema::hasTable('appointments')) {
+            return $empty;
+        }
+
+        $base = DB::table('appointments')
+            ->whereDate('appointment_date', '>=', $from->toDateString())
+            ->whereDate('appointment_date', '<=', $to->toDateString());
+
+        if ($rhuId !== null && Schema::hasColumn('appointments', 'rhu_id')) {
+            $base->where('rhu_id', $rhuId);
+        }
+
+        $booked = (int) (clone $base)->count();
+        $kept = (int) (clone $base)->where('status', 'completed')->count();
+        $cancelled = (int) (clone $base)->whereIn('status', ['cancelled', 'rejected'])->count();
+
+        return [
+            'booked' => $booked,
+            'kept' => $kept,
+            'cancelled' => $cancelled,
+
+            // Everything booked that was neither seen nor called off. On a
+            // past date these are the people who did not arrive. On today
+            // they may still be on their way, which is why this is not
+            // called a no-show: the report is read during the day as well
+            // as after it.
+            'did_not_arrive' => max(0, $booked - $kept - $cancelled),
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -686,6 +735,7 @@ class QueueController extends Controller
                 'issued' => 0, 'visits' => 0, 'attendees' => 0,
                 'no_show' => 0, 'skipped' => 0, 'cancelled' => 0, 'still_open' => 0,
             ],
+            'appointments' => ['booked' => 0, 'kept' => 0, 'cancelled' => 0, 'did_not_arrive' => 0],
             'by_day' => [],
             'by_service' => [],
         ];
