@@ -572,6 +572,124 @@ class QueueController extends Controller
         ]);
     }
 
+    /**
+     * GET /queue/attendance — how many people the RHU actually saw.
+     *
+     * The daily summary answers "what is happening right now". This answers
+     * "how many came", for a day or any range of days, which is the figure a
+     * rural health unit is asked for by the municipality and has until now
+     * had to count by hand.
+     *
+     * Two counts, because they are different questions and get confused:
+     * VISITS is how many times someone was served, and ATTENDEES is how many
+     * different people that was. One patient coming three times in a month is
+     * three visits and one attendee. Reporting only visits overstates reach;
+     * reporting only attendees hides workload.
+     *
+     * Attendance means served, not issued a number. Someone who took a
+     * ticket and went home was not attended to, and counting them would
+     * flatter the figures in the one direction nobody notices.
+     */
+    public function attendance(Request $request): JsonResponse
+    {
+        $this->authorize('viewSummary', QueueTicket::class);
+
+        $validated = $request->validate([
+            'rhu_id' => ['nullable', 'integer', Rule::in(Rhu::ids())],
+            'from' => ['nullable', 'date', 'date_format:Y-m-d'],
+            'to' => ['nullable', 'date', 'date_format:Y-m-d', 'after_or_equal:from'],
+        ]);
+
+        $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
+
+        $from = isset($validated['from']) ? \Carbon\Carbon::parse($validated['from']) : today();
+        $to = isset($validated['to']) ? \Carbon\Carbon::parse($validated['to']) : $from->copy();
+
+        if (!Schema::hasTable('queue_tickets')) {
+            return response()->json(['data' => $this->emptyAttendance($from, $to)]);
+        }
+
+        $base = DB::table('queue_tickets')
+            ->whereDate('issued_at', '>=', $from->toDateString())
+            ->whereDate('issued_at', '<=', $to->toDateString());
+
+        if ($rhuId !== null && Schema::hasColumn('queue_tickets', 'rhu_id')) {
+            $base->where('rhu_id', $rhuId);
+        }
+
+        $attendedStatuses = ['completed'];
+
+        $totals = [
+            'issued' => (int) (clone $base)->count(),
+            'visits' => (int) (clone $base)->whereIn('status', $attendedStatuses)->count(),
+            'no_show' => (int) (clone $base)->where('status', 'no_show')->count(),
+            'skipped' => (int) (clone $base)->where('status', 'skipped')->count(),
+            'cancelled' => (int) (clone $base)->where('status', 'cancelled')->count(),
+            'still_open' => (int) (clone $base)->whereIn('status', ['waiting', 'called', 'in_service'])->count(),
+        ];
+
+        // Distinct people, where the ticket says who it was for. A walk-in
+        // recorded without a patient still counts as a visit and cannot count
+        // towards distinct attendees, so the two figures differ honestly.
+        $totals['attendees'] = Schema::hasColumn('queue_tickets', 'resident_profile_id')
+            ? (int) (clone $base)->whereIn('status', $attendedStatuses)
+                ->whereNotNull('resident_profile_id')
+                ->distinct()->count('resident_profile_id')
+            : $totals['visits'];
+
+        $byDay = (clone $base)
+            ->whereIn('status', $attendedStatuses)
+            ->selectRaw('DATE(issued_at) as day, COUNT(*) as visits')
+            ->groupBy('day')
+            ->orderBy('day')
+            ->get()
+            ->map(fn ($row) => [
+                'date' => (string) $row->day,
+                'visits' => (int) $row->visits,
+            ])
+            ->all();
+
+        $byService = Schema::hasColumn('queue_tickets', 'service_type')
+            ? (clone $base)
+                ->whereIn('status', $attendedStatuses)
+                ->selectRaw('service_type, COUNT(*) as visits')
+                ->groupBy('service_type')
+                ->orderByDesc('visits')
+                ->get()
+                ->map(fn ($row) => [
+                    'service_type' => (string) ($row->service_type ?? 'unspecified'),
+                    'visits' => (int) $row->visits,
+                ])
+                ->all()
+            : [];
+
+        return response()->json([
+            'data' => [
+                'from' => $from->toDateString(),
+                'to' => $to->toDateString(),
+                'rhu_id' => $rhuId,
+                'totals' => $totals,
+                'by_day' => $byDay,
+                'by_service' => $byService,
+            ],
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    private function emptyAttendance($from, $to): array
+    {
+        return [
+            'from' => $from->toDateString(),
+            'to' => $to->toDateString(),
+            'rhu_id' => null,
+            'totals' => [
+                'issued' => 0, 'visits' => 0, 'attendees' => 0,
+                'no_show' => 0, 'skipped' => 0, 'cancelled' => 0, 'still_open' => 0,
+            ],
+            'by_day' => [],
+            'by_service' => [],
+        ];
+    }
     public function myTicket(Request $request): JsonResponse
     {
         $resident = $this->resolveResidentProfile($request);

@@ -572,6 +572,11 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/live',      [QueueController::class, 'live']);
             Route::get('/summary',   [QueueController::class, 'summary']);
+
+            // How many people the RHU actually saw, for a day or a range.
+            // The figure the municipality asks for, which staff have until
+            // now counted by hand.
+            Route::get('/attendance', [QueueController::class, 'attendance']);
             Route::get('/my-ticket', [QueueController::class, 'myTicket']);
 
             Route::post('/call-next', [QueueController::class, 'callNext'])

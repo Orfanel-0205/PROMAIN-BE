@@ -80,9 +80,24 @@ class DashboardController extends Controller
                     ? $q->whereIn('status', ['pending', 'screened', 'scheduled'])
                     : $q;
             }),
+            /*
+             * Today's queue, not every queue there has ever been.
+             *
+             * This counted open tickets with no date at all, so every ticket
+             * ever abandoned mid-shift stayed in the figure for good. The
+             * dashboard showed ten people waiting beside a desk that
+             * correctly showed none, on the same screen, and the sidebar
+             * badge agreed with the wrong one.
+             */
             'waiting_queue' => $this->countRows('queue_tickets', function ($q) {
-                return Schema::hasColumn('queue_tickets', 'status')
-                    ? $q->whereIn('status', ['waiting', 'called', 'in_service'])
+                if (!Schema::hasColumn('queue_tickets', 'status')) {
+                    return $q;
+                }
+
+                $q->whereIn('status', ['waiting', 'called', 'in_service']);
+
+                return Schema::hasColumn('queue_tickets', 'issued_at')
+                    ? $q->whereDate('issued_at', today())
                     : $q;
             }),
             'low_inventory' => $this->lowInventoryCount(),

@@ -43,6 +43,20 @@ class Kernel extends ConsoleKernel
         //     app(\App\Services\Notification\NotificationService::class)->sendSessionReminders();
         // })->everyFiveMinutes()->description('Send telemedicine session reminders');
 
+        /*
+         * A queue belongs to a day. Tickets left open when a shift ends --
+         * called and never answered, in service when the doctor left --
+         * used to stay "waiting" for good, so every count built on them
+         * drifted further from the truth every day. Staff stop believing a
+         * number that is always wrong.
+         *
+         * Just after midnight, so the day being closed is finished and the
+         * new one starts from zero.
+         */
+        $schedule->command('queue:close-stale')
+            ->dailyAt('00:10')
+            ->withoutOverlapping()
+            ->onFailure(fn () => $this->reportScheduleFailure('Close stale queue tickets'));
         $schedule->call(function () {
             $count = app(\App\Services\Prescription\PrescriptionService::class)->expireStale();
             logger()->info("Expired {$count} stale prescriptions.");
