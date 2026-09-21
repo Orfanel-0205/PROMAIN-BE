@@ -23,10 +23,12 @@ use App\Models\User;
 use App\Services\Notification\NotificationService;
 use App\Services\Telemedicine\WebRtcService;
 use App\Support\Rhu;
+use App\Support\SensitiveFiles;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class TeamChatController extends Controller
 {
@@ -675,27 +677,55 @@ class TeamChatController extends Controller
     }
 
     // =====================================================================
-    // IMAGE ATTACHMENT UPLOAD (Part 4) — reuses the 'public' disk convention
+    // IMAGE ATTACHMENT UPLOAD
+    //
+    // What staff actually send each other in here is wound photographs,
+    // laboratory results and photographed referral papers. Those were
+    // written to the 'public' disk and served at /storage/..., which needs
+    // no login and is guessable -- the same fault that was closed for ID
+    // photos and prescription PDFs and missed here.
+    //
+    // Message attachments now go to the private disk and are read back only
+    // through a route that checks the asker is in that conversation. Group
+    // avatars stay public: a picture staff picked for a group chat is
+    // decoration, it is shown beside the group everywhere, and treating it
+    // as clinical data would cost more than it protects.
     // =====================================================================
 
     public function uploadAttachment(Request $request): JsonResponse
     {
-        $request->validate([
+        $validated = $request->validate([
             // 8 MB: a chat photo needs no OCR (unlike the 5 MB Employee-ID cap),
             // but must stay bounded. 8192 KB = 8 MB.
             'image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
+            'purpose' => ['nullable', 'string', 'in:message,group_image'],
         ], [
             'image.max' => 'The image must not be larger than 8 MB.',
             'image.mimes' => 'Only JPG, PNG, or WebP images are accepted.',
         ]);
 
         $file = $request->file('image');
-        $path = $file->store('chat/attachments', 'public');
+
+        // Defaults to the private path. An older client that sends no
+        // purpose gets the safe behaviour rather than the convenient one.
+        $isGroupImage = ($validated['purpose'] ?? 'message') === 'group_image';
+
+        if ($isGroupImage) {
+            $path = $file->store('chat/group-images', 'public');
+            $url = Storage::disk('public')->url($path);
+        } else {
+            $path = SensitiveFiles::store($file, 'chat/attachments');
+
+            // No direct link exists for a private file. The picture the
+            // sender sees before pressing send is the one already on their
+            // own machine, not a round trip through this server.
+            $url = null;
+        }
 
         return response()->json([
             'data' => [
                 'attachment_path' => $path,
-                'url' => Storage::disk('public')->url($path),
+                'url' => $url,
                 'attachment_meta' => [
                     'mime' => $file->getClientMimeType(),
                     'size' => $file->getSize(),
@@ -703,6 +733,52 @@ class TeamChatController extends Controller
                 ],
             ],
         ], 201);
+    }
+
+    /**
+     * GET /team-chat/messages/{message}/attachment
+     *
+     * The only way a private chat attachment is read. Being staff is not
+     * enough: the asker has to be in the conversation the message belongs
+     * to, which is the rule the messages themselves already follow.
+     */
+    public function messageAttachment(Request $request, int $message): StreamedResponse
+    {
+        $me = $request->user();
+        $row = Message::findOrFail($message);
+        $convo = Conversation::findOrFail($row->conversation_id);
+
+        $this->ensureParticipant($convo, $me);
+
+        abort_if(empty($row->attachment_path), 404, 'That message has no attachment.');
+        abort_if((bool) $row->content_deleted_at, 404, 'That message was deleted.');
+
+        // Private disk first, then the old public location for anything not
+        // yet moved by storage:privatize-sensitive.
+        $disk = SensitiveFiles::locate($row->attachment_path);
+
+        abort_unless($disk, 404, 'The attachment file is missing.');
+
+        $ext = strtolower((string) pathinfo($row->attachment_path, PATHINFO_EXTENSION));
+
+        $mimeByExt = [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+        ];
+
+        $mime = $mimeByExt[$ext] ?? 'application/octet-stream';
+
+        // The stored path is never revealed; the download is named plainly.
+        return $disk->response(
+            $row->attachment_path,
+            "attachment.{$ext}",
+            [
+                'Content-Type' => $mime,
+                'Cache-Control' => 'private, max-age=300',
+            ]
+        );
     }
 
     // =====================================================================
@@ -1229,8 +1305,11 @@ class TeamChatController extends Controller
             'conversation_id' => $m->conversation_id,
             'sender_id' => $m->sender_id,
             'body' => $isDeleted ? null : $m->body,
+            // A path through this API, not a public link. The dashboard
+            // fetches it with the session token attached, the same way it
+            // already reads ID photographs.
             'attachment_url' => (!$isDeleted && $m->attachment_path)
-                ? Storage::disk('public')->url($m->attachment_path)
+                ? "/team-chat/messages/{$m->id}/attachment"
                 : null,
             'attachment_meta' => $isDeleted ? null : $m->attachment_meta,
             'deleted' => $isDeleted,

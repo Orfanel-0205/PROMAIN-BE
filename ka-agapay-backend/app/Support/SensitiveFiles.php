@@ -31,8 +31,16 @@ class SensitiveFiles
     /** Where these files used to live. Read-only fallback until they are moved. */
     public const LEGACY_DISK = 'public';
 
-    /** Top-level folders on the legacy public disk that hold sensitive files. */
-    public const SENSITIVE_DIRECTORIES = ['ocr', 'prescriptions'];
+    /**
+     * Top-level folders on the legacy public disk that hold sensitive files.
+     *
+     * 'chat' joined this list on 2026-09-22. Team Chat attachments were
+     * still being written to the public disk and served at a guessable
+     * /storage/ URL with no login, which is the same fault this class was
+     * written to close. Staff send each other wound photographs, laboratory
+     * results and referral papers through that box.
+     */
+    public const SENSITIVE_DIRECTORIES = ['ocr', 'prescriptions', 'chat'];
 
     public static function disk(): FilesystemAdapter
     {

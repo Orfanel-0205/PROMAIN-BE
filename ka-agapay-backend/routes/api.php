@@ -907,6 +907,10 @@ Route::prefix('v1')->group(function () {
                 Route::get('/unread-count',  [TeamChatController::class, 'unreadCount']);
                 Route::get('/search',        [TeamChatController::class, 'search']);
                 Route::post('/conversations', [TeamChatController::class, 'store']);
+                // A private chat attachment is read only here, and only by
+                // someone in that conversation. It is never web-served.
+                Route::get('/messages/{message}/attachment', [TeamChatController::class, 'messageAttachment']);
+
                 Route::post('/attachments',  [TeamChatController::class, 'uploadAttachment'])
                     ->middleware('throttle:30,1');
 
