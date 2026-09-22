@@ -156,7 +156,24 @@ php artisan jitsi:doctor    # presence, path, permissions, validity — never pr
 
 ## 4. Deploying the web admin
 
-No CI/CD. The API base URL is baked in at build time, so building with the wrong
+> ### ✅ Use the script
+>
+> ```bash
+> # ON YOUR MACHINE, in rhu-admin-main (Git Bash on Windows)
+> bash scripts/deploy-admin.sh
+> ```
+>
+> It builds, skips out if the droplet already serves that bundle, uploads,
+> verifies the archive’s sha256 remotely, asserts the staged copy, swaps the
+> docroot keeping the old one as `dist.prev-<timestamp>`, and confirms over
+> HTTP. Both ends run under `set -e`.
+>
+> The manual steps below are kept because they are what the script does, and
+> because you will need them if it fails halfway. Prefer the script: every
+> failure this runbook has caused came from a human copying a value between
+> two of these blocks.
+
+No CI/CD for the admin. The API base URL is baked in at build time, so building with the wrong
 `VITE_API_URL` produces a bundle that looks fine and talks to the wrong server.
 Since 2026-09-10 the build refuses to: `scripts/check-api-url.mjs` runs as
 `prebuild` and `postbuild`, and fails unless `VITE_API_URL` is https, points at
