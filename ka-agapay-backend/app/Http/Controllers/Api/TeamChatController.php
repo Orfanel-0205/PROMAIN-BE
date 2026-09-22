@@ -694,21 +694,63 @@ class TeamChatController extends Controller
 
     public function uploadAttachment(Request $request): JsonResponse
     {
+        /*
+         * WHAT MAY BE SENT
+         *
+         * Staff were limited to a photograph, which is not how they actually
+         * work: a laboratory result arrives as a PDF, a wound is easier to
+         * show in a few seconds of video than to describe, and a midwife
+         * mid-delivery can hold a phone and speak but cannot type.
+         *
+         * The ceiling is per kind rather than one number for everything. A
+         * 25 MB photograph is a mistake; 25 MB of video is a short clip. A
+         * single generous cap would wave the first one through.
+         */
         $validated = $request->validate([
-            // 8 MB: a chat photo needs no OCR (unlike the 5 MB Employee-ID cap),
-            // but must stay bounded. 8192 KB = 8 MB.
-            'image' => ['required', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
+            'image' => [
+                'required',
+                'file',
+                'mimes:jpg,jpeg,png,webp,gif,mp4,webm,mov,3gp,m4a,mp3,ogg,wav,aac,pdf,doc,docx,xls,xlsx,csv,txt',
+                'max:51200',
+            ],
             'purpose' => ['nullable', 'string', 'in:message,group_image'],
         ], [
-            'image.max' => 'The image must not be larger than 8 MB.',
-            'image.mimes' => 'Only JPG, PNG, or WebP images are accepted.',
+            'image.max' => 'That file is too large to send.',
+            'image.mimes' => 'That kind of file cannot be sent in Team Chat.',
         ]);
 
         $file = $request->file('image');
+        $extension = strtolower((string) $file->getClientOriginalExtension());
+        $kind = self::attachmentKind($extension);
 
         // Defaults to the private path. An older client that sends no
         // purpose gets the safe behaviour rather than the convenient one.
         $isGroupImage = ($validated['purpose'] ?? 'message') === 'group_image';
+
+        if ($isGroupImage && $kind !== 'image') {
+            return response()->json([
+                'message' => 'A group picture has to be an image.',
+            ], 422);
+        }
+
+        $limits = [
+            'image' => 8 * 1024,
+            'audio' => 12 * 1024,
+            'video' => 50 * 1024,
+            'file' => 15 * 1024,
+        ];
+
+        $limitKb = $limits[$kind] ?? $limits['file'];
+
+        if (($file->getSize() / 1024) > $limitKb) {
+            return response()->json([
+                'message' => sprintf(
+                    'That %s is too large. The limit is %d MB.',
+                    $kind,
+                    (int) round($limitKb / 1024)
+                ),
+            ], 422);
+        }
 
         if ($isGroupImage) {
             $path = $file->store('chat/group-images', 'public');
@@ -730,9 +772,63 @@ class TeamChatController extends Controller
                     'mime' => $file->getClientMimeType(),
                     'size' => $file->getSize(),
                     'name' => $file->getClientOriginalName(),
+
+                    // image | video | audio | file. The dashboard draws from
+                    // this rather than guessing at the mime type, so a voice
+                    // note recorded as webm is not mistaken for a video.
+                    'kind' => $kind,
                 ],
             ],
         ], 201);
+    }
+
+    /** image | video | audio | file, from the file extension. */
+    private static function attachmentKind(string $extension): string
+    {
+        if (in_array($extension, ['jpg', 'jpeg', 'png', 'webp', 'gif'], true)) {
+            return 'image';
+        }
+
+        if (in_array($extension, ['mp4', 'webm', 'mov', '3gp'], true)) {
+            return 'video';
+        }
+
+        if (in_array($extension, ['m4a', 'mp3', 'ogg', 'wav', 'aac'], true)) {
+            return 'audio';
+        }
+
+        return 'file';
+    }
+
+    /** The type a browser needs in order to show or play something inline. */
+    private static function attachmentMime(string $extension): string
+    {
+        return [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'gif' => 'image/gif',
+
+            'mp4' => 'video/mp4',
+            'webm' => 'video/webm',
+            'mov' => 'video/quicktime',
+            '3gp' => 'video/3gpp',
+
+            'm4a' => 'audio/mp4',
+            'mp3' => 'audio/mpeg',
+            'ogg' => 'audio/ogg',
+            'wav' => 'audio/wav',
+            'aac' => 'audio/aac',
+
+            'pdf' => 'application/pdf',
+            'csv' => 'text/csv',
+            'txt' => 'text/plain',
+            'doc' => 'application/msword',
+            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xls' => 'application/vnd.ms-excel',
+            'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ][$extension] ?? 'application/octet-stream';
     }
 
     /**
@@ -797,19 +893,19 @@ class TeamChatController extends Controller
 
         $ext = strtolower((string) pathinfo($row->attachment_path, PATHINFO_EXTENSION));
 
-        $mimeByExt = [
-            'jpg' => 'image/jpeg',
-            'jpeg' => 'image/jpeg',
-            'png' => 'image/png',
-            'webp' => 'image/webp',
-        ];
+        // A browser needs the real type to play a clip or a voice note
+        // inline; served as octet-stream it only ever offers a download.
+        $mime = self::attachmentMime($ext);
 
-        $mime = $mimeByExt[$ext] ?? 'application/octet-stream';
+        // The stored path is never revealed. The name the sender gave is used
+        // where there is one, because a file called attachment.pdf helps
+        // nobody who has just downloaded four of them.
+        $meta = is_array($row->attachment_meta) ? $row->attachment_meta : [];
+        $filename = trim((string) ($meta['name'] ?? '')) ?: "attachment.{$ext}";
 
-        // The stored path is never revealed; the download is named plainly.
         return $disk->response(
             $row->attachment_path,
-            "attachment.{$ext}",
+            $filename,
             [
                 'Content-Type' => $mime,
                 'Cache-Control' => 'private, max-age=300',

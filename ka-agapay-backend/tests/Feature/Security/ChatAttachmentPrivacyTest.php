@@ -145,6 +145,73 @@ class ChatAttachmentPrivacyTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_the_kinds_staff_actually_need_to_send_are_accepted(): void
+    {
+        // A laboratory result is a PDF, a wound is easier shown in a few
+        // seconds of video than described, and somebody with one hand full
+        // can speak but cannot type. Photographs alone was too narrow.
+        Storage::fake('private');
+
+        $cases = [
+            ['result.pdf', 'file'],
+            ['wound.mp4', 'video'],
+            ['voice-note.m4a', 'audio'],
+            ['swelling.jpg', 'image'],
+        ];
+
+        foreach ($cases as [$name, $expected]) {
+            $kind = $this->actingAs($this->nurse, 'sanctum')
+                ->postJson('/api/v1/team-chat/attachments', [
+                    'image' => UploadedFile::fake()->create($name, 120),
+                ])
+                ->assertCreated()
+                ->json('data.attachment_meta.kind');
+
+            $this->assertSame($expected, $kind, "{$name} was filed as {$kind}");
+        }
+    }
+
+    public function test_a_file_type_that_has_no_business_here_is_refused(): void
+    {
+        Storage::fake('private');
+
+        $this->actingAs($this->nurse, 'sanctum')
+            ->postJson('/api/v1/team-chat/attachments', [
+                'image' => UploadedFile::fake()->create('installer.exe', 40),
+            ])
+            ->assertStatus(422);
+    }
+
+    public function test_the_size_ceiling_is_per_kind_not_one_number_for_everything(): void
+    {
+        // 25 MB of video is a short clip; a 25 MB photograph is a mistake.
+        // A single generous cap would wave the second one through.
+        Storage::fake('private');
+
+        $this->actingAs($this->nurse, 'sanctum')
+            ->postJson('/api/v1/team-chat/attachments', [
+                'image' => UploadedFile::fake()->create('huge.jpg', 20 * 1024),
+            ])
+            ->assertStatus(422);
+
+        $this->actingAs($this->nurse, 'sanctum')
+            ->postJson('/api/v1/team-chat/attachments', [
+                'image' => UploadedFile::fake()->create('clip.mp4', 20 * 1024),
+            ])
+            ->assertCreated();
+    }
+
+    public function test_a_group_picture_must_still_be_a_picture(): void
+    {
+        Storage::fake('public');
+
+        $this->actingAs($this->nurse, 'sanctum')
+            ->postJson('/api/v1/team-chat/attachments', [
+                'image' => UploadedFile::fake()->create('notes.pdf', 40),
+                'purpose' => 'group_image',
+            ])
+            ->assertStatus(422);
+    }
     private function makeMessageWithAttachment(): Message
     {
         Storage::fake('private');
