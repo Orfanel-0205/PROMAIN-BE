@@ -204,6 +204,31 @@ class PrescriptionController extends Controller
             });
         }
 
+        /*
+         * Narrow to a day, or to a stretch of days.
+         *
+         * Staff look for a particular clinic day far more often than they
+         * browse. Without this the only way to last month was paging back
+         * through everything, newest first.
+         *
+         * `date` is the single-day case, and is shorthand for from = to.
+         */
+        $from = trim((string) $request->query('from', ''));
+        $to = trim((string) $request->query('to', ''));
+        $day = trim((string) $request->query('date', ''));
+
+        if ($day !== '') {
+            $from = $day;
+            $to = $day;
+        }
+
+        if ($from !== '') {
+            $query->whereDate('p.prescription_date', '>=', $from);
+        }
+
+        if ($to !== '') {
+            $query->whereDate('p.prescription_date', '<=', $to);
+        }
         $rows = $query
             ->latest('p.prescription_date')
             ->latest('p.id')

@@ -68,6 +68,24 @@ class TelemedicineController extends Controller
                 fn ($q) => $q->whereDate('created_at', $request->date)
             );
 
+        /*
+         * A stretch of days, alongside the single `date` above.
+         *
+         * The one-day filter answered "what came in on the fourteenth" but
+         * not "what came in last week", which is the question staff ask when
+         * they are catching up rather than working today.
+         */
+        $from = trim((string) $request->query('from', ''));
+        $to = trim((string) $request->query('to', ''));
+
+        if ($from !== '') {
+            $query->whereDate('created_at', '>=', $from);
+        }
+
+        if ($to !== '') {
+            $query->whereDate('created_at', '<=', $to);
+        }
+
         $this->applyTelemedicineBoardFilter($query, $request);
 
         $requests = $query->latest()->paginate($request->integer('per_page', 50));

@@ -50,6 +50,34 @@ class ConsultationController extends Controller
             }
         }
 
+        /*
+         * Narrow to a day, or to a stretch of days.
+         *
+         * Staff look for a particular clinic day far more often than they
+         * browse: "who did we see on the fourteenth". Without this the only
+         * way through was paging back through everything, newest first, which
+         * is fine for yesterday and useless for last month.
+         *
+         * `date` is the single-day case and is just shorthand for from = to.
+         * With neither, nothing is filtered and the list stays newest first.
+         */
+        $from = trim((string) $request->query('from', ''));
+        $to = trim((string) $request->query('to', ''));
+        $day = trim((string) $request->query('date', ''));
+
+        if ($day !== '') {
+            $from = $day;
+            $to = $day;
+        }
+
+        if ($from !== '') {
+            $query->whereDate('consultation_date', '>=', $from);
+        }
+
+        if ($to !== '') {
+            $query->whereDate('consultation_date', '<=', $to);
+        }
+
         if ($request->filled('status') && $request->status !== 'all') {
             $query->where('status', $request->status);
         }
