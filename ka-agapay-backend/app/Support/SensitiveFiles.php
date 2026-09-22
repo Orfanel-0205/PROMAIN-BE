@@ -34,13 +34,19 @@ class SensitiveFiles
     /**
      * Top-level folders on the legacy public disk that hold sensitive files.
      *
-     * 'chat' joined this list on 2026-09-22. Team Chat attachments were
-     * still being written to the public disk and served at a guessable
-     * /storage/ URL with no login, which is the same fault this class was
-     * written to close. Staff send each other wound photographs, laboratory
-     * results and referral papers through that box.
+     * 'chat/attachments' joined this list on 2026-09-22. Team Chat
+     * attachments were still being written to the public disk and served at
+     * a guessable /storage/ URL with no login, which is the same fault this
+     * class was written to close. Staff send each other wound photographs,
+     * laboratory results and referral papers through that box.
+     *
+     * The entry is the attachments folder, NOT 'chat'. The sweep walks
+     * everything beneath whatever it is given, and group avatars live in
+     * chat/group-images, where they are meant to stay public. Listing the
+     * parent dragged those private too and broke every group picture at
+     * once -- twice, before the cause was understood.
      */
-    public const SENSITIVE_DIRECTORIES = ['ocr', 'prescriptions', 'chat'];
+    public const SENSITIVE_DIRECTORIES = ['ocr', 'prescriptions', 'chat/attachments'];
 
     public static function disk(): FilesystemAdapter
     {
