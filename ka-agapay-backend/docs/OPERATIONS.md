@@ -13,7 +13,7 @@ here disagrees with the code, **the code wins** — fix this document.
 | **Database** | PostgreSQL |
 | **TLS** | Let's Encrypt via Certbot |
 | **Backend** | Laravel 10.50.2 |
-| **CI/CD** | None — manual deploy |
+| **CI/CD** | GitHub Actions runs the test suite on every push; **deploy is manual** |
 
 **Companion documents**
 - `docs/HANDOVER-CHECKLIST.md` — the non-technical handover (accounts, costs, contacts)
@@ -173,8 +173,16 @@ curl -s https://<admin-host>/ | grep -oE '/assets/[^"]+\.js' | head -1   # live
 grep -oE '/assets/[^"]+\.js' dist/index.html | head -1                     # local
 ```
 
+> ### ⚠ Two machines
+>
+> The blocks below alternate between YOUR MACHINE and THE DROPLET, and
+> several of them fail in confusing ways on the wrong one. On 22 September
+> 2026 the droplet block was pasted into a local PowerShell (`sudo` does not
+> exist there) and the local `scp` into the droplet console (the archive is
+> not on the droplet). Read the first line of every block.
+
 ```bash
-# locally, in rhu-admin-main
+# ON YOUR MACHINE, in rhu-admin-main
 npm ci
 npm run build            # prebuild check -> tsc && vite build -> postbuild check
 
@@ -185,39 +193,119 @@ npm run build            # prebuild check -> tsc && vite build -> postbuild chec
 # wrong format for the `tar -xzf` below and nested one level too deep.
 tar -czf admin-dist.tar.gz -C dist .
 tar -tzf admin-dist.tar.gz | head -3     # expect ./index.html and ./assets/...
-scp admin-dist.tar.gz user@<droplet>:/tmp/
+
+# Name the REMOTE copy after the bundle hash. A fixed /tmp/admin-dist.tar.gz
+# survives between deploys, and on 22 September 2026 a stale one from an
+# earlier deploy was extracted and shipped without anyone noticing: the tar
+# succeeded, so nothing looked wrong.
+HASH=$(grep -oE 'index-[A-Za-z0-9_-]+\.js' dist/index.html | head -1)
+scp admin-dist.tar.gz root@<droplet>:/tmp/admin-dist-$HASH.tar.gz
+sha256sum admin-dist.tar.gz          # keep this; the droplet block checks it
 ```
+
+**SSH is key-only on this droplet** (`PasswordAuthentication no`), so `scp`
+fails with `Permission denied (publickey)` from any machine whose key is not
+in `/root/.ssh/authorized_keys`. The DigitalOcean web console does not help
+here — it cannot see files on your machine. To enrol a machine, generate a
+key on it (`ssh-keygen -t ed25519`) and append the **public** half from the
+droplet console:
+
+```bash
+# ON THE DROPLET
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+echo 'ssh-ed25519 AAAA... comment' >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+```
+
+These are root keys with no passphrase. That is the usual deploy-key
+tradeoff, but it means the laptop holding one is as privileged as the
+server. Giving the deploy its own non-root user, writing only to
+`/var/www/ka-agapay-admin`, is the obvious hardening and has not been done.
 
 On Windows, PowerShell's execution policy can block `npm` (it runs as
 `npm.ps1`). Use `npm.cmd run build`, or Git Bash. `tar` ships with Windows 10
 and later, so the same `tar -czf` line works in PowerShell.
 
+> ### ⛔ `set -e`, and no placeholders
+>
+> Two properties of the block below are load-bearing, and both were learned
+> the hard way on 22 September 2026, when following the previous revision of
+> this section took the admin site down.
+>
+> **It is chained with `set -e`.** The old block was a bare list, so a failed
+> `test` printed nothing and execution continued into the two `mv` lines. A
+> missing archive therefore produced an empty `dist.new`, moved the working
+> `dist` aside, and promoted the empty directory — an assertion written to
+> prevent exactly that outcome, and unable to.
+>
+> **Nothing in it is a placeholder.** The rollback line used to read
+> `dist.prev-<STAMP>`. Bash reads `<` as a redirect, so pasting it verbatim
+> fails on the restore while the `mv` before it succeeds — the live docroot
+> is renamed away and never replaced. If a command here needs a value, it
+> computes it.
+
 ```bash
-# on the droplet — keep the previous build; it is the entire rollback plan
+# ON THE DROPLET — keeps the previous build; it is the entire rollback plan
 #
 # THE DOCROOT IS /var/www/ka-agapay-admin/dist, confirmed against
 # /etc/nginx/sites-enabled/ka-agapay. Earlier revisions of this runbook said
 # /var/www/rhu-admin, which nginx does not serve: following them deployed a
 # correct build to a directory nobody reads.
-STAMP=$(date +%Y-%m-%d-%H%M)
+set -e
+
+# Substitute the hashed name used in the scp above, then verify the bytes
+# that arrived are the bytes that were built. This also rules out an older
+# archive of the same name, which is how a stale bundle once shipped.
+ARCHIVE=/tmp/admin-dist-index-XXXXXXXX.js.tar.gz
+sha256sum "$ARCHIVE"        # compare against the local sum, by eye
+
 sudo rm -rf /var/www/ka-agapay-admin/dist.new
 sudo mkdir -p /var/www/ka-agapay-admin/dist.new
-sudo tar -xzf /tmp/admin-dist.tar.gz -C /var/www/ka-agapay-admin/dist.new
+sudo tar -xzf "$ARCHIVE" -C /var/www/ka-agapay-admin/dist.new
 
 # Assert the STAGED copy before it becomes live, not after.
 BREF=$(grep -oE '/assets/[^"]+\.js' /var/www/ka-agapay-admin/dist.new/index.html | head -1)
+test -n "$BREF"
 test -f "/var/www/ka-agapay-admin/dist.new${BREF}"
 [ "$(wc -c < "/var/www/ka-agapay-admin/dist.new${BREF}")" -gt 500000 ]
 
-sudo mv /var/www/ka-agapay-admin/dist "/var/www/ka-agapay-admin/dist.prev-${STAMP}"
+# Guarded, because dist may be absent after a half-finished deploy. An
+# unguarded mv would abort here under set -e and leave the site down.
+if [ -d /var/www/ka-agapay-admin/dist ]; then
+  sudo mv /var/www/ka-agapay-admin/dist \
+          "/var/www/ka-agapay-admin/dist.prev-$(date +%Y-%m-%d-%H%M)"
+fi
+
 sudo mv /var/www/ka-agapay-admin/dist.new /var/www/ka-agapay-admin/dist
 sudo chown -R www-data:www-data /var/www/ka-agapay-admin/dist
+set +e
+
+# Prove it. This one line answers both "is it up" and "is it the new build",
+# whatever state a previous attempt left behind.
+grep -oE '/assets/[^"]+\.js' /var/www/ka-agapay-admin/dist/index.html | head -1
 ```
 
 Verify in a **hard-refreshed** browser: Vite hashes asset filenames, but
 `index.html` is not hashed and is routinely served stale.
 
-**Rollback:** `sudo mv /var/www/ka-agapay-admin/dist /var/www/ka-agapay-admin/dist.bad && sudo mv /var/www/ka-agapay-admin/dist.prev-<STAMP> /var/www/ka-agapay-admin/dist`
+**Rollback.** Choose the target explicitly rather than pasting a placeholder —
+the angle brackets in the old one-liner were a redirect, not a blank to fill:
+
+```bash
+# ON THE DROPLET
+ls -dt /var/www/ka-agapay-admin/dist.prev-* | head -3    # choose one
+PREV=/var/www/ka-agapay-admin/dist.prev-2026-09-22-1149  # paste it here
+
+test -d "$PREV"
+sudo mv /var/www/ka-agapay-admin/dist /var/www/ka-agapay-admin/dist.bad
+sudo mv "$PREV" /var/www/ka-agapay-admin/dist
+sudo chown -R www-data:www-data /var/www/ka-agapay-admin/dist
+```
+
+If a deploy has already renamed `dist` away and left nothing in its place,
+the site is down and the fastest recovery is simply
+`sudo mv /var/www/ka-agapay-admin/dist.bad /var/www/ka-agapay-admin/dist` —
+`dist.bad` is not bad, it is whatever was serving a moment earlier.
 
 > **Housekeeping:** this mv-aside pattern never deletes anything, so `/var/www`
 > accumulates. As of 6 September 2026 it holds ~50 `ka-agapay-admin-backup-*`
