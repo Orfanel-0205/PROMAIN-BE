@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\Prescription\PrescriptionResource;
 use App\Models\Prescription;
 use App\Services\Prescription\PrescriptionService;
+use App\Support\LabTestCatalogue;
 use App\Support\Rhu;
 use App\Support\SensitiveFiles;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -968,6 +969,8 @@ class PrescriptionController extends Controller
 
     private function renderLabRequestPdf(object $row): string
     {
+        $labTests = $this->normalizeLabTests($this->decodeJsonArray($row->lab_tests ?? null));
+
         $data = [
             'requestNo' => $row->prescription_number ?? ('LAB-' . $row->id),
             'date' => $this->formatLongDate($row->prescription_date ?? now()->toDateString()),
@@ -980,10 +983,18 @@ class PrescriptionController extends Controller
             'priority' => $row->priority ?: 'routine',
             'reason' => $row->request_reason ?? '',
             'notes' => $row->request_notes ?? '',
-            'labTests' => $this->normalizeLabTests($this->decodeJsonArray($row->lab_tests ?? null)),
+            'labTests' => $labTests,
             'laboratoryOptions' => $this->laboratoryOptions(),
             'xrayOptions' => $this->xrayOptions(),
             'ultrasoundOptions' => $this->ultrasoundOptions(),
+
+            // Anything selected that the catalogue no longer lists. The
+            // grid ticks boxes by matching the catalogue, so without these
+            // a retired test would be missing altogether from a request
+            // the patient is carrying to the laboratory.
+            'unlistedLaboratory' => LabTestCatalogue::unlisted('laboratory', $labTests['laboratory'] ?? []),
+            'unlistedXray' => LabTestCatalogue::unlisted('xray', $labTests['xray'] ?? []),
+            'unlistedUltrasound' => LabTestCatalogue::unlisted('ultrasound', $labTests['ultrasound'] ?? []),
         ];
 
         return Pdf::loadView('pdf.lab-request', $data)
@@ -991,19 +1002,28 @@ class PrescriptionController extends Controller
             ->output();
     }
 
+    /*
+     * The catalogue is the single source of these lists.
+     *
+     * They used to be three hardcoded arrays here and three more in the
+     * admin. Adding a test meant editing both, and forgetting this half
+     * produced the worst outcome available: a test a clinician could tick
+     * on screen, saved correctly, and then silently absent from the printed
+     * request, because the grid ticks boxes by matching this list.
+     */
     private function laboratoryOptions(): array
     {
-        return ['CBC', 'Urinalysis', 'Fecalysis', 'FBS', 'HBA1C', 'B.U.A', 'ALT', 'AST', 'Creatinine', 'B.U.N', 'Total Lipid Profile'];
+        return LabTestCatalogue::flat('laboratory');
     }
 
     private function xrayOptions(): array
     {
-        return ['CXR - PA View', 'CXR - Apicolordotic View'];
+        return LabTestCatalogue::flat('xray');
     }
 
     private function ultrasoundOptions(): array
     {
-        return ['Whole Abdomen', 'Lower Abdomen', 'Upper Abdomen', 'Prostate', 'HBT', 'KUB'];
+        return LabTestCatalogue::flat('ultrasound');
     }
 
     private function normalizeLabTests(mixed $raw): array
