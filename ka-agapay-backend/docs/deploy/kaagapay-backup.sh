@@ -15,8 +15,22 @@
 #
 # What it does, in order:
 #   1. php artisan backup:run    — pg_dump + gzip, and writes a backup_runs row
-#   2. copies the newest dump off the droplet
-#   3. php artisan backup:offsite — records whether step 2 actually worked
+#   2. tars the uploaded FILES that no dump contains
+#   3. copies both off the droplet
+#   4. php artisan backup:offsite — records whether step 3 actually worked
+#
+# WHY THE FILES (added 2026-09-22)
+# -------------------------------
+# Until today this backed up the database alone. Resident ID photographs,
+# PhilHealth IDs, prescription PDFs and Team Chat attachments live on disk,
+# not in PostgreSQL, so losing the droplet would have restored a database
+# full of rows pointing at files that no longer existed — the worst shape of
+# failure, because it looks like a successful recovery until somebody opens
+# a record.
+#
+# Both archives carry the SAME timestamp, taken from the dump filename. A
+# database from 02:00 and files from 04:00 describe different moments, and a
+# real recovery is the wrong time to find that out.
 #
 # Steps 1 and 3 are separate because they fail separately. pg_dump succeeds
 # while object-storage credentials have quietly expired, leaving the only copy
@@ -76,9 +90,9 @@ RUN_ID="$(echo "$RUN_OUT" | grep -o 'BACKUP_RUN_ID=[0-9]*' | head -n1 | cut -d= 
 RUN_ARG=""
 [ -n "$RUN_ID" ] && RUN_ARG="--run=$RUN_ID"
 
-# --- Step 2: get it off the droplet ---------------------------------------
+# --- Step 2: archive the files the dump does not contain -------------------
 
-# Newest dump by modification time. Guarded so an empty directory cannot make
+# The dump this run just produced. Guarded so an empty directory cannot let
 # the upload silently succeed with no argument.
 LATEST="$(ls -1t "$BACKUP_DIR"/*.sql.gz 2>/dev/null | head -n 1 || true)"
 
@@ -88,7 +102,49 @@ if [ -z "$LATEST" ]; then
     exit 1
 fi
 
-log "Uploading $(basename "$LATEST") to $REMOTE_DEST ..."
+# Share the dump's own timestamp rather than taking a new one, so the pair
+# can never describe two different moments.
+STAMP="$(basename "$LATEST" | sed -E 's/^kaagapay_db_(.*)\.sql\.gz$/\1/')"
+FILES_ARCHIVE="$BACKUP_DIR/kaagapay_files_${STAMP}.tar.gz"
+
+# Only what cannot be regenerated. Caches, compiled views, sessions and logs
+# are all rebuilt on a fresh deploy and would triple the archive for nothing.
+log "Archiving uploaded files..."
+
+tar -czf "$FILES_ARCHIVE" \
+    -C "$APP_DIR/storage" \
+    app/private \
+    app/public \
+    2>/tmp/kaagapay-files-tar.err
+TAR_RC=$?
+
+if [ $TAR_RC -ne 0 ]; then
+    log "ERROR: could not archive files (rc=$TAR_RC): $(head -c 300 /tmp/kaagapay-files-tar.err)"
+    "$PHP_BIN" artisan backup:offsite failed $RUN_ARG --message="File archive failed (rc=$TAR_RC)."
+    exit 1
+fi
+
+# Read the archive back before trusting it. A corrupt tar that uploads
+# successfully is worse than no tar at all, because it is believed until the
+# day it is needed.
+ARCHIVED_COUNT="$(tar -tzf "$FILES_ARCHIVE" 2>/dev/null | grep -vc '/$' || true)"
+ON_DISK_COUNT="$(find "$APP_DIR/storage/app/private" "$APP_DIR/storage/app/public" -type f 2>/dev/null | wc -l)"
+
+if [ "${ARCHIVED_COUNT:-0}" -lt 1 ]; then
+    log "ERROR: the file archive is unreadable or empty."
+    rm -f "$FILES_ARCHIVE"
+    "$PHP_BIN" artisan backup:offsite failed $RUN_ARG --message="File archive could not be read back."
+    exit 1
+fi
+
+# A small drift is normal: a file can be written while tar is running. A
+# large one means something was skipped, and that is worth seeing in the log
+# rather than discovering during a recovery.
+log "Archived $ARCHIVED_COUNT file(s); $ON_DISK_COUNT on disk ($(du -h "$FILES_ARCHIVE" | cut -f1))."
+
+# --- Step 3: get both off the droplet -------------------------------------
+
+log "Uploading $(basename "$LATEST") and $(basename "$FILES_ARCHIVE") to $REMOTE_DEST ..."
 
 # Swap this one line for whatever uploader the droplet has installed:
 #   s3cmd --config=/etc/kaagapay/s3cfg put "$LATEST" "$REMOTE_DEST/"
@@ -105,7 +161,20 @@ log "Uploading $(basename "$LATEST") to $REMOTE_DEST ..."
 UPLOAD_ERR="$(s3cmd --config=/etc/kaagapay/s3cfg put "$LATEST" "$REMOTE_DEST/" 2>&1)"
 UPLOAD_RC=$?
 
-# --- Step 3: record the truth ---------------------------------------------
+# The files matter as much as the rows. Either one missing makes the other
+# an incomplete recovery, so a failure on either is a failed backup.
+if [ $UPLOAD_RC -eq 0 ]; then
+    UPLOAD_ERR="$(s3cmd --config=/etc/kaagapay/s3cfg put "$FILES_ARCHIVE" "$REMOTE_DEST/" 2>&1)"
+    UPLOAD_RC=$?
+fi
+
+# Prune old file archives here. backup:run prunes the dumps itself, but it
+# knows nothing about these.
+KEEP_DAYS="$(grep -E '^BACKUP_KEEP_DAYS=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -dc '0-9')"
+[ -z "$KEEP_DAYS" ] && KEEP_DAYS=14
+find "$BACKUP_DIR" -name 'kaagapay_files_*.tar.gz' -type f -mtime "+$KEEP_DAYS" -delete 2>/dev/null
+
+# --- Step 4: record the truth ---------------------------------------------
 
 if [ $UPLOAD_RC -eq 0 ]; then
     log "Upload OK."
