@@ -98,11 +98,11 @@ class RunDatabaseBackup extends Command
             $process->run();
 
             if (!$process->isSuccessful()) {
-                return $this->fail($run, $this->scrub(trim($process->getErrorOutput()) ?: 'pg_dump exited non-zero.'));
+                return $this->failRun($run, $this->scrub(trim($process->getErrorOutput()) ?: 'pg_dump exited non-zero.'));
             }
 
             if (!is_file($fullPath)) {
-                return $this->fail($run, 'pg_dump reported success but produced no file.');
+                return $this->failRun($run, 'pg_dump reported success but produced no file.');
             }
 
             $size = (int) filesize($fullPath);
@@ -111,7 +111,7 @@ class RunDatabaseBackup extends Command
             // header with an error underneath. Treat it as a failure so the
             // panel never shows a reassuring green row for a useless file.
             if ($size < 1024) {
-                return $this->fail($run, "Dump file is implausibly small ({$size} bytes); treating as failed.");
+                return $this->failRun($run, "Dump file is implausibly small ({$size} bytes); treating as failed.");
             }
 
             $run->update([
@@ -136,9 +136,9 @@ class RunDatabaseBackup extends Command
 
             return self::SUCCESS;
         } catch (ProcessTimedOutException $e) {
-            return $this->fail($run, 'pg_dump timed out after ' . config('backup.timeout') . 's.');
+            return $this->failRun($run, 'pg_dump timed out after ' . config('backup.timeout') . 's.');
         } catch (Throwable $e) {
-            return $this->fail($run, $this->scrub($e->getMessage()));
+            return $this->failRun($run, $this->scrub($e->getMessage()));
         }
     }
 
@@ -152,7 +152,7 @@ class RunDatabaseBackup extends Command
             return true;
         }
 
-        $this->fail($run, "Backup directory is missing and could not be created: {$directory}");
+        $this->failRun($run, "Backup directory is missing and could not be created: {$directory}");
 
         return false;
     }
@@ -161,7 +161,7 @@ class RunDatabaseBackup extends Command
      * Mark the run failed, log loudly, and report a non-zero exit so cron's own
      * mail (if configured) also fires.
      */
-    private function fail(BackupRun $run, string $message): int
+    private function failRun(BackupRun $run, string $message): int
     {
         $message = mb_substr($message, 0, 2000);
 
