@@ -14,6 +14,7 @@ use App\Models\TelemedicineSession;
 use App\Models\User;
 use App\Models\UserDeviceToken;
 use App\Notifications\NotificationTypes;
+use App\Support\QueueServices;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -1348,19 +1349,7 @@ class NotificationService
 
     private function serviceLabel(string $serviceType): string
     {
-        return match ($serviceType) {
-            'opd_consultation' => 'OPD Consultation',
-            'prenatal_checkup' => 'Prenatal Checkup',
-            'immunization' => 'Immunization',
-            'family_planning' => 'Family Planning',
-            'tb_dots' => 'TB DOTS',
-            'laboratory' => 'Laboratory',
-            'dental' => 'Dental',
-            'emergency' => 'Emergency',
-            'medicine_release' => 'Medicine Release',
-            'bhw_assisted' => 'BHW Assisted',
-            default => ucwords(str_replace(['_', '-'], ' ', $serviceType)),
-        };
+        return QueueServices::label($serviceType);
     }
 
     private function notificationDedupeExists(int $userId, string $dedupeKey): bool

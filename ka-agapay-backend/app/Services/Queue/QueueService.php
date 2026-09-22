@@ -17,6 +17,7 @@ use App\Services\Notification\NotificationService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Support\QueueServices;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -26,18 +27,12 @@ class QueueService
     private const ACTIVE_STATUSES = ['waiting', 'called', 'in_service'];
     private const TERMINAL_STATUSES = ['completed', 'cancelled', 'no_show'];
 
-    private const SERVICE_CODES = [
-        'opd_consultation' => 'OPD',
-        'prenatal_checkup' => 'PRE',
-        'immunization' => 'IMM',
-        'family_planning' => 'FP',
-        'tb_dots' => 'TB',
-        'laboratory' => 'LAB',
-        'dental' => 'DEN',
-        'emergency' => 'ER',
-        'medicine_release' => 'MED',
-        'bhw_assisted' => 'BHW',
-    ];
+    /*
+     * Ticket prefixes used to live here as a constant. They come from the
+     * rhu_services table now, so the RHU can add a service without a
+     * developer. App\Support\QueueServices::prefix() falls back to the
+     * original ten if that table is missing.
+     */
 
     private array $lastNotificationResult = [];
 
@@ -682,19 +677,9 @@ class QueueService
             return $value;
         }
 
-        return match ((string) $ticket->service_type) {
-            'opd_consultation' => 'OPD consultation',
-            'prenatal_checkup' => 'Prenatal checkup',
-            'immunization' => 'Immunization service',
-            'family_planning' => 'Family planning service',
-            'tb_dots' => 'TB DOTS service',
-            'laboratory' => 'Laboratory service',
-            'dental' => 'Dental service',
-            'emergency' => 'Emergency service',
-            'medicine_release' => 'Medicine release',
-            'bhw_assisted' => 'BHW-assisted service',
-            default => 'RHU service',
-        };
+        // The catalogue knows retired services too, so a ticket issued
+        // for a service since withdrawn still names it.
+        return QueueServices::label((string) $ticket->service_type);
     }
 
     private function filterTablePayload(string $table, array $payload): array
@@ -1233,8 +1218,9 @@ class QueueService
 
     private function formatTicketNumber(int $rhuId, string $serviceType, int $number): string
     {
-        $code = self::SERVICE_CODES[$serviceType]
-            ?? strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $serviceType), 0, 3));
+        // QueueServices knows retired services too, so a ticket reissued for
+        // one keeps the prefix its earlier tickets carried.
+        $code = QueueServices::prefix($serviceType);
 
         return 'R'
             . $rhuId

@@ -4,6 +4,7 @@
 namespace App\Http\Requests\Queue;
 
 use App\Support\Rhu;
+use App\Support\QueueServices;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -45,7 +46,10 @@ class IssueQueueTicketRequest extends FormRequest
             'service_type' => [
                 'required',
                 'string',
-                'in:opd_consultation,prenatal_checkup,immunization,family_planning,tb_dots,laboratory,dental,emergency,medicine_release,bhw_assisted',
+                // Built from the rhu_services catalogue, so a service the
+                // RHU adds is accepted at once and a retired one stops being
+                // accepted on new tickets.
+                'in:' . QueueServices::validationList(),
             ],
 
             'appointment_id' => [

@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\ApprovalController;
 use App\Http\Controllers\Api\Ai\AiController;
 use App\Http\Controllers\Api\Analytics\AnalyticsController;
 use App\Http\Controllers\Api\Queue\QueueController;
+use App\Http\Controllers\Api\Queue\QueueServiceCatalogController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
 use App\Http\Controllers\Api\Telemedicine\SessionController;
 use App\Http\Controllers\Api\AdminUserController;
@@ -567,6 +568,26 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('queue')->group(function () {
+            // -----------------------------------------------------------------
+            // SERVICE CATALOGUE
+            //
+            // Everyone signed in can read it: every service picker in the
+            // dashboard and the app is built from this list. Only a super
+            // admin or MHO can add a service, reword one, or switch one off,
+            // because that decides what staff are able to queue and what
+            // ticket numbers look like.
+            //
+            // There is no delete. A service that has issued tickets cannot be
+            // removed without orphaning them; is_active covers the same need
+            // and keeps those tickets readable.
+            // -----------------------------------------------------------------
+            Route::get('/services', [QueueServiceCatalogController::class, 'index']);
+
+            Route::middleware('role:super_admin,superadmin,mho')->group(function () {
+                Route::post('/services',       [QueueServiceCatalogController::class, 'store']);
+                Route::put('/services/{id}',   [QueueServiceCatalogController::class, 'update']);
+            });
+
             Route::get('/',          [QueueController::class, 'index']);
             Route::post('/issue',    [QueueController::class, 'issue']);
 

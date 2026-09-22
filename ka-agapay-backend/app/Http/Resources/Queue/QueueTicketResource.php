@@ -3,6 +3,7 @@
 
 namespace App\Http\Resources\Queue;
 
+use App\Support\QueueServices;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Throwable;
@@ -166,19 +167,7 @@ class QueueTicketResource extends JsonResource
 
     private function serviceLabel(string $serviceType): string
     {
-        return match ($serviceType) {
-            'opd_consultation' => 'OPD Consultation',
-            'prenatal_checkup' => 'Prenatal Checkup',
-            'immunization' => 'Immunization',
-            'family_planning' => 'Family Planning',
-            'tb_dots' => 'TB DOTS',
-            'laboratory' => 'Laboratory',
-            'dental' => 'Dental',
-            'emergency' => 'Emergency',
-            'medicine_release' => 'Medicine Release',
-            'bhw_assisted' => 'BHW Assisted',
-            default => ucwords(str_replace(['_', '-'], ' ', $serviceType)),
-        };
+        return QueueServices::label($serviceType);
     }
 
     private function priorityLevel(): string

@@ -3,6 +3,7 @@
 
 namespace App\Http\Requests\Queue;
 
+use App\Support\QueueServices;
 use Illuminate\Foundation\Http\FormRequest;
 
 class QueueListRequest extends FormRequest
@@ -35,7 +36,10 @@ class QueueListRequest extends FormRequest
             'service_type' => [
                 'nullable',
                 'string',
-                'in:opd_consultation,prenatal_checkup,immunization,family_planning,tb_dots,laboratory,dental,emergency,medicine_release,bhw_assisted',
+                // Built from the rhu_services catalogue, so a service the
+                // RHU adds is accepted at once and a retired one stops being
+                // accepted on new tickets.
+                'in:' . QueueServices::validationList(),
             ],
 
             'status' => [

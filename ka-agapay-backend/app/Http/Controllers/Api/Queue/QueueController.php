@@ -12,6 +12,7 @@ use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use App\Services\Queue\QueueService;
 use App\Support\Rhu;
+use App\Support\QueueServices;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -25,20 +26,16 @@ class QueueController extends Controller
     {
     }
 
+    /**
+     * Services a new ticket may be issued for.
+     *
+     * Read from the catalogue rather than listed here, so a service the
+     * RHU adds is immediately queueable and one it retires stops being
+     * offered without breaking the tickets already issued for it.
+     */
     private function serviceTypes(): array
     {
-        return [
-            'opd_consultation',
-            'prenatal_checkup',
-            'immunization',
-            'family_planning',
-            'tb_dots',
-            'laboratory',
-            'dental',
-            'emergency',
-            'medicine_release',
-            'bhw_assisted',
-        ];
+        return QueueServices::codes();
     }
 
     private function getUserIdFromRequest(Request $request): ?int
