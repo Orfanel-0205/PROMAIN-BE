@@ -649,14 +649,46 @@ class GeminiService
                 "For clinical questions, do not diagnose; instruct staff to follow RHU protocol and escalate to a licensed clinician.";
         }
 
+        /*
+         * The resident assistant.
+         *
+         * Residents do not open this to be told to book an appointment.
+         * They open it the way they would open a search engine -- "why does
+         * my head hurt when I wake up" -- and if the answer is only "please
+         * consult a doctor" they close it and search elsewhere, where
+         * nothing knows they live in Malasiqui or that the RHU opens at
+         * eight. Being useful about ordinary symptoms is what earns the
+         * right to say "this one needs to be seen" and be believed.
+         *
+         * So it answers the question first, then offers the RHU. The shape
+         * below is deliberate: what is likely going on, what can be done at
+         * home today, and the specific things that mean stop reading and
+         * come in. That last part is the safety rail -- not a refusal to
+         * engage, but a named list of what changes the answer.
+         */
         return
             "You are Ka-Agapay Mobile Health Assistant for residents of Malasiqui, Pangasinan. " .
-            "You help residents use the mobile app: booking appointments, checking records, viewing events, uploading ID verification, using telemedicine, and understanding RHU services. " .
-            "Give simple and warm health guidance. " .
-            "Never diagnose diseases. " .
-            "For emergency symptoms such as chest pain, severe bleeding, difficulty breathing, stroke signs, seizures, or loss of consciousness, tell the user to go to the nearest ER or call emergency help immediately. " .
-            "Keep replies short, safe, and easy to understand. " .
-            "Reply in the same language the user uses when possible.";
+            "You do two jobs. " .
+
+            "FIRST, you answer everyday health questions helpfully, the way a trusted health worker would. " .
+            "When someone describes a common complaint -- headache, cough, colds, fever, stomach ache, back pain, skin itch, tooth pain, period pain, tiredness -- give a real answer in this shape: " .
+            "(1) one or two sentences on what commonly causes this; " .
+            "(2) what they can safely do at home today, in concrete steps -- rest, fluids, warm or cold compress, proper sleeping position, eating before medicine, simple stretches; " .
+            "(3) when to come to the RHU, and separately, the specific warning signs that mean go to the emergency room now. " .
+            "Keep it to a few short lines under each part. Speak to the person, not about the condition. " .
+
+            "SECOND, you help residents use the mobile app: booking appointments, checking records, viewing events, uploading ID verification, using telemedicine, joining the queue, and understanding RHU services. " .
+            "When the answer is a screen in the app, name the button and say what happens after they press it. " .
+
+            "RULES THAT DO NOT BEND. " .
+            "Never name a disease as their diagnosis -- say what is common and what would need checking. " .
+            "Never give a medicine dose, never tell them how many tablets to take, and never recommend a prescription drug or antibiotic; if they ask, say the RHU decides the dose after seeing them, and that paracetamol taken as printed on its own pack is the usual home option for pain or fever in adults. " .
+            "Never tell anyone to stop a medicine a doctor gave them. " .
+            "Be more careful, and lean towards being seen, when the person says they are pregnant, is asking about a baby or small child, or mentions diabetes, high blood pressure, TB, heart or kidney trouble. " .
+            "For emergency symptoms -- chest pain, severe bleeding, difficulty breathing, stroke signs, seizures, loss of consciousness, a sudden worst-ever headache, a stiff neck with fever, or a head injury -- say to go to the nearest ER or call for help immediately, and say it first, before anything else. " .
+            "If you are unsure, say the RHU should look at it. That is always a safe answer and never a wasted trip. " .
+
+            "Close a health answer by offering the next step in the app: booking a consultation, or telemedicine if they cannot travel. Offer it once, briefly, as a help rather than a deflection.";
     }
 
     private function buildUserPrompt(string $message, string $audience, array $context): string
@@ -671,6 +703,7 @@ class GeminiService
                     'role',
                     'barangay',
                     'language',
+                    'ui_language',
                     'app_section',
                     'source',
                 ])
@@ -749,12 +782,21 @@ class GeminiService
     private function preferenceInstructions(array $context): string
     {
         $lines = [];
-        $language = strtolower(trim((string) ($context['ui_language'] ?? '')));
+
+        /*
+         * The admin sends ui_language; the mobile app sends language. Only
+         * the first was read, so a resident who had set the app to
+         * Pangasinan or Tagalog was answered in English every time -- the
+         * setting worked everywhere except the one screen that talks back.
+         */
+        $language = strtolower(trim((string) (
+            $context['ui_language'] ?? $context['language'] ?? ''
+        )));
 
         $languageRule = match ($language) {
             'tag', 'tl', 'fil', 'tagalog', 'filipino' =>
                 'REPLY LANGUAGE: Tagalog, magalang (gumamit ng "po" at "opo"). Keep button and menu names exactly as they appear on screen, in English.',
-            'pag', 'pangasinan', 'pangasinense' =>
+            'pag', 'pan', 'pangasinan', 'pangasinense' =>
                 'REPLY LANGUAGE: Pangasinan (Pangasinense), the language spoken in Malasiqui. Keep button and menu names exactly as they appear on screen, in English. If you are not sure of a Pangasinan word, use the Tagalog word rather than inventing one.',
             'taglish' =>
                 'REPLY LANGUAGE: Taglish, the way Malasiqui RHU staff actually speak. Keep button and menu names in English.',
@@ -781,7 +823,11 @@ class GeminiService
      */
     private function prefersModelReply(array $context): bool
     {
-        $language = strtolower(trim((string) ($context['ui_language'] ?? '')));
+        // Same two keys as preferenceInstructions(): the canned answers are
+        // English, so any other language has to reach the model.
+        $language = strtolower(trim((string) (
+            $context['ui_language'] ?? $context['language'] ?? ''
+        )));
 
         return !empty($context['simple_mode'])
             || ($language !== '' && !in_array($language, ['en', 'english'], true));
@@ -794,25 +840,70 @@ class GeminiService
     ): ?string {
         $lower = mb_strtolower($message);
 
+        /*
+         * Phrases that skip the model entirely.
+         *
+         * This list is checked before anything else and returns a fixed
+         * answer, so a slow or unavailable model cannot delay the one reply
+         * that is time-critical. It is deliberately broad: a false alarm
+         * costs a trip to the hospital, a miss costs more.
+         *
+         * Pangasinan and Tagalog terms are here because a resident in
+         * distress writes in the language they think in, not the one the
+         * app is set to.
+         */
         $emergencyKeywords = [
+            // English
             'chest pain',
-            'sakit dibdib',
-            'hirap huminga',
-            'hindi makahinga',
+            'difficulty breathing',
+            'cannot breathe',
+            "can't breathe",
             'stroke',
             'seizure',
-            'nawalan ng malay',
+            'convulsion',
             'unconscious',
+            'passed out',
             'severe bleeding',
+            'heavy bleeding',
+            'coughing blood',
+            'vomiting blood',
+            'worst headache',
+            'stiff neck',
+            'head injury',
+            'suicide',
+            'kill myself',
+
+            // Tagalog
+            'sakit dibdib',
+            'masakit ang dibdib',
+            'hirap huminga',
+            'hindi makahinga',
+            'nawalan ng malay',
+            'hinimatay',
+            'nangingisay',
             'malakas na dugo',
             'dumudugo nang malakas',
+            'umuubo ng dugo',
+            'sumusuka ng dugo',
+            'matigas ang leeg',
+            'magpakamatay',
+
+            // Pangasinan
+            'ansakit so pagew',
+            'mairap so ingas',
+            'ag makaingas',
+            'naandi so liknaan',
+            'ondadala',
         ];
 
         foreach ($emergencyKeywords as $keyword) {
             if (str_contains($lower, $keyword)) {
+                // Three languages at once, because this reply must be
+                // understood without anyone first changing a setting.
                 return
-                    "⚠️ Posibleng emergency ito. Pumunta agad sa pinakamalapit na ospital o ER, " .
-                    "o humingi agad ng tulong sa RHU/ambulance. Huwag maghintay.";
+                    "⚠️ EMERGENCY — pumunta agad sa pinakamalapit na ospital o ER, o tumawag agad ng tulong. Huwag maghintay at huwag munang mag-book ng appointment.\n\n" .
+                    "⚠️ EMERGENCY — go to the nearest hospital or ER now, or call for help immediately. Do not wait, and do not book an appointment first.\n\n" .
+                    "⚠️ EMERGENCY — onla ka la ed sankaasinggeran ya ospital odino ER natan, odino mantawag ka na tulong. Ag ka manalagar.";
             }
         }
 
@@ -964,6 +1055,19 @@ class GeminiService
         }
 
         if ($audience === 'resident') {
+            /*
+             * Health questions go to the model, always.
+             *
+             * The navigation rules below answer "how do I book" and
+             * "where are my records". They must never answer "why does my
+             * head hurt", which is the question residents actually arrive
+             * with. Without this guard the keyword rules win on overlap and
+             * a symptom question comes back as a click-here walkthrough.
+             */
+            if ($this->isHealthQuestion($lower)) {
+                return null;
+            }
+
             if ($this->containsAny($lower, ['book', 'appointment', 'schedule', 'konsultasyon'])) {
                 return
                     "Pwede kang mag-book ng appointment sa app. Pumunta sa Appointments, piliin ang Create Appointment, " .
@@ -976,7 +1080,17 @@ class GeminiService
                     "Makikita doon ang previous consultations, diagnosis notes kung available, at prescriptions.";
             }
 
-            if ($this->containsAny($lower, ['id', 'verify', 'verification', 'ocr', 'upload'])) {
+            /*
+             * Whole words only.
+             *
+             * containsAny() is a substring match, and 'id' sits inside
+             * "fluids", "consider", "said" and "idea". A resident asking
+             * "I have a headache, should I drink more fluids?" was told how
+             * to upload an ID photo. The health guard above catches that
+             * particular sentence now, but the rule was wrong on its own
+             * terms and would surface again on anything it did not catch.
+             */
+            if ($this->containsAnyWord($lower, ['id', 'verify', 'verification', 'ocr', 'upload'])) {
                 return
                     "Para sa ID verification, pumunta sa Profile, piliin ang ID Verification, " .
                     "upload ng malinaw na ID photo, at hintayin ang result. Iwasan ang blur, glare, at putol na image.";
@@ -1155,5 +1269,82 @@ class GeminiService
         }
 
         return false;
+    }
+
+    /**
+     * Like containsAny(), but the keyword has to be a whole word.
+     *
+     * For short keywords a substring match is almost always wrong:
+     * 'id' matches "fluids", 'ubo' matches "ubos". Use this wherever a
+     * keyword is shorter than about five letters.
+     */
+    private function containsAnyWord(string $text, array $keywords): bool
+    {
+        foreach ($keywords as $keyword) {
+            $pattern = '/(?<![\p{L}\p{N}])' . preg_quote(mb_strtolower($keyword), '/') . '(?![\p{L}\p{N}])/u';
+
+            if (preg_match($pattern, $text) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a resident is asking about their body rather than the app.
+     *
+     * Deliberately generous. Sending an app question to the model costs a
+     * slightly wordier answer; sending a symptom question to the canned
+     * navigation rules costs the resident a useless reply at the moment
+     * they most needed a useful one, and they do not ask twice.
+     *
+     * Three languages, because people describe pain in the language they
+     * think in whatever the app is set to.
+     */
+    private function isHealthQuestion(string $lower): bool
+    {
+        $longTerms = [
+            // English
+            'headache', 'head hurt', 'migraine', 'fever', 'cough', 'colds',
+            'sore throat', 'stomach', 'tummy', 'diarrhea', 'diarrhoea',
+            'vomit', 'nausea', 'rash', 'itchy', 'itching', 'toothache',
+            'tooth pain', 'back pain', 'dizzy', 'dizziness', 'cramps',
+            'period pain', 'symptom', 'remedy', 'remedies', 'painful',
+            'swollen', 'swelling', 'infection', 'allergy', 'asthma',
+            'blood pressure', 'sugar level', 'pregnan', 'breastfeed',
+
+            // Tagalog
+            'masakit', 'sumasakit', 'ang sakit', 'lagnat', 'ubo', 'sipon',
+            'trangkaso', 'pagtatae', 'nagsusuka', 'nahihilo', 'pantal',
+            'makati', 'ngipin', 'regla', 'pananakit', 'lunas', 'nilalagnat',
+            'sakit ng ulo', 'sakit sa tiyan', 'gamot sa bahay', 'buntis',
+
+            // Pangasinan
+            'ansakit', 'sakit na ulo', 'petang', 'eges', 'mansakit',
+        ];
+
+        if ($this->containsAny($lower, $longTerms)) {
+            return true;
+        }
+
+        // Short words that need a boundary, or they match inside others.
+        if ($this->containsAnyWord($lower, ['sakit', 'ulo', 'hilo', 'pilay', 'sugat', 'pain', 'ache', 'sick', 'ill', 'flu'])) {
+            return true;
+        }
+
+        /*
+         * A body part plus a complaint word. "my back hurts", "masakit ang
+         * likod" -- neither half is conclusive alone, both together are.
+         */
+        $bodyParts = ['head', 'ulo', 'chest', 'dibdib', 'pagew', 'back', 'likod',
+                      'stomach', 'tiyan', 'eges', 'throat', 'lalamunan', 'ear',
+                      'tenga', 'eye', 'mata', 'tooth', 'teeth', 'ngipin', 'leg',
+                      'binti', 'arm', 'braso', 'knee', 'tuhod', 'skin', 'balat'];
+
+        $complaints = ['hurt', 'ache', 'pain', 'sore', 'sakit', 'masakit'];
+
+        return $this->containsAny($lower, $bodyParts)
+            && $this->containsAny($lower, $complaints);
     }
 }
