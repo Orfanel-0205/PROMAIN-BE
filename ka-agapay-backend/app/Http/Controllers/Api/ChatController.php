@@ -34,8 +34,23 @@ class ChatController extends Controller
      */
     public function sendMessage(Request $request): JsonResponse
     {
+        /*
+         * A photo or a voice note may arrive instead of text, not only
+         * alongside it: someone who photographs a rash often types nothing
+         * at all. So message is required only when there is no attachment.
+         */
+        $hasAttachment = $request->hasFile('attachment');
+
         $validated = $request->validate([
-            'message' => ['required', 'string', 'max:2000'],
+            'message' => [$hasAttachment ? 'nullable' : 'required', 'string', 'max:2000'],
+            'attachment' => [
+                'nullable',
+                'file',
+                // 8 MB covers a phone photo and a two-minute voice note.
+                // Anything larger is a mistake rather than a message.
+                'max:8192',
+                'mimetypes:image/jpeg,image/png,image/webp,image/heic,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/webm,audio/ogg,audio/x-m4a',
+            ],
             'session_id' => ['nullable', 'string', 'max:120'],
             'history' => ['nullable', 'array'],
             'history.*.role' => ['nullable', 'string', 'in:user,assistant'],
@@ -47,7 +62,16 @@ class ChatController extends Controller
 
         $start = microtime(true);
         $user = $request->user();
-        $message = trim($validated['message']);
+        $message = trim((string) ($validated['message'] ?? ''));
+
+        $attachments = $this->attachmentPart($request);
+
+        // What gets written to chat_messages. The file itself is not kept
+        // (see attachmentPart), so the transcript has to say that something
+        // was sent, or the conversation reads with a hole in it.
+        $storedMessage = $message !== ''
+            ? $message
+            : $this->attachmentPlaceholder($attachments);
         $audience = $this->resolveAudience($request);
         $language = $this->detectLanguage($message);
         $intent = $this->detectIntent($message, $audience);
@@ -85,7 +109,7 @@ class ChatController extends Controller
         $userMessage = ChatMessage::create([
             'chat_session_id' => $session->id,
             'role' => 'user',
-            'message' => $message,
+            'message' => $storedMessage,
             'language' => $language,
             'intent' => $intent,
             'created_at' => now(),
@@ -105,7 +129,14 @@ class ChatController extends Controller
             $countQuestion !== null => $this->countReply($countQuestion, $uiLanguage),
             // The staff member goes with the question: the assistant may then
             // read counts from their own RHU's records rather than guess.
-            default => $this->geminiService->chat($message, $history, $audience, $context, $user),
+            default => $this->geminiService->chat(
+                $message,
+                $history,
+                $audience,
+                $context,
+                $user,
+                $attachments
+            ),
         };
 
         if ($audience === 'staff') {
@@ -198,6 +229,63 @@ class ChatController extends Controller
      * This holds a PHP worker open for the length of the answer, which is fine
      * for a few dozen staff and would not be for thousands.
      */
+    /**
+     * Read the uploaded file into memory for the model.
+     *
+     * NOTHING IS WRITTEN TO DISK, deliberately. A photo of a rash or a voice
+     * note describing symptoms is health information about an identifiable
+     * resident. Storing it would mean a retention period, a privacy notice, a
+     * line in the DPO record and a way to delete it on request -- none of
+     * which exists yet. The file goes to the model in this request and is
+     * gone when it returns; the transcript keeps a placeholder, not the
+     * picture.
+     *
+     * If the RHU later wants photos kept on the record, that is a deliberate
+     * decision with paperwork attached, not something to drift into.
+     *
+     * @return array<int, array{mime:string, data:string}>
+     */
+    private function attachmentPart(Request $request): array
+    {
+        $file = $request->file('attachment');
+
+        if ($file === null || !$file->isValid()) {
+            return [];
+        }
+
+        // Read from the file itself, not from the type the client claimed.
+        $mime = (string) $file->getMimeType();
+
+        $contents = @file_get_contents($file->getRealPath());
+
+        if ($contents === false) {
+            Log::warning('[ChatController] Could not read the uploaded attachment.');
+
+            return [];
+        }
+
+        return [[
+            'mime' => $mime,
+            'data' => base64_encode($contents),
+        ]];
+    }
+
+    /**
+     * What stands in for the file in the saved transcript.
+     *
+     * @param array<int, array{mime:string, data:string}> $attachments
+     */
+    private function attachmentPlaceholder(array $attachments): string
+    {
+        if ($attachments === []) {
+            return '';
+        }
+
+        return str_starts_with($attachments[0]['mime'] ?? '', 'audio/')
+            ? '[voice message]'
+            : '[photo]';
+    }
+
     public function stream(Request $request): StreamedResponse
     {
         $validated = $request->validate([

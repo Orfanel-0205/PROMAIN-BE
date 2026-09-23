@@ -48,23 +48,40 @@ class GeminiService
      *                     may look up counts in this RHU's own records
      *                     (AssistantTools) instead of guessing.
      */
+    /**
+     * @param array<int, array{mime:string, data:string}> $attachments
+     *        A photo or a voice note the person sent with the message,
+     *        base64-encoded. Passed straight to the model and never
+     *        written to disk -- see ChatController::attachmentPart().
+     */
     public function chat(
         string $message,
         array $history = [],
         string $audience = 'resident',
         array $context = [],
-        ?User $actor = null
+        ?User $actor = null,
+        array $attachments = []
     ): string {
         $message = trim($message);
 
-        if ($message === '') {
+        if ($message === '' && $attachments === []) {
             return $this->fallbackResponse($message, $audience);
         }
 
         $mode = $this->resolveMode($context, $audience);
 
-        $ruleBased = $this->prefersModelReply($context)
-            ? null
+        /*
+         * A photo or a voice note always reaches the model.
+         *
+         * The keyword rules can only read text. Someone who photographs a
+         * rash and types nothing, or records "bakit masakit ang ulo ko"
+         * and types nothing, has a message the rules cannot see -- and
+         * would get a canned navigation answer to a question they never
+         * asked. The emergency guard below still runs on whatever text
+         * there is.
+         */
+        $ruleBased = ($attachments !== [] || $this->prefersModelReply($context))
+            ? $this->emergencyResponse($message)
             : $this->ruleBasedResponse($message, $audience, $mode);
 
         if ($ruleBased !== null) {
@@ -83,7 +100,7 @@ class GeminiService
         }
 
         try {
-            return $this->callGeminiApi($message, $history, $audience, $context, $mode, $actor);
+            return $this->callGeminiApi($message, $history, $audience, $context, $mode, $actor, $attachments);
         } catch (ConnectionException $e) {
             Log::warning('[GeminiService] Connection failed', [
                 'error' => $e->getMessage(),
@@ -106,7 +123,8 @@ class GeminiService
         string $audience,
         array $context,
         string $mode = self::MODE_OPERATIONS,
-        ?User $actor = null
+        ?User $actor = null,
+        array $attachments = []
     ): string {
         $history = array_slice($history, -8);
         // Onboarding walkthroughs are inherently multi-step, so they always get
@@ -130,13 +148,26 @@ class GeminiService
             }
         }
 
+        $parts = [
+            [
+                'text' => $this->buildUserPrompt($message, $audience, $context, $attachments),
+            ],
+        ];
+
+        // The photo or voice note goes in the same turn as the text, so
+        // the model reads "is this infected?" and the picture together.
+        foreach ($attachments as $attachment) {
+            $parts[] = [
+                'inline_data' => [
+                    'mime_type' => $attachment['mime'],
+                    'data' => $attachment['data'],
+                ],
+            ];
+        }
+
         $contents[] = [
             'role' => 'user',
-            'parts' => [
-                [
-                    'text' => $this->buildUserPrompt($message, $audience, $context),
-                ],
-            ],
+            'parts' => $parts,
         ];
 
         $url = "{$this->baseUrl}/{$this->model}:generateContent?key={$this->apiKey}";
@@ -691,8 +722,12 @@ class GeminiService
             "Close a health answer by offering the next step in the app: booking a consultation, or telemedicine if they cannot travel. Offer it once, briefly, as a help rather than a deflection.";
     }
 
-    private function buildUserPrompt(string $message, string $audience, array $context): string
-    {
+    private function buildUserPrompt(
+        string $message,
+        string $audience,
+        array $context,
+        array $attachments = []
+    ): string {
         $contextText = '';
 
         if (!empty($context)) {
@@ -726,6 +761,7 @@ class GeminiService
         $dateText = "\n\nToday's date is {$today}. Any date you propose for an event, "
             . 'program, or deadline MUST be on or after this date.';
 
+        $attachmentText = $this->attachmentInstructions($attachments);
         $preferenceText = $this->preferenceInstructions($context);
         $screenText = $this->screenInstructions($context);
 
@@ -742,7 +778,7 @@ class GeminiService
             }
         }
 
-        return "{$audienceText}{$dateText}{$preferenceText}{$reference}{$contextText}{$screenText}\n\nUser message:\n{$message}";
+        return "{$audienceText}{$dateText}{$preferenceText}{$reference}{$contextText}{$screenText}{$attachmentText}\n\nUser message:\n{$message}";
     }
 
     /**
@@ -772,6 +808,50 @@ class GeminiService
             . "- Use ONLY the figures listed above. Never invent a number, a trend or a comparison "
             . "that is not there. If something needed to answer is missing, say which screen shows it.\n"
             . "- These are totals, not patients. Never guess at an individual person's situation from them.";
+    }
+
+    /**
+     * What to do with a photo or a voice note.
+     *
+     * A picture of a rash invites exactly the thing the assistant must not
+     * do, which is name a condition. The instruction is therefore not "be
+     * careful" but a shape to follow: describe what is visible, say what
+     * that commonly looks like, give home care, and name what would make it
+     * urgent. A photo also cannot be palpated, smelled or measured, and the
+     * reply says so rather than implying the picture was enough.
+     */
+    private function attachmentInstructions(array $attachments): string
+    {
+        if ($attachments === []) {
+            return '';
+        }
+
+        $kinds = [];
+
+        foreach ($attachments as $attachment) {
+            $kinds[] = str_starts_with($attachment['mime'] ?? '', 'audio/') ? 'audio' : 'image';
+        }
+
+        $lines = [];
+
+        if (in_array('audio', $kinds, true)) {
+            $lines[] = 'THE USER SENT A VOICE NOTE. Listen to it and answer the question in it. '
+                . 'Do not transcribe it back to them and do not comment on their voice or accent. '
+                . 'If it is unclear, say which part you could not make out and ask them to repeat just that.';
+        }
+
+        if (in_array('image', $kinds, true)) {
+            $lines[] = 'THE USER SENT A PHOTO. Answer in this shape: what you can see in it; '
+                . 'what that commonly looks like, described as "this is often..." and never as their diagnosis; '
+                . 'what to do at home today; and what would mean coming to the RHU or going to the ER. '
+                . 'Say plainly that a photo cannot replace being examined -- it cannot be touched, '
+                . 'and it does not show fever, pain or how fast something is changing. '
+                . 'If the photo is too dark or blurred to be useful, say so and ask for another rather than guessing. '
+                . 'If it shows a document rather than a body -- a prescription, a lab result, an ID -- read it out and explain it '
+                . 'in plain words, but do not interpret laboratory values as a diagnosis.';
+        }
+
+        return "\n\n" . implode("\n", $lines);
     }
 
     /**
@@ -833,11 +913,18 @@ class GeminiService
             || ($language !== '' && !in_array($language, ['en', 'english'], true));
     }
 
-    private function ruleBasedResponse(
-        string $message,
-        string $audience,
-        string $mode = self::MODE_OPERATIONS
-    ): ?string {
+
+    /**
+     * The emergency check, on its own.
+     *
+     * Separate from the navigation rules so it can run when those are being
+     * skipped -- a message carrying a photo or a voice note, or one from a
+     * user whose language the canned answers are not written in. This is the
+     * one reply that must never wait on the model, so it must never be
+     * bypassed along with everything else.
+     */
+    private function emergencyResponse(string $message): ?string
+    {
         $lower = mb_strtolower($message);
 
         /*
@@ -906,6 +993,22 @@ class GeminiService
                     "⚠️ EMERGENCY — onla ka la ed sankaasinggeran ya ospital odino ER natan, odino mantawag ka na tulong. Ag ka manalagar.";
             }
         }
+
+        return null;
+    }
+    private function ruleBasedResponse(
+        string $message,
+        string $audience,
+        string $mode = self::MODE_OPERATIONS
+    ): ?string {
+        // Always first, whatever else follows.
+        $emergency = $this->emergencyResponse($message);
+
+        if ($emergency !== null) {
+            return $emergency;
+        }
+
+        $lower = mb_strtolower($message);
 
         // Getting Started mode is a teaching conversation that has to track where
         // the learner already is. The canned navigation blurbs below cannot do
