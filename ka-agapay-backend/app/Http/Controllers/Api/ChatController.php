@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ChatController extends Controller
@@ -41,7 +43,7 @@ class ChatController extends Controller
          */
         $hasAttachment = $request->hasFile('attachment');
 
-        $validated = $request->validate([
+        $rules = [
             'message' => [$hasAttachment ? 'nullable' : 'required', 'string', 'max:2000'],
             'attachment' => [
                 'nullable',
@@ -49,16 +51,65 @@ class ChatController extends Controller
                 // 8 MB covers a phone photo and a two-minute voice note.
                 // Anything larger is a mistake rather than a message.
                 'max:8192',
-                'mimetypes:image/jpeg,image/png,image/webp,image/heic,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/webm,audio/ogg,audio/x-m4a',
+
+                /*
+                 * Detected from the file, not the type the client claimed.
+                 *
+                 * An .m4a is an MPEG-4 container, so depending on what the
+                 * recorder wrote into it finfo reports audio/mp4,
+                 * audio/x-m4a, or -- when the brand is a plain mp4 --
+                 * video/mp4. All three are the same voice note.
+                 */
+                'mimetypes:image/jpeg,image/png,image/webp,image/heic,image/heif,audio/mpeg,audio/mp4,audio/aac,audio/x-aac,audio/wav,audio/x-wav,audio/webm,audio/ogg,audio/x-m4a,audio/3gpp,video/mp4,video/3gpp,video/quicktime',
             ],
             'session_id' => ['nullable', 'string', 'max:120'],
             'history' => ['nullable', 'array'],
             'history.*.role' => ['nullable', 'string', 'in:user,assistant'],
-            'history.*.content' => ['nullable', 'string', 'max:4000'],
+            /*
+             * No length cap.
+             *
+             * History is context the client replays back to us, not
+             * something the person typed. A 4000-character cap meant that
+             * once the assistant gave one long answer -- which a photo
+             * analysis reliably is -- every following message failed
+             * validation, and the user saw only "Validation failed." with
+             * no way out short of starting a new chat. Over-long entries
+             * are trimmed when the prompt is built instead.
+             */
+            'history.*.content' => ['nullable', 'string'],
             'audience' => ['nullable', 'string', 'in:resident,staff'],
             'source' => ['nullable', 'string', 'max:40'],
             'context' => ['nullable', 'array'],
-        ]);
+        ];
+
+        $validator = Validator::make($request->all(), $rules);
+
+        /*
+         * Say why, in the log.
+         *
+         * The exception handler replaces every validation failure with a
+         * flat "Validation failed.", and the app shows that string -- so a
+         * resident sees four words and nobody can tell an unsupported
+         * recording format from an oversized one. The rejected file type
+         * and size are exactly what distinguishes them.
+         */
+        if ($validator->fails()) {
+            $rejected = $request->file('attachment');
+
+            Log::warning('[ChatController] Message rejected by validation.', [
+                'errors' => $validator->errors()->toArray(),
+                'has_attachment' => $rejected !== null,
+                'detected_mime' => $rejected?->getMimeType(),
+                'client_mime' => $rejected?->getClientMimeType(),
+                'original_name' => $rejected?->getClientOriginalName(),
+                'kilobytes' => $rejected !== null ? (int) round($rejected->getSize() / 1024) : null,
+                'message_length' => mb_strlen((string) $request->input('message', '')),
+            ]);
+
+            throw new ValidationException($validator);
+        }
+
+        $validated = $validator->validated();
 
         $start = microtime(true);
         $user = $request->user();
