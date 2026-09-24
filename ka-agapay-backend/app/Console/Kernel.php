@@ -57,6 +57,18 @@ class Kernel extends ConsoleKernel
             ->dailyAt('00:10')
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Close stale queue tickets'));
+
+        /*
+         * Look for barangays where several patients reported the same thing.
+         *
+         * Before clinic opens, so an overnight cluster is on the board when
+         * the first staff member signs in rather than being noticed a week
+         * later. After queue:close-stale, so yesterday is settled first.
+         */
+        $schedule->command('outbreak:detect')
+            ->dailyAt('06:45')
+            ->withoutOverlapping()
+            ->onFailure(fn () => $this->reportScheduleFailure('Outbreak detection'));
         $schedule->call(function () {
             $count = app(\App\Services\Prescription\PrescriptionService::class)->expireStale();
             logger()->info("Expired {$count} stale prescriptions.");
