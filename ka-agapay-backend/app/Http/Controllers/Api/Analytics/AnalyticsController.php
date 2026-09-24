@@ -1804,9 +1804,23 @@ class AnalyticsController extends Controller
             ->selectRaw("COUNT(*) as total_cases")
             ->selectRaw("{$complaintExpr} as top_complaint")
             ->whereBetween("c.{$dateColumn}", [$from, $to])
+            /*
+             * Which barangays this facility serves.
+             *
+             * This used to compare b.rhu_id, the barangay's single home
+             * facility, so a municipality assigned to one RHU showed zero
+             * barangay cases for every other RHU. Coverage is many-to-many
+             * now: a facility sees the barangays it actually serves, and
+             * several facilities serving the same barangay all see it.
+             */
             ->when(
-                $rhuId !== null && $hasBarangays && Schema::hasColumn('barangays', 'rhu_id'),
-                fn ($q) => $this->scopeRhu($q, $rhuId, 'b.rhu_id')
+                $rhuId !== null && $hasBarangays && Schema::hasTable('rhu_barangay'),
+                fn ($q) => $q->whereIn(
+                    'b.barangay_id',
+                    fn ($sub) => $sub->from('rhu_barangay')
+                        ->where('rhu_id', $rhuId)
+                        ->select('barangay_id')
+                )
             )
             ->when($disease !== '', function ($q) use ($disease) {
                 $q->where(function ($inner) use ($disease) {
@@ -1910,16 +1924,20 @@ class AnalyticsController extends Controller
             ->selectRaw("{$complaintExpr} as complaint")
             ->selectRaw("COUNT(*) as total")
             ->whereBetween($dateColumn, [$from, $to])
+            // Coverage, as in barangayCases above.
             ->when(
                 $rhuId !== null
-                    && Schema::hasTable('barangays')
-                    && Schema::hasColumn('barangays', 'rhu_id')
+                    && Schema::hasTable('rhu_barangay')
                     && Schema::hasColumn('users', 'barangay_id'),
                 fn ($q) => $q->whereIn('user_id', function ($sub) use ($rhuId) {
                     $sub->from('users')
-                        ->join('barangays as b', 'b.barangay_id', '=', 'users.barangay_id')
+                        ->whereIn(
+                            'users.barangay_id',
+                            fn ($inner) => $inner->from('rhu_barangay')
+                                ->where('rhu_id', $rhuId)
+                                ->select('barangay_id')
+                        )
                         ->select('users.user_id');
-                    $this->scopeRhu($sub, $rhuId, 'b.rhu_id');
                 })
             )
             ->groupByRaw($complaintExpr)

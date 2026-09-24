@@ -141,9 +141,9 @@ class RhuFacilityController extends Controller
         $facility = RhuFacility::findOrFail($id);
 
         abort_unless(
-            Schema::hasTable('barangays') && Schema::hasColumn('barangays', 'rhu_id'),
+            Schema::hasTable('barangays') && Schema::hasTable('rhu_barangay'),
             422,
-            'This installation has no barangay-to-RHU mapping yet.'
+            'This installation has no barangay coverage table yet.'
         );
 
         $validated = $request->validate([
@@ -151,18 +151,53 @@ class RhuFacilityController extends Controller
             'barangay_ids.*' => ['integer', Rule::exists('barangays', 'barangay_id')],
         ]);
 
-        $ids = array_map('intval', $validated['barangay_ids']);
+        $ids = array_values(array_unique(array_map('intval', $validated['barangay_ids'])));
 
+        /*
+         * Coverage, not ownership.
+         *
+         * This used to move a barangay from whichever facility held it to
+         * this one, because a barangay could only belong to a single RHU.
+         * Assigning the municipality to one facility therefore emptied the
+         * others. Several RHUs can now serve the same barangay, which is
+         * how Malasiqui actually runs and what matters on the day one of
+         * them is closed.
+         *
+         * Only this facility's own rows are touched. What any other
+         * facility covers is its own business and is left alone.
+         */
         DB::transaction(function () use ($facility, $ids) {
-            // Barangays dropped from the list fall back to the default
-            // facility rather than being left pointing at nothing.
-            DB::table('barangays')
-                ->where('rhu_id', $facility->id)
-                ->whereNotIn('barangay_id', $ids === [] ? [0] : $ids)
-                ->update(['rhu_id' => Rhu::defaultId()]);
+            DB::table('rhu_barangay')->where('rhu_id', $facility->id)->delete();
 
             if ($ids !== []) {
-                DB::table('barangays')->whereIn('barangay_id', $ids)->update(['rhu_id' => $facility->id]);
+                $now = now();
+
+                $rows = array_map(fn (int $barangayId) => [
+                    'rhu_id' => $facility->id,
+                    'barangay_id' => $barangayId,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ], $ids);
+
+                foreach (array_chunk($rows, 500) as $chunk) {
+                    DB::table('rhu_barangay')->insert($chunk);
+                }
+            }
+
+            /*
+             * Keep a home facility for routing.
+             *
+             * barangays.rhu_id still decides which RHU a resident is sent
+             * to by default. A barangay that has just gained its first
+             * coverage takes this facility as home; one that already has a
+             * home keeps it, so re-ticking a list does not quietly
+             * reroute residents.
+             */
+            if ($ids !== [] && Schema::hasColumn('barangays', 'rhu_id')) {
+                DB::table('barangays')
+                    ->whereIn('barangay_id', $ids)
+                    ->whereNull('rhu_id')
+                    ->update(['rhu_id' => $facility->id]);
             }
         });
 
@@ -191,8 +226,10 @@ class RhuFacilityController extends Controller
      */
     private function present(RhuFacility $facility): array
     {
-        $barangayIds = Schema::hasColumn('barangays', 'rhu_id')
-            ? DB::table('barangays')->where('rhu_id', $facility->id)->pluck('barangay_id')->all()
+        // What this facility covers, which is what the picker edits and
+        // the count beside it reports.
+        $barangayIds = Schema::hasTable('rhu_barangay')
+            ? DB::table('rhu_barangay')->where('rhu_id', $facility->id)->pluck('barangay_id')->all()
             : [];
 
         return [
