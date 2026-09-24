@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\OcrController;
 use App\Http\Controllers\Api\ApprovalController;
 use App\Http\Controllers\Api\Ai\AiController;
 use App\Http\Controllers\Api\Analytics\AnalyticsController;
+use App\Http\Controllers\Api\Analytics\AnalyticsInsightController;
 use App\Http\Controllers\Api\Queue\QueueController;
 use App\Http\Controllers\Api\Queue\QueueServiceCatalogController;
 use App\Http\Controllers\Api\Telemedicine\TelemedicineController;
@@ -830,6 +831,16 @@ Route::prefix('v1')->group(function () {
         Route::prefix('analytics')
             ->middleware('role:admin,staff,rhu_admin,super_admin,mho')
             ->group(function () {
+                /*
+                 * Commentary on the figures currently on screen.
+                 *
+                 * A real model call, unlike the fixed strings this page used
+                 * to label "AI insight". POST because the client sends the
+                 * aggregates it has already drawn -- aggregates only, never
+                 * a patient or a record.
+                 */
+                Route::post('/insight', [AnalyticsInsightController::class, 'generate']);
+
                 Route::get('/overview',                [AnalyticsController::class, 'overview']);
                 Route::get('/heatmap',                 [AnalyticsController::class, 'heatmap']);
                 Route::get('/queue-performance',       [AnalyticsController::class, 'queuePerformance']);
