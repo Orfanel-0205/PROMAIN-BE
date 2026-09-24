@@ -94,6 +94,11 @@ class RhuFacilityController extends Controller
             'short_name' => ['sometimes', 'string', 'max:40'],
             'address' => ['nullable', 'string', 'max:255'],
             'contact_number' => ['nullable', 'string', 'max:40'],
+            // Optional here so an existing facility can be corrected, or
+            // one created before coordinates were recorded can be given
+            // them without re-entering everything else.
+            'latitude' => ['sometimes', 'nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['sometimes', 'nullable', 'numeric', 'between:-180,180'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 

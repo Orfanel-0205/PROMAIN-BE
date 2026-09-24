@@ -19,6 +19,8 @@ class RhuFacility extends Model
         'name',
         'short_name',
         'address',
+        'latitude',
+        'longitude',
         'contact_number',
         'is_active',
     ];
