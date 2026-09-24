@@ -62,8 +62,22 @@ class RhuFacilityController extends Controller
             'short_name' => ['required', 'string', 'max:40'],
             'address' => ['nullable', 'string', 'max:255'],
             'contact_number' => ['nullable', 'string', 'max:40'],
+
+            /*
+             * Required when opening a facility.
+             *
+             * Without coordinates a facility cannot be drawn on the queue
+             * map or the barangay heatmap, and there is no way to work them
+             * out afterwards without sending someone to stand outside the
+             * building. The moment it is created is the only moment anyone
+             * knows the answer.
+             */
+            'latitude' => ['required', 'numeric', 'between:-90,90'],
+            'longitude' => ['required', 'numeric', 'between:-180,180'],
         ], [
             'code.regex' => 'The code may use letters, numbers, dashes and underscores only.',
+            'latitude.required' => 'Enter the latitude so this facility appears on the maps.',
+            'longitude.required' => 'Enter the longitude so this facility appears on the maps.',
         ]);
 
         $facility = RhuFacility::create($validated + ['is_active' => true]);
@@ -238,6 +252,13 @@ class RhuFacilityController extends Controller
             'name' => $facility->name,
             'short_name' => $facility->short_name,
             'address' => $facility->address,
+
+            // Cast out of the decimal column, which PDO hands back as a
+            // string: the map filters on Number.isFinite and would drop
+            // every facility if these arrived as "15.90912900".
+            'latitude' => $facility->latitude !== null ? (float) $facility->latitude : null,
+            'longitude' => $facility->longitude !== null ? (float) $facility->longitude : null,
+
             'contact_number' => $facility->contact_number,
             'is_active' => $facility->is_active,
             'barangay_ids' => array_map('intval', $barangayIds),
