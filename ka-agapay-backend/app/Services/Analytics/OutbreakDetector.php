@@ -144,7 +144,10 @@ class OutbreakDetector
             ? 'c.chief_complaint'
             : (Schema::hasColumn('consultations', 'diagnosis') ? 'c.diagnosis' : null);
 
-        if ($complaint === null || !Schema::hasColumn('users', 'barangay_id')) {
+        $hasKey = Schema::hasColumn('users', 'barangay_id');
+        $hasName = Schema::hasColumn('users', 'barangay');
+
+        if ($complaint === null || (!$hasKey && !$hasName)) {
             return [];
         }
 
@@ -152,14 +155,42 @@ class OutbreakDetector
             ? 'c.consultation_date'
             : 'c.created_at';
 
+        /*
+         * Two ways a patient names their barangay.
+         *
+         * users.barangay_id is the foreign key, and only two of the
+         * forty-nine accounts on this system have one. The rest carry the
+         * barangay as free text in users.barangay, which is what the
+         * analytics screens have always read.
+         *
+         * An inner join on the key alone therefore matched nothing and the
+         * detector reported no clusters however far back it looked. Both
+         * are resolved here: the key when it is set, otherwise the name,
+         * matched case- and whitespace-insensitively.
+         *
+         * A row that resolves to neither is dropped. heatmap_alerts keys
+         * on barangay_id, so an alert for a barangay this system cannot
+         * identify has nowhere to go.
+         */
+        $barangay = 'COALESCE(bk.barangay_id, bn.barangay_id)';
+        $barangayName = 'COALESCE(bk.name, bn.name)';
+
         return DB::table('consultations as c')
             ->join('users as u', 'u.user_id', '=', 'c.user_id')
-            ->join('barangays as b', 'b.barangay_id', '=', 'u.barangay_id')
+            ->leftJoin('barangays as bk', 'bk.barangay_id', '=', 'u.barangay_id')
+            ->leftJoin('barangays as bn', function ($join) {
+                $join->on(
+                    DB::raw('LOWER(TRIM(bn.name))'),
+                    '=',
+                    DB::raw('LOWER(TRIM(u.barangay))')
+                );
+            })
             ->whereDate($dateColumn, '>=', $since->toDateString())
             ->whereNotNull($complaint)
+            ->whereRaw("{$barangay} IS NOT NULL")
             ->select([
-                'b.barangay_id',
-                'b.name as barangay_name',
+                DB::raw("{$barangay} as barangay_id"),
+                DB::raw("{$barangayName} as barangay_name"),
                 DB::raw("{$complaint} as complaint"),
                 'c.rhu_id',
             ])
