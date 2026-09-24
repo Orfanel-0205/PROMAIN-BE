@@ -324,7 +324,7 @@ class NotificationService
                         title: $title,
                         body: $message,
                         data: $payload,
-                        channelId: 'default'
+                        channelId: 'default-v2'
                     );
                 }
             }
@@ -390,7 +390,7 @@ class NotificationService
                         title: $title,
                         body: $message,
                         data: $payload,
-                        channelId: 'default'
+                        channelId: 'default-v2'
                     );
 
                     $pushSent = true;
@@ -651,7 +651,7 @@ class NotificationService
                         title: $title,
                         body: $message,
                         data: $payload,
-                        channelId: 'telemedicine-calls'
+                        channelId: 'telemedicine-calls-v2'
                     );
 
                     $result['push_sent'] = $sent > 0;
@@ -768,7 +768,7 @@ class NotificationService
                         title: $title,
                         body: $message,
                         data: $payload,
-                        channelId: 'queue-alerts'
+                        channelId: 'queue-alerts-v2'
                     );
 
                     $result['push_sent'] = $sent > 0;
@@ -912,7 +912,7 @@ class NotificationService
                         title: $title,
                         body: $message,
                         data: $payload,
-                        channelId: 'appointment-reminders'
+                        channelId: 'appointment-reminders-v2'
                     );
 
                     $result['push_sent'] = $sent > 0;
@@ -1044,7 +1044,7 @@ class NotificationService
                         title: $title,
                         body: $message,
                         data: $payload,
-                        channelId: 'follow-up-reminders'
+                        channelId: 'follow-up-reminders-v2'
                     );
 
                     $result['push_sent'] = $sent > 0;
@@ -1092,7 +1092,7 @@ class NotificationService
                 'screen' => 'home',
             ],
             "/events/{$event->id}",
-            'default'
+            'default-v2'
         );
     }
 
@@ -1109,7 +1109,7 @@ class NotificationService
                 'screen' => 'home',
             ],
             '/announcements',
-            'default'
+            'default-v2'
         );
     }
 
