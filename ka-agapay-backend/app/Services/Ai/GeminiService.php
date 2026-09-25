@@ -27,7 +27,7 @@ class GeminiService
     private const RETRY_OUTPUT_TOKENS = 4000;
 
     private string $apiKey;
-    private string $model = 'gemini-2.5-flash';
+    private string $model;
     private string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
     public function __construct(
@@ -38,6 +38,10 @@ class GeminiService
             config('services.google.gemini_api_key')
             ?: env('GEMINI_API_KEY', '')
         );
+
+        // Falls back to the previous hard-coded value, so an environment
+        // that sets nothing behaves exactly as it did before.
+        $this->model = (string) config('services.google.gemini_model', 'gemini-2.5-flash');
     }
 
     /**

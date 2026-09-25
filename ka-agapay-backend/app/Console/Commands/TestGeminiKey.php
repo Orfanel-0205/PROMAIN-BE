@@ -36,7 +36,9 @@ class TestGeminiKey extends Command
         $this->line('');
         $this->line('Sending test request to Gemini...');
 
-        $model    = 'gemini-2.5-flash';
+        // The SAME model the application calls. These were two separate
+        // literals, so this check could pass while the app used another.
+        $model    = (string) config('services.google.gemini_model', 'gemini-2.5-flash');
         $url      = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$key}";
 
         $response = Http::timeout(15)

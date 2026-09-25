@@ -61,6 +61,22 @@ return [
 
     'google' => [
         'gemini_api_key' => env('GEMINI_API_KEY'),
+
+        /*
+         * Which Gemini model to call.
+         *
+         * This was a literal inside GeminiService AND a second literal
+         * inside the gemini:test command, so the health check could
+         * happily pass against a model the application was not using.
+         * Both now read this one value.
+         *
+         * It is a setting because the choice changes for reasons outside
+         * this project: Google retires models and moves free quotas
+         * without notice, and the free allowance differs enormously
+         * between them. Changing model should be an .env edit and a
+         * config:clear, not a code change and a deploy.
+         */
+        'gemini_model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
         'vision_api_key' => env('GOOGLE_VISION_API_KEY'),
     ],
 
