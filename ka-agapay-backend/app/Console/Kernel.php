@@ -59,6 +59,28 @@ class Kernel extends ConsoleKernel
             ->onFailure(fn () => $this->reportScheduleFailure('Close stale queue tickets'));
 
         /*
+         * Clear out access tokens that can no longer authenticate.
+         *
+         * sanctum.expiration is 7 days, so a token stops working a week
+         * after it is issued -- but the ROW stays behind. By 25 September
+         * 2026 there were 172 of them and only 18 could still authenticate;
+         * the oldest dated from 19 June.
+         *
+         * None of the other 154 was a security exposure, because an expired
+         * token is refused at authentication. The cost was to understanding:
+         * a table that is 90% dead rows makes it impossible to answer a
+         * simple question -- how many people are actually signed in?
+         *
+         * 24 hours rather than 0, so a token that has only just expired is
+         * still visible for a day when someone reports being logged out
+         * unexpectedly and you need to see what happened.
+         */
+        $schedule->command('sanctum:prune-expired --hours=24')
+            ->dailyAt('02:30')
+            ->withoutOverlapping()
+            ->onFailure(fn () => $this->reportScheduleFailure('Prune expired tokens'));
+
+        /*
          * Look for barangays where several patients reported the same thing.
          *
          * Before clinic opens, so an overnight cluster is on the board when
