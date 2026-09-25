@@ -60,7 +60,9 @@ class AnalyticsInsightController extends Controller
          * is the figures themselves, so the moment a number moves the answer is
          * generated afresh.
          */
-        $cacheKey = 'analytics.insight.' . md5(json_encode([
+        // v2: answers cached before English was pinned would otherwise
+        // keep being served in whichever language they were written in.
+        $cacheKey = 'analytics.insight.v2.' . md5(json_encode([
             $validated['scope'] ?? '',
             $validated['figures'],
             $validated['notes'] ?? [],
@@ -83,7 +85,10 @@ class AnalyticsInsightController extends Controller
             [
                 'source' => 'analytics',
                 'current_page' => 'Analytics',
-                'ui_language' => (string) $request->input('ui_language', ''),
+                // Deliberately not forwarded. The dashboard language
+                // setting governs the interface; these briefings are
+                // written in English because reports are.
+                'ui_language' => 'en',
             ],
             $request->user()
         );
@@ -158,6 +163,10 @@ class AnalyticsInsightController extends Controller
         Do not repeat the figures back as a list. Do not congratulate anyone. Do
         not speculate about individual patients -- you are seeing totals only.
         Do not recommend clinical treatment; this is service planning.
+
+        Write in English, whatever language the question appears to be in.
+        These briefings are read alongside reports that go to the Municipal
+        Health Office and the DOH, and those are written in English.
         PROMPT;
     }
 }
