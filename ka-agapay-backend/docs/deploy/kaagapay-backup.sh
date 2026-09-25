@@ -234,5 +234,14 @@ exit 1
 #        printf '/var/log/kaagapay-backup.log {\n  weekly\n  rotate 8\n  compress\n  missingok\n  notifempty\n}\n' \
 #          | sudo tee /etc/logrotate.d/kaagapay-backup
 #
-# A backup you have never restored is a guess. Do one restore drill into a
-# scratch database (docs/OPERATIONS.md, Section 07) and write down the date.
+# A backup you have never restored is a guess. That drill is now a script:
+#
+#   kaagapay-restore-drill.sh
+#
+# It restores the newest dump into a scratch database, compares tables,
+# indexes and row counts against production, and drops the scratch copy.
+# It never touches the live database, and it runs monthly from the root
+# crontab. First run 26 September 2026: PASS.
+#
+# To put a backup BACK into the live database, use kaagapay-restore.sh --
+# that one is destructive and asks before it does anything.
