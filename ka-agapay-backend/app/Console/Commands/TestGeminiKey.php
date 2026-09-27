@@ -47,7 +47,20 @@ class TestGeminiKey extends Command
                 'contents' => [
                     ['role' => 'user', 'parts' => [['text' => 'Say "OK" only.']]]
                 ],
-                'generationConfig' => ['maxOutputTokens' => 10],
+                /*
+                 * 256, not 10.
+                 *
+                 * gemini-2.5-flash is a thinking model: the tokens it
+                 * spends reasoning are billed against maxOutputTokens
+                 * before any answer is produced. At 10 the reasoning
+                 * routinely consumed the whole budget and the reply came
+                 * back empty -- so this check reported an empty response
+                 * on a key that was working perfectly, roughly half the
+                 * time. A health check that cries wolf gets ignored, and
+                 * this one is what the operations runbook tells staff to
+                 * trust.
+                 */
+                'generationConfig' => ['maxOutputTokens' => 256],
             ]);
 
         $status = $response->status();
@@ -70,10 +83,21 @@ class TestGeminiKey extends Command
 
     private function printSuccess(array $body): void
     {
-        $text = $body['candidates'][0]['content']['parts'][0]['text'] ?? '(empty)';
+        $text = trim((string) ($body['candidates'][0]['content']['parts'][0]['text'] ?? ''));
+
         $this->info('');
-        $this->info('✅ SUCCESS! Gemini responded: "' . trim($text) . '"');
-        $this->info('   Your API key is working correctly.');
+
+        if ($text === '') {
+            // Still a pass: the request was authorised and answered. The
+            // model simply produced no text, which says nothing about the
+            // key. Saying so plainly stops this being read as a fault.
+            $this->info('✅ SUCCESS! The key is valid and Gemini accepted the request.');
+            $this->line('   It returned no text this time, which happens and is not a');
+            $this->line('   fault. Ask the chatbot a question to confirm end to end.');
+        } else {
+            $this->info('✅ SUCCESS! Gemini responded: "' . $text . '"');
+            $this->info('   Your API key is working correctly.');
+        }
         $this->line('');
         $this->line('If the chatbot still fails, clear the app cache:');
         $this->line('  php artisan cache:clear');
