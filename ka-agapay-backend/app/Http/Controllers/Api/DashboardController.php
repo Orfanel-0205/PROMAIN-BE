@@ -75,9 +75,18 @@ class DashboardController extends Controller
                     ? $q->where('status', 'completed')
                     : $q;
             }),
+            /*
+             * Requests waiting to be screened -- not every open request.
+             *
+             * This counted 'screened' and 'scheduled' too, which are
+             * requests somebody has already dealt with. The sidebar badge
+             * therefore read 9 while the Telemedicine page showed 1 needing
+             * screening, and a badge that overstates the work is a badge
+             * staff stop believing.
+             */
             'pending_telemedicine' => $this->countRows('telemedicine_requests', function ($q) {
                 return Schema::hasColumn('telemedicine_requests', 'status')
-                    ? $q->whereIn('status', ['pending', 'screened', 'scheduled'])
+                    ? $q->where('status', 'pending')
                     : $q;
             }),
             /*
@@ -171,6 +180,21 @@ class DashboardController extends Controller
         }
 
         $query = DB::table($table);
+
+        /*
+         * Deleted rows are not work.
+         *
+         * DB::table() is the query builder, not Eloquent, so none of the
+         * models' SoftDeletes scope applies here -- these counts happily
+         * included rows staff had already deleted. The inventory badge in
+         * the sidebar read 2 while the Inventory page correctly showed 0,
+         * because all six items had been deleted and only the badge could
+         * still see them.
+         */
+        if (Schema::hasColumn($table, 'deleted_at')) {
+            $query->whereNull($table . '.deleted_at');
+        }
+
         $query = $callback($query) ?? $query;
 
         return (int) $query->count();
@@ -250,6 +274,10 @@ class DashboardController extends Controller
             Schema::hasColumn('inventory_items', 'minimum_stock_level')
         ) {
             return (int) DB::table('inventory_items')
+                ->when(
+                    Schema::hasColumn('inventory_items', 'deleted_at'),
+                    fn ($q) => $q->whereNull('deleted_at')
+                )
                 ->whereColumn('current_stock', '<=', 'minimum_stock_level')
                 ->count();
         }

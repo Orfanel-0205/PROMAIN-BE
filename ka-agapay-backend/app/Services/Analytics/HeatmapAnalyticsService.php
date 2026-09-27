@@ -575,7 +575,11 @@ class HeatmapAnalyticsService
                     'barangay_id' => $point['barangay_id'],
                     'risk_level' => $point['risk_level'],
                 ],
-                '/analytics/heatmap'
+                // The admin route is /heatmap-analytics; /analytics/heatmap
+                // was never registered, so every one of these alerts landed
+                // on the dashboard instead of the cluster it names.
+                // ?view=barangay opens the disease-cluster workspace.
+                '/heatmap-analytics?view=barangay'
             );
         } catch (\Throwable $e) {
             report($e);
