@@ -33,7 +33,6 @@ use App\Http\Controllers\Api\RegistrationInviteController;
 use App\Http\Controllers\Api\AdminBackupController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
-use App\Http\Controllers\Api\AiSettingsController;
 use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\AppointmentController;
@@ -906,8 +905,6 @@ Route::prefix('v1')->group(function () {
 
                 Route::get('/system-stats', [AdminController::class, 'systemStats']);
 
-                Route::get('/ai-settings', [AiSettingsController::class, 'index']);
-                Route::put('/ai-settings', [AiSettingsController::class, 'update']);
 
                 Route::get('/events',                [EventController::class, 'adminIndex']);
                 Route::post('/events',               [EventController::class, 'store']);

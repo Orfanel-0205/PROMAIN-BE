@@ -77,7 +77,15 @@ return [
          * config:clear, not a code change and a deploy.
          */
         'gemini_model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
-        'vision_api_key' => env('GOOGLE_VISION_API_KEY'),
+        /*
+         * Removed: 'vision_api_key'.
+         *
+         * GOOGLE_VISION_API_KEY was set on the production server and read
+         * here, but nothing ever called Google Vision -- all OCR goes to
+         * OCR.space through OcrVerificationService. Leaving it in place
+         * invited whoever inherits this to rotate, budget for and worry
+         * about a credential that does nothing.
+         */
     ],
 
     'ocr_space' => [
