@@ -862,6 +862,32 @@ class ChatController extends Controller
             return 'staff';
         }
 
+        /*
+         * Fall back to who is actually signed in, not to 'resident'.
+         *
+         * Everything above trusts the caller to declare itself. When a
+         * client forgets to -- a new screen, a direct call, anything not
+         * going through the admin's own chat panel -- a nurse asking how to
+         * add someone to the queue was answered as though she were a
+         * resident, told to press a button on a phone app she does not use.
+         *
+         * Her account already says what she is. Asking it is more reliable
+         * than asking the client.
+         */
+        $user = $request->user();
+
+        if ($user) {
+            $role = strtolower((string) optional($user->role)->name);
+
+            // Everyone on the staff side of the system. Residents and
+            // patients are the only accounts that are not.
+            $residentRoles = ['resident', 'patient', ''];
+
+            if (!in_array($role, $residentRoles, true)) {
+                return 'staff';
+            }
+        }
+
         return 'resident';
     }
 
