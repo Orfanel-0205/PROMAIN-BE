@@ -206,8 +206,31 @@ class DashboardController extends Controller
             return 0;
         }
 
+        /*
+         * Patients, not accounts.
+         *
+         * This counted every active row in users, which made the dashboard
+         * read 49 Total Patients while Patient Registry showed 2. Both were
+         * right about what they counted and only one matched its label.
+         *
+         * Two faults: it never excluded soft-deleted users, and it counted
+         * staff. Of the eleven live accounts here, three are MHOs, two are
+         * super admins, and two are residents. A doctor is not a patient.
+         */
         if (Schema::hasColumn('users', 'account_status')) {
-            return (int) DB::table('users')
+            $query = DB::table('users');
+
+            if (Schema::hasColumn('users', 'deleted_at')) {
+                $query->whereNull('deleted_at');
+            }
+
+            if (Schema::hasTable('user_roles') && Schema::hasColumn('users', 'role_id')) {
+                $query
+                    ->join('user_roles', 'user_roles.role_id', '=', 'users.role_id')
+                    ->whereIn(DB::raw('LOWER(user_roles.name)'), ['resident', 'patient']);
+            }
+
+            return (int) $query
                 ->where('account_status', 'active')
                 ->count();
         }
