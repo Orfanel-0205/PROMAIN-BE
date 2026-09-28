@@ -34,11 +34,12 @@ class AnswerBook
             'summary' => 'Today\'s walk-in patients, in the order they will be seen.',
             'steps' => [
                 'Click the Queue button in the sidebar.',
-                'Issue a ticket with New Ticket, choosing the service and any priority (senior, pregnant, PWD, emergency).',
-                'Click Call Next to call the highest-priority waiting ticket.',
+                'Click Add Walk-in to issue a ticket, choosing the RHU and the service desk.',
+                'Click Call Next Patient for the next in order, or Call Priority Next for senior, PWD, pregnant or urgent patients.',
                 'Mark the patient Served when the consultation starts, or No Show if they do not come.',
             ],
             'notes' => [
+                'Add Walk-in is the direct way to put someone in the queue; an approved appointment for today also flows in on its own.',
                 'Priority is computed, not chosen: seniors, pregnant patients, PWDs, children under 5 and emergencies rise automatically.',
                 'The queue is per RHU. You only ever see and call your own facility\'s tickets.',
                 'Tickets reset each day; yesterday\'s queue stays in the records, not on the board.',
@@ -132,7 +133,7 @@ class AnswerBook
             'summary' => 'Medicines and supplies held by your RHU.',
             'steps' => [
                 'Click the Inventory button.',
-                'Stock In records a delivery; Stock Out records anything taken that is not a dispense.',
+                'Restock records a delivery; Deduct records anything taken out, whether dispensed, damaged or transferred.',
                 'Low stock and expiring items are flagged at the top.',
             ],
             'notes' => [
@@ -221,11 +222,11 @@ class AnswerBook
             'steps' => [
                 'Click the Users button.',
                 'Open a staff member to change their role or RHU.',
-                'Deactivate removes their access without deleting their record.',
+                'Disable removes their access without deleting their record.',
             ],
             'notes' => [
                 'A staff member\'s RHU decides which patients and queues they can see.',
-                'Deactivate rather than delete: their name still has to appear on the records they made.',
+                'Disable rather than delete: their name still has to appear on the records they made.',
             ],
         ],
 
@@ -267,6 +268,21 @@ class AnswerBook
      *
      * @return array<string, mixed>|null
      */
+    /**
+     * Every entry, for checks that have to walk the whole book.
+     *
+     * Exists so AnswerBookTest can confirm that each control named here is
+     * a control the admin actually has. Reaching in with reflection would
+     * have worked and would have hidden that this is a supported thing to
+     * ask for.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public static function all(): array
+    {
+        return self::ENTRIES;
+    }
+
     public function find(string $message): ?array
     {
         $lower = mb_strtolower($message);

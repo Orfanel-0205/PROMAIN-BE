@@ -33,6 +33,7 @@ class LabTestCatalogueTest extends TestCase
         '/../rhu-admin-main/src/constants/labTests.ts',
         '/../../Rhu-admin-main-1/src/constants/labTests.ts',
         '/../../FINAL-SUBMISSION/Rhu-admin-main-1/src/constants/labTests.ts',
+        '/../../Documents/FINAL-SUBMISSION/Rhu-admin-main-1/src/constants/labTests.ts',
     ];
 
     /**
