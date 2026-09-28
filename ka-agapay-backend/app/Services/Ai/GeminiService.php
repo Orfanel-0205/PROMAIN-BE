@@ -1090,13 +1090,18 @@ class GeminiService
 
             if ($this->containsAny($lower, ['queue', 'pila'])) {
                 return
-                    "Para sa pila workflow:\n\n" .
-                    "1. I-click ang **Queue** button.\n" .
-                    "2. Piliin ang station/counter.\n" .
-                    "3. I-click ang **Call Next** para tawagin ang susunod.\n" .
-                    "4. I-click ang **Serving** kapag nasa counter na ang pasyente.\n" .
-                    "5. I-click ang **Done** kapag tapos na.\n\n" .
-                    "Reviewhin ang priority flags tulad ng senior, pregnant, PWD, emergency, pediatric, o BHW-assisted bago magdesisyon.";
+                // Button names here must match the admin exactly. They
+                // did not: this described a station picker, Serving and
+                // Done, none of which exist, and never mentioned Add
+                // Walk-in -- the one button that answers the question
+                // staff actually ask.
+                    "Para sa pila:\n\n" .
+                    "1. I-click ang **Queue** sa sidebar.\n" .
+                    "2. Piliin ang RHU at ang service desk sa itaas.\n" .
+                    "3. Para magdagdag ng pasyente, i-click ang **Add Walk-in**.\n" .
+                    "4. I-click ang **Call Next Patient** para sa susunod sa pila, o **Call Priority Next** para sa senior, PWD, buntis, o urgent.\n" .
+                    "5. Kapag tapos na, i-click ang **Skip** o **No Show** kung hindi dumating.\n\n" .
+                    "Ang approved na appointment ngayong araw ay awtomatikong pumapasok sa pila. Ang priority ay kinakalkula, hindi pinipili.";
             }
 
             if ($this->containsAny($lower, ['appointment', 'appointments', 'booking'])) {

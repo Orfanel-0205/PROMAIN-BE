@@ -1524,7 +1524,7 @@ class ChatController extends Controller
                 ],
                 [
                     'title' => '2. Serve in order',
-                    'body' => 'Use Call Next, Serving, and Done to keep the flow fair and traceable.',
+                    'body' => 'Add Walk-in puts someone in the queue; Call Next Patient and Call Priority Next serve them in order.',
                     'mascot' => '/Thinkingduck.png',
                 ],
                 [
