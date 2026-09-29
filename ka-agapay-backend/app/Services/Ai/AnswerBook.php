@@ -30,7 +30,14 @@ class AnswerBook
     private const ENTRIES = [
         'queue' => [
             'title' => 'Queue',
-            'keywords' => ['queue', 'pila', 'ticket', 'call next', 'now serving'],
+            'keywords' => [
+                'queue', 'pila', 'ticket', 'call next', 'now serving',
+                // 'patient' belongs to the registry and is longer than
+                // 'pila', so 'add a patient to the queue' was answered with
+                // how to register one. These phrases name the queue.
+                'patient sa pila', 'pasyente sa pila', 'add to the queue',
+                'add patient to queue', 'walk-in', 'walk in',
+            ],
             'summary' => 'Today\'s walk-in patients, in the order they will be seen.',
             'steps' => [
                 'Click the Queue button in the sidebar.',
@@ -162,12 +169,54 @@ class AnswerBook
             'keywords' => ['telemedicine', 'video call', 'online consultation', 'remote'],
             'summary' => 'Video consultations with residents who cannot come in.',
             'steps' => [
-                'Click the Telemedicine button.',
-                'Approve a request, then Join when the patient is ready.',
-                'Write the consultation notes as you would for a walk-in.',
+                'Click the Telemedicine button in the sidebar.',
+                'Approve the request and give it a schedule.',
+                'When the patient is ready, click Open Telemedicine to enter the room.',
+                'Dictate or type the conversation into the Transcript box, then fill the SOAP fields.',
+                'Click End Session to close the call.',
             ],
             'notes' => [
                 'The patient joins from their phone. If their connection is poor, audio alone usually holds.',
+                'Ending the session removes the patient from the room as well. They do not have to close anything themselves.',
+                'The notes stay editable after the call ends. Ending the video does not close the record.',
+                'You can dictate the consultation instead of typing it. Ask about speech-to-text for how.',
+            ],
+        ],
+
+        /*
+         * Dictation has enough of its own behaviour -- a language that has
+         * to be chosen, a browser requirement, and one language that simply
+         * cannot be transcribed -- that folding it into the telemedicine
+         * entry would either bury it or crowd everything else out.
+         */
+        'speech_to_text' => [
+            'title' => 'Speech-to-text during a consultation',
+            'keywords' => [
+                'speech to text', 'speech-to-text', 'stt', 'dictation', 'dictate',
+                'dikta', 'boses', 'voice', 'microphone', 'mikropono', 'mic',
+                'transcript', 'transcribe', 'salita',
+                // Long enough to outscore the module these questions also
+                // name in passing.
+                'dictate the consultation', 'dictate the conversation',
+                'dikta ng boses', 'mag dikta', 'magdikta',
+                'voice instead of typing', 'talk instead of typing',
+                'boses sa telemedicine', 'speech recognition',
+            ],
+            'summary' => 'Speak the consultation instead of typing it.',
+            'steps' => [
+                'Open the telemedicine room for that session.',
+                'Choose the language beside the Transcript box before you begin. Filipino covers Tagalog; English is there for consultations held in English.',
+                'Click Start STT and speak normally. Recognised words appear in the Transcript box as you go.',
+                'If a word comes out wrong, the chips under the box are the other readings that were considered. Clicking one replaces the last phrase.',
+                'Click Stop STT when you have finished, then AI Summarize to turn the transcript into SOAP fields you can edit.',
+            ],
+            'notes' => [
+                'Google Chrome only. The dictation belongs to the browser, and Edge and Firefox do not offer it.',
+                'The language you pick is remembered on that computer, so it is set once rather than every call.',
+                'Pangasinense cannot be dictated. No browser offers it. Type those consultations, or hold them in Filipino.',
+                'A consultation that mixes Filipino and English heavily will come back with mistakes whichever language is set, because the recogniser listens for one language at a time. Read the transcript before finalising.',
+                'Dictation keeps listening through pauses. It no longer switches itself off when the room goes quiet.',
+                'The transcript is saved with the session notes, so it stays on the record.',
             ],
         ],
 

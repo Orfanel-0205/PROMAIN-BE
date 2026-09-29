@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Ai\AnswerBook;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
@@ -93,6 +94,56 @@ class AnswerBookTest extends TestCase
             "The answer book names controls the admin does not have. Staff "
             . "will be told to press buttons that are not there:\n  "
             . implode("\n  ", $missing)
+        );
+    }
+
+    /**
+     * Questions that name their feature, and the entry each must reach.
+     *
+     * find() scores an entry by its LONGEST matching keyword, so a short
+     * exact word loses to a long incidental one. "How do I dictate the
+     * consultation" was answered with how to run a consultation, because
+     * "consultation" is twelve characters and "dictate" is seven. "Paano
+     * ako mag-add ng patient sa pila" was answered with how to register a
+     * patient, because "patient" is longer than "pila".
+     *
+     * Both questions say what they want in their first few words. Adding a
+     * keyword to any entry can quietly take a question away from another,
+     * and nothing else would notice.
+     */
+    public static function routedQuestions(): array
+    {
+        return [
+            'english dictation'   => ['How do I use speech to text?', 'speech_to_text'],
+            'taglish dictation'   => ['paano mag dikta ng boses sa telemedicine', 'speech_to_text'],
+            'dictate a consult'   => ['how do I dictate the consultation', 'speech_to_text'],
+            'microphone trouble'  => ['the microphone is not picking up words', 'speech_to_text'],
+            'voice not typing'    => ['can I use my voice instead of typing', 'speech_to_text'],
+            'queue in tagalog'    => ['paano ako mag-add ng patient sa pila', 'queue'],
+            'starting a call'     => ['how do I start a video call', 'telemedicine'],
+        ];
+    }
+
+    #[Test]
+    #[TestDox('a question reaches the feature it names')]
+    #[DataProvider('routedQuestions')]
+    public function questions_reach_the_right_entry(string $question, string $expected): void
+    {
+        $book = new AnswerBook();
+        $hit = $book->find($question);
+
+        $this->assertNotNull(
+            $hit,
+            "No entry matched '{$question}', so the assistant has nothing "
+            . 'written to answer from and will improvise instead.'
+        );
+
+        $this->assertSame(
+            $expected,
+            $hit['key'],
+            "'{$question}' was routed to the '{$hit['key']}' entry instead of "
+            . "'{$expected}'. A keyword added to one entry has taken a question "
+            . 'away from another, and nothing else would have noticed.'
         );
     }
 
