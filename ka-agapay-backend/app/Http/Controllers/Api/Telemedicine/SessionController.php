@@ -194,6 +194,7 @@ class SessionController extends Controller
             'soap.diagnosis'   => ['nullable', 'string'],
             'soap.treatment'   => ['nullable', 'string'],
             'soap.notes'       => ['nullable', 'string'],
+            'soap.transcript'  => ['nullable', 'string'],
         ]);
 
         $finalize = (bool) ($validated['finalize'] ?? false);

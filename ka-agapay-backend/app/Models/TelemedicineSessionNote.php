@@ -18,6 +18,11 @@ class TelemedicineSessionNote extends Model
         'primary_diagnosis_code',
         'primary_diagnosis_label',
         'medications',
+        // Missing here, so even a request that carried a transcript and
+        // a service that assigned one would have been discarded without
+        // a word by updateOrCreate. The column, the request rule and the
+        // write all have to agree before a single character is stored.
+        'transcript',
         'is_finalized',
         'finalized_at',
     ];

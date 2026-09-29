@@ -508,6 +508,19 @@ class TelemedicineService
 
             $isFinalized = !empty($data['finalize']);
 
+            $existing = TelemedicineSessionNote::where('session_id', $session->id)->first();
+
+            /*
+             * A draft save must not undo a finalised note.
+             *
+             * is_finalized was written straight from this request, so any
+             * later correction -- which arrives as an ordinary save, with
+             * finalize absent -- reopened a closed clinical record and
+             * cleared the timestamp saying when it had been closed. The
+             * edit is still applied; the record simply stays final.
+             */
+            $wasFinalized = (bool) ($existing?->is_finalized);
+
             $notes = TelemedicineSessionNote::updateOrCreate(
                 ['session_id' => $session->id],
                 [
@@ -519,8 +532,11 @@ class TelemedicineService
                     'primary_diagnosis_code'  => $data['primary_diagnosis_code'] ?? null,
                     'primary_diagnosis_label' => $data['primary_diagnosis_label'] ?? null,
                     'medications'             => $data['medications'] ?? null,
-                    'is_finalized'            => $isFinalized,
-                    'finalized_at'            => $isFinalized ? now() : null,
+                    'transcript'              => $this->keptTranscript($data, $existing),
+                    'is_finalized'            => $isFinalized || $wasFinalized,
+                    'finalized_at'            => $isFinalized
+                        ? now()
+                        : $existing?->finalized_at,
                 ]
             );
 
@@ -608,6 +624,9 @@ class TelemedicineService
             $diagnosis  = $this->soapValue($soap, 'diagnosis') ?: $assessment;
             $treatment  = $this->soapValue($soap, 'treatment') ?: $plan;
             $extraNotes = $this->soapValue($soap, 'notes');
+            $transcript = $this->soapValue($soap, 'transcript');
+
+            $existingNote = TelemedicineSessionNote::where('session_id', $session->id)->first();
 
             // Persist into the telemedicine session note (mirror record).
             TelemedicineSessionNote::updateOrCreate(
@@ -619,8 +638,16 @@ class TelemedicineService
                     'assessment'              => $assessment ?: null,
                     'plan'                    => $plan ?: null,
                     'primary_diagnosis_label' => $diagnosis ?: null,
-                    'is_finalized'            => $finalize,
-                    'finalized_at'            => $finalize ? $now : null,
+                    'transcript'              => $this->keptTranscript(
+                        ['transcript' => $transcript],
+                        $existingNote
+                    ),
+                    // Same reasoning as saveNotes: ending a session to
+                    // carry on editing must not reopen a finalised note.
+                    'is_finalized'            => $finalize || (bool) $existingNote?->is_finalized,
+                    'finalized_at'            => $finalize
+                        ? $now
+                        : $existingNote?->finalized_at,
                 ]
             );
 
@@ -744,6 +771,21 @@ class TelemedicineService
     private function soapValue(array $soap, string $key): string
     {
         return trim((string) ($soap[$key] ?? ''));
+    }
+
+    /**
+     * The transcript to store, preferring what was just sent.
+     *
+     * A blank one never overwrites a stored one: the clinician can end a
+     * session from a screen that has no dictation on it, and losing the
+     * recorded conversation because of that would be silent and
+     * unrecoverable.
+     */
+    private function keptTranscript(array $data, ?TelemedicineSessionNote $existing): ?string
+    {
+        $incoming = trim((string) ($data['transcript'] ?? ''));
+
+        return $incoming !== '' ? $incoming : $existing?->transcript;
     }
 
     public function createReferral(TelemedicineSession $session, array $data): TelemedicineReferral
