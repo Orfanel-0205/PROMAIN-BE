@@ -135,13 +135,18 @@ class IntegrationCredentialsTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('the SMS sender name is a field, because the one in .env is never read')]
+    #[TestDox('the SMS sender name can be changed alongside the SMS key')]
     public function sender_name_is_covered(): void
     {
-        // The server's .env sets SEMAPHORE_SENDER_NAME while config reads
-        // SEMAPHORE_SENDERNAME, so every text went out under the default
-        // "KAAGAPAY" -- which is not an approved sender on the RHU's account.
-        // The panel is how the approved name gets set and checked.
+        // A sender name is approved per Semaphore account, so moving the SMS
+        // key to a new account without changing the sender name sends every
+        // reminder under a name that account has not approved. They have to
+        // be changeable together, and the test checks the name against the
+        // new account's approved list before anything is saved.
+        //
+        // config reads SEMAPHORE_SENDERNAME. The production .env also carries
+        // a SEMAPHORE_SENDER_NAME that nothing reads; it is harmless, and both
+        // hold the same approved name.
         $this->assertContains('services.semaphore.sendername', IntegrationCredentials::configKeys());
     }
 
