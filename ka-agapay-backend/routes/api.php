@@ -34,6 +34,7 @@ use App\Http\Controllers\Api\AdminBackupController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminSmsController;
 use App\Http\Controllers\Api\SettingsController;
+use App\Http\Controllers\Api\IntegrationSettingsController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AnnouncementController;
@@ -348,6 +349,24 @@ Route::prefix('v1')->group(function () {
             ->middleware('role:super_admin,superadmin,rhu_admin,admin')
             ->group(function () {
                 Route::put('/security', [SettingsController::class, 'updateSecurity']);
+            });
+
+        // API keys for outside services: super admin only.
+        //   GET    /api/v1/admin/settings/integrations
+        //   POST   /api/v1/admin/settings/integrations/{integration}/test
+        //   PUT    /api/v1/admin/settings/integrations/{integration}
+        //   DELETE /api/v1/admin/settings/integrations/{integration}
+        //
+        // Narrower than every other settings group on purpose: a key decides
+        // which account the RHU's SMS credit, AI usage and video calls are
+        // billed to. Throttled because each test calls an outside service.
+        Route::prefix('admin/settings/integrations')
+            ->middleware(['role:super_admin', 'throttle:20,1'])
+            ->group(function () {
+                Route::get('/', [IntegrationSettingsController::class, 'index']);
+                Route::post('/{integration}/test', [IntegrationSettingsController::class, 'test']);
+                Route::put('/{integration}', [IntegrationSettingsController::class, 'update']);
+                Route::delete('/{integration}', [IntegrationSettingsController::class, 'destroy']);
             });
 
         // =====================================================================

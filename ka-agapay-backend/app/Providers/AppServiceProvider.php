@@ -38,6 +38,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Keys saved in Settings > API keys replace the .env values for this
+        // request. First, so nothing resolves a service before they apply.
+        // With nothing saved this changes nothing. See IntegrationCredentials.
+        \App\Support\IntegrationCredentials::applyOverrides();
+
         /*
          * Leave the call handshake exactly as the browser wrote it.
          *

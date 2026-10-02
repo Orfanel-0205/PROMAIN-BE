@@ -92,4 +92,9 @@ class AuditActions
     // Data access / PHI compliance
     public const RECORD_VIEWED = 'record.viewed';
     public const RECORD_EXPORTED = 'record.exported';
+
+    // Outside-service API keys (Settings > API keys). Which fields changed is
+    // recorded; the values never are.
+    public const INTEGRATION_UPDATED = 'integration.updated';
+    public const INTEGRATION_RESET = 'integration.reset';
 }

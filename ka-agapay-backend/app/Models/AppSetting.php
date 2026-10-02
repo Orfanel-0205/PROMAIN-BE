@@ -22,6 +22,15 @@ class AppSetting extends Model
     public const GROUP_NOTIFICATIONS = 'notifications';
     public const GROUP_SECURITY = 'security';
 
+    /**
+     * API keys for outside services, stored encrypted.
+     *
+     * Deliberately NOT one of AppSettings' sections: those are returned to the
+     * browser as-is, which is right for a facility name and wrong for a key.
+     * Read and written only through App\Support\IntegrationCredentials.
+     */
+    public const GROUP_INTEGRATIONS = 'integrations';
+
     /** rhu_id value meaning "not facility-specific". */
     public const SHARED_RHU_ID = 0;
 
