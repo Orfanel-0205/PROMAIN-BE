@@ -80,6 +80,8 @@ class User extends Authenticatable
         // "active within N minutes" comparison.
         'last_active_at' => 'datetime',
         'locked_until' => 'datetime',
+        // Set by UserMobileObserver; pauses viewing API keys for a day after a change.
+        'mobile_changed_at' => 'datetime',
         'has_seen_onboarding' => 'boolean',
         'staff_approved_at' => 'datetime',
         'terms_accepted_at' => 'datetime',

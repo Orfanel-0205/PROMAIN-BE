@@ -21,6 +21,13 @@ use Illuminate\Support\Str;
 
 class AccountSmsService
 {
+    /**
+     * The sign-in code text. Under 160 characters with the code in, so it costs
+     * one credit, and silent about what the code unlocks -- a code sent to a
+     * wrong or recycled number is read by a stranger. Both are held by a test.
+     */
+    public const VERIFICATION_CODE_MESSAGE = 'Ka-Agapay code: %s. It expires in 5 minutes. Never share it; RHU staff will never ask for it. Not you? Change your password.';
+
     public function __construct(private readonly SmsService $sms)
     {
     }
@@ -185,5 +192,85 @@ class AccountSmsService
         $first = trim((string) $user->first_name);
 
         return $first !== '' ? $first : 'there';
+    }
+
+    /**
+     * A one-time sign-in or verification code.
+     *
+     * Kept under 160 characters so it costs one credit. It names nothing the
+     * code unlocks -- not "API key", not "admin" -- because a code sent to a
+     * wrong or recycled number is read by a stranger, and the text should
+     * tell that stranger nothing about the system.
+     *
+     * The code is redacted from the sms_logs row once it has been handed to
+     * Semaphore. Every message lands in that table and shows in the SMS
+     * Center, so an unredacted row would let anyone with SMS Center access
+     * read a live code.
+     *
+     * Returns null when the account has no valid Philippine mobile number.
+     * A returned row may still have status "failed" -- SmsService records a
+     * failed send rather than throwing -- so callers check the status.
+     */
+    public function sendVerificationCode(User $user, string $code): ?SmsLog
+    {
+        $mobile = $this->recipientMobile($user);
+
+        if ($mobile === null) {
+            return null;
+        }
+
+        $message = sprintf(self::VERIFICATION_CODE_MESSAGE, $code);
+
+        $log = $this->dispatch($user, $mobile, $message, 'verification_code');
+
+        if ($log !== null) {
+            try {
+                $log->update(['message' => str_replace($code, '******', (string) $log->message)]);
+            } catch (\Throwable $e) {
+                Log::warning('[AccountSmsService] Could not redact a verification code from sms_logs', [
+                    'sms_log_id' => $log->id ?? null,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $log;
+    }
+
+    /**
+     * Tell the PREVIOUS number that the account's number changed.
+     *
+     * Sent to the old number on purpose: if someone else changed it, the new
+     * number is theirs, and the real owner is the one who must hear about it.
+     */
+    public function sendMobileChangedNotice(User $user, string $oldMobile): ?SmsLog
+    {
+        $digits = preg_replace('/\D/', '', $oldMobile) ?? '';
+
+        if (preg_match('/^63(9\d{9})$/', $digits, $m) === 1) {
+            $digits = '0' . $m[1];
+        }
+
+        if (preg_match('/^09\d{9}$/', $digits) !== 1) {
+            return null;
+        }
+
+        $message = 'Ka-Agapay: the mobile number on your account was just changed. Not you? Contact your RHU right away.';
+
+        return $this->dispatch($user, $digits, $message, 'mobile_changed');
+    }
+
+    /** Whether this account has a mobile number a code can be sent to. */
+    public function canReceiveCodes(User $user): bool
+    {
+        return $this->recipientMobile($user) !== null;
+    }
+
+    /** Only the last three digits, for "we sent a code to the number ending 001". */
+    public function maskedMobile(User $user): ?string
+    {
+        $mobile = $this->recipientMobile($user);
+
+        return $mobile === null ? null : substr($mobile, -3);
     }
 }

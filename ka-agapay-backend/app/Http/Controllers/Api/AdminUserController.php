@@ -623,6 +623,25 @@ class AdminUserController extends Controller
         if (!empty($validated['password'])) {
             $updates['password'] = Hash::make($validated['password']);
 
+            /*
+             * A new password also clears the sign-in check.
+             *
+             * After a wrong password the account needs a code texted to its
+             * phone. When that phone is lost, or the number on file is wrong,
+             * this reset is how RHU staff let the person back in: the password
+             * the code was protecting no longer exists, so neither does the
+             * reason for the code.
+             */
+            if (Schema::hasColumn('users', 'failed_login_count')) {
+                $updates['failed_login_count'] = 0;
+            }
+
+            if (Schema::hasColumn('users', 'locked_until')) {
+                $updates['locked_until'] = null;
+            }
+
+            app(\App\Services\Auth\VerificationCodes::class)->retireAll($user);
+
             // Only counts as "changed by an administrator" when someone else did
             // it. An admin editing their own row is a self-change and must not
             // text itself an intruder warning.

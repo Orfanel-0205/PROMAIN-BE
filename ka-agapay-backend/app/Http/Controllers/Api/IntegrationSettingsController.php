@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\Audit\AuditActions;
 use App\Services\Audit\AuditService;
+use App\Services\Auth\VerificationCodes;
 use App\Services\Integrations\IntegrationTester;
 use App\Support\IntegrationCredentials;
 use Illuminate\Http\JsonResponse;
@@ -36,9 +37,13 @@ class IntegrationSettingsController extends Controller
     /** How long the page shows a revealed key before hiding it again. */
     private const REVEAL_VISIBLE_SECONDS = 30;
 
+    /** No viewing keys for this long after the account's mobile number changes. */
+    private const MOBILE_CHANGE_COOLDOWN_HOURS = 24;
+
     public function __construct(
         private readonly IntegrationTester $tester,
         private readonly AuditService $audit,
+        private readonly VerificationCodes $codes,
     ) {}
 
     public function index(): JsonResponse
@@ -198,22 +203,150 @@ class IntegrationSettingsController extends Controller
 
         RateLimiter::clear($limiterKey);
 
+        if (IntegrationCredentials::currentValue($integration, $field) === '') {
+            return response()->json(['message' => 'No key is set for this field.'], 404);
+        }
+
+        /*
+         * The password is right; now the phone.
+         *
+         * A password can be filled in by a browser that saved it, for whoever
+         * is sitting at an unlocked computer. A code texted to the super
+         * admin's own phone cannot. The key is released by revealConfirm(),
+         * only to this same account, only for this same key.
+         */
+        if ($user->mobile_changed_at && $user->mobile_changed_at->gt(now()->subHours(self::MOBILE_CHANGE_COOLDOWN_HOURS))) {
+            // Otherwise someone at the computer could point the account at
+            // their own phone and then receive the code.
+            $until = $user->mobile_changed_at->copy()->addHours(self::MOBILE_CHANGE_COOLDOWN_HOURS);
+
+            return response()->json([
+                'message' => 'The mobile number on your account changed recently, so viewing keys is paused until '
+                    . $until->timezone('Asia/Manila')->format('M j, g:i A') . '. Replacing a key still works.',
+            ], 423);
+        }
+
+        $issued = $this->codes->issue($user, VerificationCodes::PURPOSE_REVEAL_KEY, [
+            'integration' => $integration,
+            'field' => $field,
+        ], $request);
+
+        return match ($issued['status']) {
+            'sent' => response()->json([
+                'code_required' => true,
+                'message' => "Enter the 6-digit code we sent to your mobile number ending in {$issued['masked_mobile']}.",
+                'challenge' => $issued['challenge'],
+                'masked_mobile' => $issued['masked_mobile'],
+                'expires_in' => $issued['expires_in'],
+                'resend_after' => $issued['resend_after'],
+            ]),
+            'no_mobile' => response()->json([
+                'message' => 'Your account has no valid mobile number to send a code to. Add one in your profile to view keys. Replacing a key still works.',
+            ], 422),
+            'too_many' => response()->json([
+                'message' => 'Too many codes have been sent to your phone. Try again later.',
+            ], 429),
+            default => response()->json([
+                'message' => "We couldn't send a code right now, so the key cannot be shown. Try again in a few minutes.",
+            ], 503),
+        };
+    }
+
+    /**
+     * The second step of viewing a key: the code from the super admin's phone.
+     *
+     *   POST /api/v1/admin/settings/integrations/{integration}/reveal/confirm
+     *        { "challenge": "...", "code": "123456" }
+     *
+     * The code was issued to one account for one key. It releases nothing to
+     * a different account, and nothing for a different key, even if both
+     * were somehow in hand.
+     */
+    public function revealConfirm(Request $request, string $integration): JsonResponse
+    {
+        if (!IntegrationCredentials::exists($integration)) {
+            return $this->unknown();
+        }
+
+        $validated = $request->validate([
+            'challenge' => ['required', 'string', 'max:64'],
+            'code' => ['required', 'string', 'max:12'],
+        ]);
+
+        $user = $request->user();
+        $result = $this->codes->verify($validated['challenge'], VerificationCodes::PURPOSE_REVEAL_KEY, $validated['code']);
+        $issuedTo = $result['user'] ?? null;
+        $context = $result['context'] ?? [];
+        $field = (string) ($context['field'] ?? '');
+        $label = IntegrationCredentials::REGISTRY[$integration]['label'];
+
+        // A challenge belongs to the account it was issued to. Anything else
+        // is treated exactly like an unknown challenge.
+        if ($issuedTo !== null && (int) $issuedTo->user_id !== (int) $user->user_id) {
+            return response()->json(['message' => 'This code has expired. Start again.', 'restart' => true], 410);
+        }
+
+        if ($result['status'] === 'wrong') {
+            $left = (int) $result['attempts_left'];
+
+            $this->audit->warning('settings', AuditActions::INTEGRATION_REVEAL_DENIED, [
+                'subject_type' => 'integration',
+                'subject_label' => $label,
+                'metadata' => ['integration' => $integration, 'reason' => 'wrong_code', 'attempts_left' => $left],
+            ], $request);
+
+            return response()->json([
+                'message' => $left > 0
+                    ? "Incorrect code. {$left} attempt" . ($left === 1 ? '' : 's') . ' left.'
+                    : 'Incorrect code. Start again to get a new one.',
+                'attempts_left' => $left,
+                'restart' => $left === 0,
+            ], $left > 0 ? 422 : 410);
+        }
+
+        if ($result['status'] !== 'ok'
+            || ($context['integration'] ?? null) !== $integration
+            || !IntegrationCredentials::isRevealable($integration, $field)) {
+            return response()->json(['message' => 'This code has expired. Start again.', 'restart' => true], 410);
+        }
+
         $value = IntegrationCredentials::currentValue($integration, $field);
 
         if ($value === '') {
             return response()->json(['message' => 'No key is set for this field.'], 404);
         }
 
+        $fieldLabel = IntegrationCredentials::fields($integration)[$field]['label'] ?? $field;
+
         $this->audit->warning('settings', AuditActions::INTEGRATION_REVEALED, [
             'subject_type' => 'integration',
             'subject_label' => "{$label} — {$fieldLabel}",
-            'metadata' => ['integration' => $integration, 'field' => $field],
+            'metadata' => ['integration' => $integration, 'field' => $field, 'verified_by' => 'password+sms_code'],
         ], $request);
 
         return response()
-            ->json(['value' => $value, 'visible_seconds' => self::REVEAL_VISIBLE_SECONDS])
+            ->json(['value' => $value, 'field' => $field, 'visible_seconds' => self::REVEAL_VISIBLE_SECONDS])
             ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
             ->header('Pragma', 'no-cache');
+    }
+
+    /** A fresh code for a reveal in progress. */
+    public function revealResend(Request $request, string $integration): JsonResponse
+    {
+        $validated = $request->validate(['challenge' => ['required', 'string', 'max:64']]);
+
+        $result = $this->codes->resend($validated['challenge'], VerificationCodes::PURPOSE_REVEAL_KEY);
+
+        return match ($result['status']) {
+            'sent' => response()->json([
+                'message' => "We sent a new code to the number ending in {$result['masked_mobile']}.",
+                'resend_after' => VerificationCodes::RESEND_AFTER_SECONDS,
+            ]),
+            'wait' => response()->json(['message' => "Wait {$result['wait']} seconds before asking for another code."], 429),
+            'limit' => response()->json(['message' => 'No more codes can be sent for this request. Start again later.', 'restart' => true], 429),
+            'send_failed' => response()->json(['message' => "We couldn't send a new code right now."], 503),
+            default => response()->json(['message' => 'This request has expired. Start again.', 'restart' => true], 410),
+        };
     }
 
     public function destroy(Request $request, string $integration): JsonResponse

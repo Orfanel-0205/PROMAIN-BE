@@ -74,6 +74,12 @@ class AppServiceProvider extends ServiceProvider
         |--------------------------------------------------------------------------
         */
 
+        // A changed mobile number pauses viewing API keys and texts the old
+        // number. On the model so every path that changes it is covered.
+        \App\Models\User::observe(
+            \App\Observers\UserMobileObserver::class
+        );
+
         \App\Models\Appointment::observe(
             \App\Observers\AppointmentObserver::class
         );

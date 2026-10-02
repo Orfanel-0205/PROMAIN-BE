@@ -96,6 +96,19 @@ Route::prefix('v1')->group(function () {
     });
 
     // ---------------------------------------------------------------------
+    // SIGN-IN CODES — the second step after a wrong password
+    // Public (the person is not signed in yet); the challenge returned by
+    // /login or /admin/login identifies the attempt. See stepUpIfNeeded().
+    // ---------------------------------------------------------------------
+
+    Route::middleware('throttle:auth-code')->group(function () {
+        Route::post('/login/verify-code',       [AuthController::class, 'verifyLoginCode']);
+        Route::post('/login/resend-code',       [AuthController::class, 'resendLoginCode']);
+        Route::post('/admin/login/verify-code', [AuthController::class, 'verifyAdminLoginCode']);
+        Route::post('/admin/login/resend-code', [AuthController::class, 'resendAdminLoginCode']);
+    });
+
+    // ---------------------------------------------------------------------
     // ACCOUNT RECOVERY — 3/min per account, 15/min per IP.
     // Tighter because each accepted request can send a real (billed) SMS.
     // ---------------------------------------------------------------------
@@ -369,6 +382,9 @@ Route::prefix('v1')->group(function () {
                 // POST, never GET: the password and the key must not appear in
                 // a URL, the browser history, or the server's access log.
                 Route::post('/{integration}/reveal', [IntegrationSettingsController::class, 'reveal']);
+                // Second step: the code texted to the super admin's own phone.
+                Route::post('/{integration}/reveal/confirm', [IntegrationSettingsController::class, 'revealConfirm']);
+                Route::post('/{integration}/reveal/resend', [IntegrationSettingsController::class, 'revealResend']);
                 Route::put('/{integration}', [IntegrationSettingsController::class, 'update']);
                 Route::delete('/{integration}', [IntegrationSettingsController::class, 'destroy']);
             });

@@ -126,6 +126,20 @@ class RouteServiceProvider extends ServiceProvider
             ];
         });
 
+        // Entering and resending a sign-in code. Keyed on the challenge, which
+        // is what these requests carry instead of a mobile number: under
+        // auth-login every code from one RHU's shared connection would have
+        // shared a single per-account bucket. Each challenge also allows only
+        // five wrong codes of its own (VerificationCodes::MAX_ATTEMPTS).
+        RateLimiter::for('auth-code', function (Request $request) use ($tooMany) {
+            $challenge = substr((string) $request->input('challenge', ''), 0, 64);
+
+            return [
+                Limit::perMinute(10)->by('code:' . $challenge . '|' . $request->ip())->response($tooMany),
+                Limit::perMinute(30)->by('code-ip:' . $request->ip())->response($tooMany),
+            ];
+        });
+
         // Registration-invite verification and acceptance. The SPA replays the
         // signed link once per page load, so this must tolerate refreshes while
         // still bounding signature-guessing against the invite token.

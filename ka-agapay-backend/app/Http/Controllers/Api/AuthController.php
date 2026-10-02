@@ -9,6 +9,7 @@ use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
 use App\Services\BiometricAuthService;
+use App\Services\Auth\VerificationCodes;
 use App\Support\AppSettings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -275,6 +276,23 @@ class AuthController extends Controller
             ], 403);
         }
 
+        // A wrong password since the last sign-in: the right one is not
+        // enough on its own. See stepUpIfNeeded().
+        $step = $this->stepUpIfNeeded($user, 'admin', VerificationCodes::PURPOSE_ADMIN_LOGIN, $request);
+
+        if ($step !== null) {
+            return $step;
+        }
+
+        return $this->completeAdminLogin($user, $roleName, $request, $rateLimitKey, 'mobile_password');
+    }
+
+    /**
+     * Everything that happens once a staff sign-in is proven -- by the
+     * password alone, or by the password and then an SMS code.
+     */
+    private function completeAdminLogin(User $user, string $roleName, Request $request, ?string $rateLimitKey, string $method): JsonResponse
+    {
         /*
          * FIX:
          * If the account is active and belongs to RHU staff/admin portal,
@@ -300,7 +318,9 @@ class AuthController extends Controller
             $user->loadMissing('role');
         }
 
-        RateLimiter::clear($rateLimitKey);
+        if ($rateLimitKey !== null) {
+            RateLimiter::clear($rateLimitKey);
+        }
 
         $loginUpdates = [];
 
@@ -327,7 +347,7 @@ class AuthController extends Controller
         $token = $user->createToken('web-admin')->plainTextToken;
 
         $this->logActivity($user, 'ADMIN_LOGIN', [
-            'method' => 'mobile_password',
+            'method' => $method,
             'role' => $roleName,
         ], $request);
 
@@ -414,7 +434,26 @@ class AuthController extends Controller
             ], 403);
         }
 
-        RateLimiter::clear($rateLimitKey);
+        // A wrong password since the last sign-in: the right one is not
+        // enough on its own. See stepUpIfNeeded().
+        $step = $this->stepUpIfNeeded($user, 'resident', VerificationCodes::PURPOSE_RESIDENT_LOGIN, $request);
+
+        if ($step !== null) {
+            return $step;
+        }
+
+        return $this->completeResidentLogin($user, $request, $rateLimitKey, 'mobile_password');
+    }
+
+    /**
+     * Everything that happens once a resident sign-in is proven -- by the
+     * password alone, or by the password and then an SMS code.
+     */
+    private function completeResidentLogin(User $user, Request $request, ?string $rateLimitKey, string $method): JsonResponse
+    {
+        if ($rateLimitKey !== null) {
+            RateLimiter::clear($rateLimitKey);
+        }
 
         $user->update([
             'failed_login_count' => 0,
@@ -426,7 +465,7 @@ class AuthController extends Controller
         $token = $user->createToken('mobile')->plainTextToken;
 
         $this->logActivity($user, 'LOGIN', [
-            'method' => 'mobile_password',
+            'method' => $method,
         ], $request);
 
         return response()->json([
@@ -434,6 +473,214 @@ class AuthController extends Controller
             'user' => $this->formatUser($user->fresh()->load('role')),
             'token' => $token,
         ]);
+    }
+
+    // =========================================================================
+    // SIGN-IN CODES, after a wrong password
+    //   POST /api/v1/admin/login/verify-code   { challenge, code }
+    //   POST /api/v1/admin/login/resend-code   { challenge }
+    //   POST /api/v1/login/verify-code         { challenge, code }
+    //   POST /api/v1/login/resend-code         { challenge }
+    // =========================================================================
+
+    /**
+     * Text a code instead of signing in, when this account has had a wrong
+     * password since its last successful sign-in.
+     *
+     * failed_login_count already rises on every wrong password and returns to
+     * zero on a successful sign-in, so it is exactly "has a wrong password been
+     * entered since". It is reset only once the sign-in is complete -- after
+     * the code, when one was required -- so someone who has the password but
+     * not the phone cannot clear it by simply trying again.
+     *
+     * The code is sent only here, after the password has been checked. A
+     * stranger guessing passwords therefore never causes a text to be sent.
+     *
+     * Returns null to carry on signing in normally.
+     *
+     * WHEN NO CODE CAN BE SENT
+     *   No valid mobile number on the account: sign in as before, and record
+     *   it. Refusing would lock the account permanently over a number only
+     *   the account holder could have supplied.
+     *   The text could not be sent -- no SMS credit, Semaphore down: refuse.
+     *   A wrong password has been entered and the second check cannot be
+     *   made, so the safe answer is to wait, or to have RHU staff reset the
+     *   password, which clears the check.
+     *
+     * The response is 403, never 200: the mobile app's current build treats
+     * any 200 from /login as a finished sign-in and stores whatever token it
+     * contains. As a 403 it shows this message instead -- which is why the
+     * message says to update the app if there is nowhere to type the code.
+     */
+    private function stepUpIfNeeded(User $user, string $audience, string $purpose, Request $request): ?JsonResponse
+    {
+        if (!config("auth.login_codes.{$audience}", true)) {
+            return null;
+        }
+
+        if ((int) ($user->failed_login_count ?? 0) < 1 || !Schema::hasTable('verification_codes')) {
+            return null;
+        }
+
+        $issued = app(VerificationCodes::class)->issue($user, $purpose, [], $request);
+
+        switch ($issued['status']) {
+            case 'sent':
+                $this->logActivity($user, 'LOGIN_CODE_SENT', ['audience' => $audience], $request);
+
+                return response()->json([
+                    'message' => "For your security, enter the 6-digit code we sent to your mobile number ending in {$issued['masked_mobile']}. "
+                        . 'A wrong password was entered for this account since its last sign-in. '
+                        . "If you don't see where to enter it, update the Ka-Agapay app.",
+                    'code_required' => true,
+                    'challenge' => $issued['challenge'],
+                    'masked_mobile' => $issued['masked_mobile'],
+                    'expires_in' => $issued['expires_in'],
+                    'resend_after' => $issued['resend_after'],
+                ], 403);
+
+            case 'no_mobile':
+                $this->logActivity($user, 'LOGIN_CODE_SKIPPED', ['audience' => $audience, 'reason' => 'no_mobile'], $request);
+
+                return null;
+
+            case 'too_many':
+                return response()->json([
+                    'message' => 'Too many sign-in codes have been sent to this account. Try again later, or ask RHU staff to reset your password.',
+                ], 429);
+
+            default:
+                $this->logActivity($user, 'LOGIN_CODE_SKIPPED', ['audience' => $audience, 'reason' => 'send_failed'], $request);
+
+                return response()->json([
+                    'message' => "We couldn't send your sign-in code right now. Try again in a few minutes, or ask RHU staff to reset your password.",
+                ], 503);
+        }
+    }
+
+    public function verifyAdminLoginCode(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->finishWithCode($request, $codes, VerificationCodes::PURPOSE_ADMIN_LOGIN);
+    }
+
+    public function verifyLoginCode(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->finishWithCode($request, $codes, VerificationCodes::PURPOSE_RESIDENT_LOGIN);
+    }
+
+    public function resendAdminLoginCode(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->resendCode($request, $codes, VerificationCodes::PURPOSE_ADMIN_LOGIN);
+    }
+
+    public function resendLoginCode(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->resendCode($request, $codes, VerificationCodes::PURPOSE_RESIDENT_LOGIN);
+    }
+
+    /**
+     * Second half of a sign-in that needed a code.
+     *
+     * A wrong code answers 422 and an expired one 410 -- never 401, which the
+     * admin treats as an expired session and answers by reloading the page,
+     * which would throw away the code screen mid-entry.
+     */
+    private function finishWithCode(Request $request, VerificationCodes $codes, string $purpose): JsonResponse
+    {
+        $validated = $request->validate([
+            'challenge' => ['required', 'string', 'max:64'],
+            'code' => ['required', 'string', 'max:12'],
+        ]);
+
+        $result = $codes->verify($validated['challenge'], $purpose, $validated['code']);
+
+        if ($result['status'] === 'wrong') {
+            $left = (int) $result['attempts_left'];
+
+            if (($result['user'] ?? null) instanceof User) {
+                // Right password, wrong code: someone may know the password
+                // without having the phone. Worth a line in the record.
+                $this->logActivity($result['user'], 'LOGIN_CODE_FAILED', ['attempts_left' => $left], $request);
+            }
+
+            return response()->json([
+                'message' => $left > 0
+                    ? "Incorrect code. {$left} attempt" . ($left === 1 ? '' : 's') . ' left.'
+                    : 'Incorrect code. Sign in again to get a new one.',
+                'attempts_left' => $left,
+                'restart' => $left === 0,
+            ], $left > 0 ? 422 : 410);
+        }
+
+        if ($result['status'] !== 'ok' || !(($result['user'] ?? null) instanceof User)) {
+            return response()->json([
+                'message' => 'This code has expired. Sign in again to get a new one.',
+                'restart' => true,
+            ], 410);
+        }
+
+        $user = $result['user']->loadMissing('role');
+
+        // What may have changed in the minutes since the password was checked.
+        if ($user->locked_until && $user->locked_until->isFuture()) {
+            return response()->json([
+                'message' => 'Account locked. Try again after ' . $user->locked_until->diffForHumans() . '.',
+                'restart' => true,
+            ], 423);
+        }
+
+        if ($purpose === VerificationCodes::PURPOSE_ADMIN_LOGIN) {
+            $roleName = $this->normalizeRoleName($this->resolveUserRoleName($user));
+
+            if (!in_array($roleName, self::ADMIN_ROLES, true)
+                || $this->normalizeStatus((string) ($user->account_status ?? '')) !== 'active') {
+                return response()->json([
+                    'message' => 'This account can no longer sign in to the RHU portal.',
+                    'restart' => true,
+                ], 403);
+            }
+
+            return $this->completeAdminLogin($user, $roleName, $request, null, 'mobile_password+sms_code');
+        }
+
+        if ($user->account_status !== 'active') {
+            return response()->json(['message' => 'Account is not active.', 'restart' => true], 403);
+        }
+
+        return $this->completeResidentLogin($user, $request, null, 'mobile_password+sms_code');
+    }
+
+    private function resendCode(Request $request, VerificationCodes $codes, string $purpose): JsonResponse
+    {
+        $validated = $request->validate([
+            'challenge' => ['required', 'string', 'max:64'],
+        ]);
+
+        $result = $codes->resend($validated['challenge'], $purpose);
+
+        return match ($result['status']) {
+            'sent' => response()->json([
+                'message' => "We sent a new code to the number ending in {$result['masked_mobile']}.",
+                'masked_mobile' => $result['masked_mobile'],
+                'expires_in' => $result['expires_in'],
+                'resend_after' => VerificationCodes::RESEND_AFTER_SECONDS,
+            ]),
+            'wait' => response()->json([
+                'message' => "Wait {$result['wait']} seconds before asking for another code.",
+                'wait' => $result['wait'],
+            ], 429),
+            'limit' => response()->json([
+                'message' => 'No more codes can be sent for this sign-in. Sign in again later, or ask RHU staff to reset your password.',
+                'restart' => true,
+            ], 429),
+            'send_failed' => response()->json([
+                'message' => "We couldn't send a new code right now. Try again in a few minutes.",
+            ], 503),
+            default => response()->json([
+                'message' => 'This sign-in has expired. Sign in again to get a new code.',
+                'restart' => true,
+            ], 410),
+        };
     }
 
     // =========================================================================
