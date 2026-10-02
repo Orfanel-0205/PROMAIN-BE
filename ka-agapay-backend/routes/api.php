@@ -354,6 +354,7 @@ Route::prefix('v1')->group(function () {
         // API keys for outside services: super admin only.
         //   GET    /api/v1/admin/settings/integrations
         //   POST   /api/v1/admin/settings/integrations/{integration}/test
+        //   POST   /api/v1/admin/settings/integrations/{integration}/reveal
         //   PUT    /api/v1/admin/settings/integrations/{integration}
         //   DELETE /api/v1/admin/settings/integrations/{integration}
         //
@@ -365,6 +366,9 @@ Route::prefix('v1')->group(function () {
             ->group(function () {
                 Route::get('/', [IntegrationSettingsController::class, 'index']);
                 Route::post('/{integration}/test', [IntegrationSettingsController::class, 'test']);
+                // POST, never GET: the password and the key must not appear in
+                // a URL, the browser history, or the server's access log.
+                Route::post('/{integration}/reveal', [IntegrationSettingsController::class, 'reveal']);
                 Route::put('/{integration}', [IntegrationSettingsController::class, 'update']);
                 Route::delete('/{integration}', [IntegrationSettingsController::class, 'destroy']);
             });

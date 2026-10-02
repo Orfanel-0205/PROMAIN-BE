@@ -97,4 +97,8 @@ class AuditActions
     // recorded; the values never are.
     public const INTEGRATION_UPDATED = 'integration.updated';
     public const INTEGRATION_RESET = 'integration.reset';
+    // A key shown in full after the password was re-entered, and a refused
+    // attempt (wrong password, or locked out). Recorded as warnings.
+    public const INTEGRATION_REVEALED = 'integration.revealed';
+    public const INTEGRATION_REVEAL_DENIED = 'integration.reveal_denied';
 }

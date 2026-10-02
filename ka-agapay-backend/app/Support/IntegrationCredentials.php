@@ -96,6 +96,16 @@ final class IntegrationCredentials
         ],
     ];
 
+    /**
+     * Secrets that cannot be viewed, even with the password.
+     *
+     * The 8x8 private key signs every video call. Nobody ever needs to read
+     * it -- only to replace it, by generating a new pair in the 8x8 console --
+     * and its fingerprint already identifies which key is in use. Showing a
+     * private key in a browser would add a way to leak it and no way to use it.
+     */
+    public const NOT_REVEALABLE = ['jaas.private_key'];
+
     /** Commands that write configuration to disk; saved keys stay out of it. */
     private const CONFIG_WRITING_COMMANDS = ['config:cache', 'optimize'];
 
@@ -119,6 +129,34 @@ final class IntegrationCredentials
     public static function fields(string $integration): array
     {
         return self::REGISTRY[$integration]['fields'] ?? [];
+    }
+
+    /**
+     * Whether a field may be shown in full after the password is re-entered.
+     *
+     * Only secrets: identifiers are already on screen. Never the ones listed
+     * in NOT_REVEALABLE.
+     */
+    public static function isRevealable(string $integration, string $field): bool
+    {
+        $meta = self::fields($integration)[$field] ?? null;
+
+        return $meta !== null
+            && $meta['secret']
+            && !in_array($integration . '.' . $field, self::NOT_REVEALABLE, true);
+    }
+
+    /**
+     * The value in effect for a field right now: saved here, or from .env.
+     *
+     * Read from config, which applyOverrides() has already updated for this
+     * request, so it is exactly what the service itself is using.
+     */
+    public static function currentValue(string $integration, string $field): string
+    {
+        $meta = self::fields($integration)[$field] ?? null;
+
+        return $meta === null ? '' : trim((string) config($meta['config'], ''));
     }
 
     /** Every config key the panel can set. @return array<int, string> */
@@ -322,6 +360,9 @@ final class IntegrationCredentials
                 $fields[$field] = [
                     'label'   => $meta['label'],
                     'secret'  => $meta['secret'],
+                    // Whether the page offers "View". Still checked again,
+                    // with the password, when a reveal is actually requested.
+                    'revealable' => self::isRevealable($integration, $field) && $source !== 'none',
                     'source'  => $source,
                     'display' => $meta['secret']
                         ? self::describeSecret($integration, $field, $effective)

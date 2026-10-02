@@ -150,6 +150,59 @@ class IntegrationCredentialsTest extends TestCase
         $this->assertContains('services.semaphore.sendername', IntegrationCredentials::configKeys());
     }
 
+    #[Test]
+    #[TestDox('only API keys can be viewed, and never the 8x8 private key')]
+    public function only_api_keys_are_revealable(): void
+    {
+        foreach (['gemini', 'semaphore', 'ocr_space'] as $integration) {
+            $this->assertTrue(
+                IntegrationCredentials::isRevealable($integration, 'api_key'),
+                "{$integration} API key should be viewable with the password."
+            );
+        }
+
+        // Signs every video call; replaced, never read. Its fingerprint
+        // already says which key is in use.
+        $this->assertFalse(IntegrationCredentials::isRevealable('jaas', 'private_key'));
+
+        // Identifiers are already on screen, so there is nothing to reveal.
+        $this->assertFalse(IntegrationCredentials::isRevealable('gemini', 'model'));
+        $this->assertFalse(IntegrationCredentials::isRevealable('semaphore', 'sendername'));
+
+        // Anything the registry does not know.
+        $this->assertFalse(IntegrationCredentials::isRevealable('gemini', 'password'));
+        $this->assertFalse(IntegrationCredentials::isRevealable('stripe', 'api_key'));
+    }
+
+    #[Test]
+    #[TestDox('viewing a key is a POST, inside the super-admin-only group')]
+    public function reveal_route_is_post_and_super_admin_only(): void
+    {
+        $routes = (string) file_get_contents(__DIR__ . '/../../routes/api.php');
+
+        // A GET would put the password in the URL, the browser history and
+        // the server's access log.
+        $this->assertStringContainsString(
+            "Route::post('/{integration}/reveal', [IntegrationSettingsController::class, 'reveal']);",
+            $routes
+        );
+        $this->assertDoesNotMatchRegularExpression("/Route::get\\('\\/\\{integration\\}\\/reveal'/", $routes);
+
+        // The group it sits in must allow super admins and nobody else.
+        $at = strpos($routes, "'/{integration}/reveal'");
+        $groupStart = strrpos(substr($routes, 0, $at), "Route::prefix('admin/settings/integrations')");
+
+        $this->assertNotFalse($groupStart, 'The reveal route is outside the integrations group.');
+
+        $group = substr($routes, $groupStart, $at - $groupStart);
+
+        $this->assertMatchesRegularExpression(
+            "/->middleware\\(\\['role:super_admin',/",
+            $group,
+            'The integrations group no longer restricts access to super_admin alone.'
+        );
+    }
+
     // ------------------------------------------------------------------
 
     private function applicationSourceExceptPanel(): string
