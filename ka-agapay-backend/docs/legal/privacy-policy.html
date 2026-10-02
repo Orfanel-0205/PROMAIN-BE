@@ -1,0 +1,199 @@
+<!doctype html>
+<!--
+  DRAFT -- NOT FOR PUBLICATION UNTIL THE DATA CONTROLLER APPROVES IT.
+
+  This is a privacy notice written on behalf of the Municipality of Malasiqui.
+  It makes legal commitments for them, so it is not served from anywhere yet.
+  Everything in [square brackets, highlighted] is a decision only the LGU or
+  its Data Protection Officer can make. Nothing else in it is a guess: each
+  statement about what the app collects and where it goes was checked against
+  the code and the live server on 2 October 2026.
+
+  Once approved, publishing it is one step: copy this file to
+  public/privacy.html in the backend, and Play Console gets
+  https://<your domain>/privacy.html as the privacy policy URL.
+
+  If the app changes what it collects, this has to change with it. The parts
+  most likely to drift are section 3 (who receives data) and section 2.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ka-Agapay Privacy Notice</title>
+<style>
+  :root {
+    --ink: #0f172a; --muted: #475569; --rule: #e2e8f0;
+    --accent: #0f766e; --todo-bg: #fef3c7; --todo-ink: #92400e;
+  }
+  body {
+    margin: 0; background: #f8fafc; color: var(--ink);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 36px 0 8px; padding-top: 16px; border-top: 1px solid var(--rule); }
+  .meta { color: var(--muted); margin: 0 0 24px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 15px; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
+  th { background: #f1f5f9; }
+  .todo { background: var(--todo-bg); color: var(--todo-ink); padding: 0 4px; border-radius: 4px; font-weight: 600; }
+  .note { background: #ecfeff; border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 6px; }
+  @media (max-width: 560px) { table, thead, tbody, tr, th, td { display: block; } th { display: none; } td { border: 0; padding: 4px 0; } tr { border-bottom: 1px solid var(--rule); padding: 8px 0; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Ka-Agapay Privacy Notice</h1>
+<p class="meta">
+  Effective <span class="todo">[date of approval]</span> ·
+  Version 1.0 · Applies to the Ka-Agapay mobile app and the RHU web system
+</p>
+
+<p>
+  Ka-Agapay is the health service system of the Rural Health Units of the
+  Municipality of Malasiqui, Pangasinan. This notice explains what personal
+  information it collects, why, who receives it, how long it is kept, and
+  the rights you have over it under the Data Privacy Act of 2012 (Republic Act
+  No. 10173).
+</p>
+
+<h2>1. Who is responsible for your data</h2>
+<p>
+  The <strong>personal information controller</strong> is
+  <span class="todo">[Municipality of Malasiqui / Municipal Health Office — legal name and address]</span>.
+</p>
+<p>
+  Data Protection Officer: <span class="todo">[name]</span>,
+  <span class="todo">[email]</span>, <span class="todo">[phone]</span>,
+  <span class="todo">[office address]</span>.
+  Contact the DPO for any request or concern in this notice.
+</p>
+
+<h2>2. What we collect</h2>
+<table>
+  <thead><tr><th>Information</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Account details:</strong> first and last name, mobile number, email address, password (stored only as a one-way hash), barangay</td>
+        <td>To create your account, confirm who you are, and connect you to your RHU.</td></tr>
+    <tr><td><strong>Profile:</strong> birth date, sex, civil status, address</td>
+        <td>Required before booking a consultation, so the RHU can identify you and keep an accurate record.</td></tr>
+    <tr><td><strong>Optional:</strong> guardian or emergency contact, PhilHealth number</td>
+        <td>Only if you provide them. PhilHealth numbers are shown masked in the app.</td></tr>
+    <tr><td><strong>Photo of a government ID</strong></td>
+        <td>To verify your identity when you register. Text is read from the image automatically (see section 3).</td></tr>
+    <tr><td><strong>Health information:</strong> your reason for consultation, symptoms, allergies, maintenance medications, consultation notes written by RHU staff, diagnoses, prescriptions, laboratory requests and results, and follow-up schedules</td>
+        <td>To provide care, keep your medical record, and arrange follow-ups. This is sensitive personal information under RA 10173.</td></tr>
+    <tr><td><strong>Messages, photos and voice notes</strong> you send to the Ka-Agapay assistant</td>
+        <td>To answer your question. See section 3 — these are processed by an AI service.</td></tr>
+    <tr><td><strong>Video and audio</strong> during a telemedicine consultation</td>
+        <td>To hold the consultation. Calls are <strong>not recorded</strong>.</td></tr>
+    <tr><td><strong>Device notification token</strong></td>
+        <td>To send you reminders and updates about your appointments.</td></tr>
+    <tr><td><strong>Basic activity records</strong> (for example, when you booked or joined a session)</td>
+        <td>For security, troubleshooting, and the RHU's service records.</td></tr>
+  </tbody>
+</table>
+<p>
+  The app asks for <strong>camera</strong> permission (to photograph your ID
+  or attach a photo) and <strong>microphone</strong> permission (for voice
+  notes and video consultations). It does <strong>not</strong> access your
+  location, contacts, or phone identifiers, and it does not use an
+  advertising ID or show advertising.
+</p>
+
+<h2>3. Who receives your data</h2>
+<p>
+  We share information only with services that help run Ka-Agapay, and only
+  what each needs. We do not sell personal information.
+</p>
+<table>
+  <thead><tr><th>Service</th><th>What it receives</th><th>Where</th></tr></thead>
+  <tbody>
+    <tr><td><strong>DigitalOcean</strong> (hosting)</td>
+        <td>All Ka-Agapay data is stored on its servers.</td>
+        <td>Singapore</td></tr>
+    <tr><td><strong>Google — Gemini API</strong></td>
+        <td>Messages, photos and voice notes you send to the assistant, and anonymous summary figures used by RHU staff. Patient records are not sent.</td>
+        <td>United States and other Google locations</td></tr>
+    <tr><td><strong>OCR.space</strong> (a9t9 software GmbH)</td>
+        <td>The ID photo you upload, so its text can be read.</td>
+        <td>Germany (EU) <span class="todo">[confirm in OCR.space terms]</span></td></tr>
+    <tr><td><strong>8x8, Inc. — Jitsi as a Service</strong></td>
+        <td>The live video and audio of a telemedicine call, and the display name of each participant. Not recorded.</td>
+        <td>United States <span class="todo">[confirm region in the 8x8 JaaS console]</span></td></tr>
+    <tr><td><strong>Semaphore</strong></td>
+        <td>Your mobile number and the text of appointment and follow-up messages.</td>
+        <td>Philippines</td></tr>
+    <tr><td><strong>Expo</strong> and <strong>Google Firebase Cloud Messaging</strong></td>
+        <td>Your device notification token and the notification text.</td>
+        <td>United States</td></tr>
+  </tbody>
+</table>
+<p class="note">
+  Several of these services are outside the Philippines. Transfers are made to
+  provide the service you asked for and are covered by
+  <span class="todo">[the LGU's data sharing / outsourcing agreements — confirm each is in place]</span>.
+  Do not send the assistant anything you would not want processed by an AI
+  service; for medical concerns, book a consultation with the RHU.
+</p>
+
+<h2>4. How long we keep it</h2>
+<p>
+  Medical records are kept for <span class="todo">[retention period required by DOH / applicable rules]</span>
+  after your last consultation, because the RHU is required to keep them.
+  Account and profile details are kept while your account is active and for
+  <span class="todo">[period]</span> after it is closed. Messages to the
+  assistant are kept for <span class="todo">[period]</span>. Server backups
+  are kept for <span class="todo">[period — currently a rolling set of daily backups]</span>.
+</p>
+
+<h2>5. Closing your account</h2>
+<p>
+  You may ask for your account to be closed and your personal information
+  deleted by contacting the DPO (section 1)
+  <span class="todo">[and, once added, from Profile → Delete account in the app]</span>.
+  We will confirm your identity first. Health records that the law requires
+  the RHU to keep will be retained for the required period and then deleted;
+  everything else will be deleted or anonymised within
+  <span class="todo">[period, e.g. 30 days]</span>.
+</p>
+
+<h2>6. Your rights</h2>
+<p>Under RA 10173 you have the right to:</p>
+<ul>
+  <li>be informed of how your data is processed (this notice);</li>
+  <li>access the personal information we hold about you;</li>
+  <li>correct inaccurate or incomplete information;</li>
+  <li>object to processing, or have it suspended, withdrawn, blocked or erased where the law allows;</li>
+  <li>obtain a copy of your data in a commonly used electronic format;</li>
+  <li>be compensated for damages from inaccurate, incomplete, outdated, false, unlawfully obtained or unauthorised use of personal data; and</li>
+  <li>file a complaint with the National Privacy Commission (<a href="https://privacy.gov.ph">privacy.gov.ph</a>).</li>
+</ul>
+<p>To use any of these, contact the DPO.</p>
+
+<h2>7. How we protect it</h2>
+<p>
+  All connections use HTTPS encryption. Staff see only what their role allows,
+  and staff in one RHU cannot see another RHU's records unless their role
+  covers both. Sign-in sessions expire. Data is backed up daily and restores
+  are tested regularly.
+</p>
+
+<h2>8. Children</h2>
+<p>
+  A parent or guardian should create and manage the account of a child under
+  18, and gives consent on the child's behalf.
+  <span class="todo">[Confirm the LGU's rule for minors.]</span>
+</p>
+
+<h2>9. Changes to this notice</h2>
+<p>
+  If we change how we use personal information, we will update this notice
+  and its effective date, and tell you in the app before the change applies.
+</p>
+
+</main>
+</body>
+</html>
