@@ -654,109 +654,49 @@ class AuthController extends Controller
         ]);
     }
 
+    /*
+     * Self-service account recovery is not offered. These three endpoints say so.
+     *
+     * They were written for an OTP flow that was never finished. No client calls
+     * them -- not the mobile app, not the admin -- and the otp_code column they
+     * read and write does not exist in the production database, so for a real
+     * account forgot-password and resend-otp failed with a server error while
+     * telling the code it had "sent" an OTP, and reset-password could never
+     * succeed. Nothing was ever texted.
+     *
+     * The one live effect was a privacy leak. An unknown number got "Account not
+     * found" and a registered one got an error, so anyone could learn whether a
+     * given mobile number belongs to a registered patient of the RHU.
+     *
+     * Passwords are reset by RHU staff from the admin Users page, which texts the
+     * account holder that it changed (AdminUserController::update). That is the
+     * real process, so this answers every request the same way, without looking
+     * the account up. Building self-service recovery properly needs SMS delivery,
+     * an attempt limit per code and a per-number SMS cap so the endpoint cannot be
+     * used to drain the prepaid Semaphore credit -- a feature, not a fix.
+     */
     public function resendOtp(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'mobile_number' => ['nullable', 'string', 'max:30'],
-            'email' => ['nullable', 'email', 'max:150'],
-        ]);
-
-        $user = $this->findUserByLogin(
-            $validated['mobile_number'] ?? $validated['email'] ?? ''
-        );
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Account not found.',
-            ], 404);
-        }
-
-        $otp = (string) random_int(100000, 999999);
-
-        $user->update([
-            'otp_code' => $otp,
-            'otp_expires_at' => now()->addMinutes(10),
-        ]);
-
-        return response()->json([
-            'message' => 'OTP sent successfully.',
-            'otp_expires_at' => optional($user->fresh()->otp_expires_at)->toISOString(),
-        ]);
+        return $this->recoveryByStaffOnly();
     }
 
     public function forgotPassword(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'mobile_number' => ['nullable', 'string', 'max:30'],
-            'email' => ['nullable', 'email', 'max:150'],
-        ]);
-
-        $user = $this->findUserByLogin(
-            $validated['mobile_number'] ?? $validated['email'] ?? ''
-        );
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Account not found.',
-            ], 404);
-        }
-
-        $otp = (string) random_int(100000, 999999);
-
-        $user->update([
-            'otp_code' => $otp,
-            'otp_expires_at' => now()->addMinutes(10),
-        ]);
-
-        return response()->json([
-            'message' => 'Password reset OTP sent successfully.',
-            'otp_expires_at' => optional($user->fresh()->otp_expires_at)->toISOString(),
-        ]);
+        return $this->recoveryByStaffOnly();
     }
 
     public function resetPassword(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'mobile_number' => ['nullable', 'string', 'max:30'],
-            'email' => ['nullable', 'email', 'max:150'],
-            'otp_code' => ['required', 'string', 'max:20'],
-            'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()->symbols()],
-            'password_confirmation' => ['required'],
-        ]);
+        return $this->recoveryByStaffOnly();
+    }
 
-        $user = $this->findUserByLogin(
-            $validated['mobile_number'] ?? $validated['email'] ?? ''
-        );
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Account not found.',
-            ], 404);
-        }
-
-        if ((string) $user->otp_code !== (string) $validated['otp_code']) {
-            return response()->json([
-                'message' => 'Invalid OTP code.',
-            ], 422);
-        }
-
-        if ($user->otp_expires_at && $user->otp_expires_at->isPast()) {
-            return response()->json([
-                'message' => 'OTP code has expired.',
-            ], 422);
-        }
-
-        $user->update([
-            'password' => Hash::make($validated['password']),
-            'otp_code' => null,
-            'otp_expires_at' => null,
-            'failed_login_count' => 0,
-            'locked_until' => null,
-        ]);
-
+    /** One answer for every recovery request, whoever it names. */
+    private function recoveryByStaffOnly(): JsonResponse
+    {
         return response()->json([
-            'message' => 'Password reset successfully.',
-        ]);
+            'message' => 'Password reset is done by RHU staff. Please visit or call your '
+                . 'Rural Health Unit and they will set a new password for you.',
+        ], 410);
     }
 
     // =========================================================================
