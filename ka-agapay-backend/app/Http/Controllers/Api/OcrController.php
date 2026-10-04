@@ -769,14 +769,16 @@ class OcrController extends Controller
     }
 
     /**
-     * Read a page until two reads agree, and keep the most complete one.
+     * Read a page three times and keep the most complete read.
      *
      * OCR.space does not always return the whole page. Measured on a printed
-     * SOAP form read five times: three reads had all ten lines, two came back
-     * with the top four lines missing -- on either engine, with no error. A
-     * single read therefore loses the Subjective and the vital signs about a
-     * third of the time, silently. Up to three reads, alternating engines,
-     * stopping as soon as two have the same number of lines.
+     * SOAP form, about a third of reads came back with the top four lines
+     * missing -- on either engine, with or without its scale and orientation
+     * options, and with no error. A single read therefore silently loses the
+     * Subjective and the vital signs about a third of the time; the longest
+     * of three is complete unless all three were cut (about 1 in 25). Two
+     * partial reads also agree with each other, so stopping early when two
+     * reads match does not work -- that was tried first.
      */
     private function runOcrThorough(string $fullPath, string $mimeType): array
     {
@@ -790,23 +792,13 @@ class OcrController extends Controller
 
         try {
             $best = ['text' => '', 'confidence' => 0, 'raw' => ['provider' => 'ocr.space']];
-            $seenLineCounts = [];
 
             foreach ([self::OCR_PRIMARY_ENGINE, self::OCR_FALLBACK_ENGINE, self::OCR_PRIMARY_ENGINE] as $engine) {
                 $result = $this->callOcrSpace($ocrPath, $ocrMime, (string) $apiKey, $engine);
-                $text = trim((string) ($result['text'] ?? ''));
 
-                if (strlen($text) > strlen(trim((string) $best['text']))) {
+                if (strlen(trim((string) ($result['text'] ?? ''))) > strlen(trim((string) $best['text']))) {
                     $best = $result;
                 }
-
-                $lines = $text === '' ? 0 : count(preg_split('/\R/u', $text) ?: []);
-
-                if ($lines > 0 && in_array($lines, $seenLineCounts, true)) {
-                    break;
-                }
-
-                $seenLineCounts[] = $lines;
             }
 
             return $best;
