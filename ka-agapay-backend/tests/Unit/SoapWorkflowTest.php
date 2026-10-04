@@ -72,14 +72,38 @@ class SoapWorkflowTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('only Doctor, MHO and Super Admin can scan a paper SOAP, as with editing one')]
-    public function scan_is_for_soap_editors(): void
+    #[TestDox('nurses and midwives write, finish and scan SOAPs alongside doctors, MHOs and the Super Admin')]
+    public function soap_writers(): void
     {
         $routes = (string) file_get_contents(__DIR__ . '/../../routes/api.php');
-        $group = $this->method($routes, "Route::middleware('role:doctor,mho,super_admin')", 900);
+        $group = $this->method($routes, "Route::middleware('role:doctor,mho,super_admin,nurse,midwife')", 900);
 
+        $this->assertStringContainsString("Route::put('/consultations/{id}/soap'", $group);
+        $this->assertStringContainsString("Route::patch('/consultations/{id}/complete'", $group);
         $this->assertStringContainsString("Route::post('/consultations/{id}/scan-soap', [OcrController::class, 'scanSoap'])", $group);
         $this->assertStringContainsString("->middleware('throttle:20,1')", $group);
+    }
+
+    #[Test]
+    #[TestDox('a SOAP is written only by its own RHU, an MHO or the Super Admin')]
+    public function soap_writes_stay_in_their_rhu(): void
+    {
+        $controller = $this->source('Http/Controllers/Api/ConsultationController.php');
+
+        foreach (['public function updateSoap(', 'public function complete('] as $action) {
+            $body = $this->method($controller, $action, 400);
+            $this->assertStringContainsString('$this->assertCanWriteSoap($request, $consultation);', $body, "{$action} skips the RHU check.");
+        }
+
+        $scan = $this->method($this->source('Http/Controllers/Api/OcrController.php'), 'public function scanSoap(', 2500);
+        $this->assertStringContainsString('Rhu::canAccessRhu(', $scan, 'The SOAP scan skips the RHU check.');
+
+        // Issuing a prescription stays with Doctor / MHO / Super Admin.
+        $this->assertStringNotContainsString("'nurse'", (string) substr(
+            $this->source('Http/Controllers/Api/PrescriptionController.php'),
+            (int) strpos($this->source('Http/Controllers/Api/PrescriptionController.php'), 'private const PRESCRIBER_ROLES'),
+            200
+        ));
     }
 
     #[Test]

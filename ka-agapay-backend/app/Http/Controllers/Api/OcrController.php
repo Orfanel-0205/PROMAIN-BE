@@ -402,9 +402,19 @@ class OcrController extends Controller
             'soap_file.max' => 'That file is over 10 MB. Take the photo again at a lower size.',
         ]);
 
-        $consultation = DB::table('consultations')->where('id', $consultationId)->first(['id', 'status']);
+        $consultation = DB::table('consultations')->where('id', $consultationId)->first(['id', 'status', 'rhu_id']);
 
         abort_unless($consultation, 404, 'Consultation not found.');
+
+        // Same rule as writing the SOAP: own RHU, or an MHO / the Super Admin.
+        abort_unless(
+            \App\Support\Rhu::canAccessRhu(
+                $request->user(),
+                ConsultationController::writableRhuId($consultation->rhu_id ? (int) $consultation->rhu_id : null)
+            ),
+            403,
+            "This consultation belongs to another RHU. Only that RHU's staff, an MHO or the Super Admin can write its SOAP."
+        );
         abort_if(
             $consultation->status === 'completed',
             422,

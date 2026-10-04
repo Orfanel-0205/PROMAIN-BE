@@ -236,9 +236,37 @@ class ConsultationController extends Controller
         return $this->updateSoap($request, $id);
     }
 
+    /**
+     * The RHU whose staff may write this consultation's SOAP.
+     *
+     * Rows with no RHU, or an RHU that no longer exists, count as the default
+     * RHU -- the same rule the consultation list applies, so nobody can write
+     * a record they could not list.
+     */
+    public static function writableRhuId(?int $rhuId): int
+    {
+        return $rhuId !== null && in_array($rhuId, Rhu::ids(), true) ? $rhuId : Rhu::defaultId();
+    }
+
+    /**
+     * Nurses, midwives and doctors write only their own RHU's SOAPs; the
+     * Super Admin and MHOs cover every RHU. Writing was opened to nurses and
+     * midwives, so a link to another RHU's consultation must not be enough.
+     */
+    private function assertCanWriteSoap(Request $request, Consultation $consultation): void
+    {
+        abort_unless(
+            Rhu::canAccessRhu($request->user(), self::writableRhuId($consultation->rhu_id ? (int) $consultation->rhu_id : null)),
+            403,
+            "This consultation belongs to another RHU. Only that RHU's staff, an MHO or the Super Admin can write its SOAP."
+        );
+    }
+
     public function updateSoap(Request $request, int $id): JsonResponse
     {
         $consultation = Consultation::with('appointment')->findOrFail($id);
+
+        $this->assertCanWriteSoap($request, $consultation);
 
         if ($consultation->status === 'completed') {
             return response()->json([
@@ -315,6 +343,8 @@ class ConsultationController extends Controller
     public function complete(Request $request, int $id): JsonResponse
     {
         $consultation = Consultation::with('appointment')->findOrFail($id);
+
+        $this->assertCanWriteSoap($request, $consultation);
 
         $this->ensureFirstAttended($consultation, $request);
 

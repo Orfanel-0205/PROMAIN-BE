@@ -578,8 +578,12 @@ Route::prefix('v1')->group(function () {
                 Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
             });
 
-        // Consultation write actions that finalize clinical records — doctor/MHO only.
-        Route::middleware('role:doctor,mho,super_admin')
+        // Writing and finishing a SOAP: the clinical staff who see the patient.
+        // Nurses and midwives document; finishing a SOAP tells the MHO to
+        // issue the e-prescription, which only a Doctor, MHO or Super Admin
+        // can do (PrescriptionController). Each writes only their own RHU's
+        // consultations (ConsultationController::assertCanWriteSoap).
+        Route::middleware('role:doctor,mho,super_admin,nurse,midwife')
             ->prefix('admin')
             ->group(function () {
                 Route::put('/consultations/{id}/soap',       [ConsultationController::class, 'updateSoap']);
