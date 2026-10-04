@@ -109,15 +109,26 @@ Route::prefix('v1')->group(function () {
     });
 
     // ---------------------------------------------------------------------
-    // ACCOUNT RECOVERY — 3/min per account, 15/min per IP.
-    // Tighter because each accepted request can send a real (billed) SMS.
+    // FORGOT PASSWORD — asking for a code: 3/min per account, 15/min and
+    // 30/day per IP. Tighter because each accepted request can send a real
+    // (billed) SMS. See AuthController::startPasswordReset().
     // ---------------------------------------------------------------------
 
     Route::middleware('throttle:auth-recovery')->group(function () {
 
-        Route::post('/resend-otp',      [AuthController::class, 'resendOtp']);
-        Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
-        Route::post('/reset-password',  [AuthController::class, 'resetPassword']);
+        Route::post('/resend-otp',            [AuthController::class, 'resendOtp']);
+        Route::post('/forgot-password',       [AuthController::class, 'forgotPassword']);
+        Route::post('/admin/forgot-password', [AuthController::class, 'adminForgotPassword']);
+    });
+
+    // Entering the code with the new password, and resending: keyed on the
+    // challenge, like the sign-in codes.
+    Route::middleware('throttle:auth-code')->group(function () {
+
+        Route::post('/reset-password',               [AuthController::class, 'resetPassword']);
+        Route::post('/forgot-password/resend',       [AuthController::class, 'resendResetCode']);
+        Route::post('/admin/reset-password',         [AuthController::class, 'adminResetPassword']);
+        Route::post('/admin/forgot-password/resend', [AuthController::class, 'adminResendResetCode']);
     });
 
     // ---------------------------------------------------------------------

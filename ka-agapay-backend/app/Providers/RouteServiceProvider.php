@@ -115,7 +115,8 @@ class RouteServiceProvider extends ServiceProvider
         // enumeration and Semaphore spend.
         RateLimiter::for('auth-recovery', function (Request $request) use ($tooMany) {
             $identifier = Str::lower(trim((string) (
-                $request->input('mobile_number')
+                $request->input('login')
+                ?? $request->input('mobile_number')
                 ?? $request->input('email')
                 ?? ''
             )));
@@ -123,6 +124,11 @@ class RouteServiceProvider extends ServiceProvider
             return [
                 Limit::perMinute(3)->by('recover:' . $identifier . '|' . $request->ip())->response($tooMany),
                 Limit::perMinute(15)->by('recover-ip:' . $request->ip())->response($tooMany),
+
+                // Forgot password sends a code without a password, so walking
+                // a list of numbers would spend one credit per account. Thirty
+                // a day covers an RHU's shared connection on a busy day.
+                Limit::perDay(30)->by('recover-day:' . $request->ip())->response($tooMany),
             ];
         });
 

@@ -5,6 +5,7 @@ namespace App\Services\Auth;
 
 use App\Models\User;
 use App\Models\VerificationCode;
+use App\Services\Notification\AccountMailService;
 use App\Services\Notification\AccountSmsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
@@ -36,12 +37,34 @@ use Illuminate\Support\Str;
  *   Bound to its purpose. A code issued to view an API key cannot complete a
  *   login, and the reverse, because verify() checks the purpose it was
  *   issued for.
+ *
+ * PASSWORD RESET IS THE EXCEPTION TO "AFTER THE PASSWORD"
+ * -------------------------------------------------------
+ * Someone who forgot their password has nothing else to prove, so a reset
+ * code is sent on request. Three things keep that from being abused:
+ *
+ *   The same per-account caps (five an hour, ten a day, across every
+ *   purpose), and a per-IP daily limit on reset requests in the routes, so
+ *   the SMS credit cannot be drained one account at a time.
+ *
+ *   It also goes by email when the account has a real address, so a reset
+ *   nobody asked for is seen in two places.
+ *
+ *   A request for a number with no account gets a stand-in (issueDecoy):
+ *   a stored challenge with no account and no sent code that counts attempts,
+ *   resends and waits exactly like a real one. Nothing the reset page says
+ *   reveals whether a number belongs to a patient of the RHU.
  */
 final class VerificationCodes
 {
     public const PURPOSE_ADMIN_LOGIN = 'admin_login';
     public const PURPOSE_RESIDENT_LOGIN = 'resident_login';
     public const PURPOSE_REVEAL_KEY = 'reveal_key';
+    public const PURPOSE_ADMIN_RESET = 'admin_password_reset';
+    public const PURPOSE_RESIDENT_RESET = 'resident_password_reset';
+
+    public const CHANNEL_SMS = 'sms';
+    public const CHANNEL_EMAIL = 'email';
 
     public const TTL_SECONDS = 300;
     public const MAX_ATTEMPTS = 5;
@@ -57,23 +80,42 @@ final class VerificationCodes
      */
     public const MAX_CODES_PER_DAY = 10;
 
-    public function __construct(private readonly AccountSmsService $sms) {}
+    /** How long a stand-in takes to answer, so it is not told apart by speed. */
+    private const DECOY_DELAY_MS = [700, 1600];
+
+    public function __construct(
+        private readonly AccountSmsService $sms,
+        private readonly AccountMailService $mail,
+    ) {}
 
     /**
-     * Create a challenge and text its code to the account holder.
+     * Create a challenge and send its code to the account holder.
+     *
+     * By SMS unless other channels are asked for. With several, the code goes
+     * to every one the account can receive, and counts as sent if any of them
+     * took it.
      *
      * @param array<string, mixed> $context what the code unlocks
-     * @return array{status:string, challenge?:string, masked_mobile?:string, expires_in?:int, resend_after?:int}
-     *   status is one of: sent, no_mobile, send_failed, too_many
+     * @param array<int, string> $channels CHANNEL_SMS and/or CHANNEL_EMAIL
+     * @return array{status:string, challenge?:string, masked_mobile?:string, masked_email?:?string, channels?:array<int,string>, expires_in?:int, resend_after?:int}
+     *   status is one of: sent, no_mobile (nowhere to send it), send_failed, too_many
      */
-    public function issue(User $user, string $purpose, array $context, Request $request): array
+    public function issue(User $user, string $purpose, array $context, Request $request, array $channels = [self::CHANNEL_SMS]): array
     {
-        if (!$this->sms->canReceiveCodes($user)) {
+        $available = $this->reachable($user, $channels);
+
+        if ($available === []) {
             return ['status' => 'no_mobile'];
         }
 
         if ($this->overSendingCap($user)) {
             return ['status' => 'too_many'];
+        }
+
+        // Remembered for resends. Left out for SMS-only codes, so their rows
+        // are exactly what they were before email existed.
+        if ($available !== [self::CHANNEL_SMS]) {
+            $context['channels'] = $available;
         }
 
         // One live challenge per account and purpose: a new one retires the old.
@@ -100,7 +142,9 @@ final class VerificationCodes
             'user_agent'   => Str::limit((string) $request->userAgent(), 250, ''),
         ]);
 
-        if (!$this->deliver($user, $code)) {
+        $delivered = $this->deliver($user, $code, $purpose, $available);
+
+        if ($delivered === []) {
             // Nothing was sent, so nothing can be entered: retire it now.
             $row->update(['consumed_at' => now()]);
 
@@ -111,8 +155,48 @@ final class VerificationCodes
             'status'        => 'sent',
             'challenge'     => $challenge,
             'masked_mobile' => (string) $this->sms->maskedMobile($user),
+            'masked_email'  => in_array(self::CHANNEL_EMAIL, $delivered, true) ? $this->mail->maskedEmail($user) : null,
+            'channels'      => $delivered,
             'expires_in'    => self::TTL_SECONDS,
             'resend_after'  => self::RESEND_AFTER_SECONDS,
+        ];
+    }
+
+    /**
+     * A challenge for a request that names no account.
+     *
+     * Stored like a real one, with no account and the hash of a code that is
+     * never sent or kept, so nobody can enter it. Wrong-code counts, resends,
+     * the wait between them and expiry all behave exactly as for a real
+     * challenge, and the answer takes about as long as a real send.
+     *
+     * @return array{status:string, challenge:string, expires_in:int, resend_after:int}
+     */
+    public function issueDecoy(string $purpose, Request $request): array
+    {
+        $challenge = Str::random(48);
+
+        VerificationCode::query()->create([
+            'challenge'    => $challenge,
+            'user_id'      => null,
+            'purpose'      => $purpose,
+            'code_hash'    => self::hashCode($challenge, self::generateCode()),
+            'context'      => null,
+            'expires_at'   => now()->addSeconds(self::TTL_SECONDS),
+            'attempts'     => 0,
+            'sends'        => 1,
+            'last_sent_at' => now(),
+            'ip_address'   => $request->ip(),
+            'user_agent'   => Str::limit((string) $request->userAgent(), 250, ''),
+        ]);
+
+        $this->pause();
+
+        return [
+            'status'       => 'sent',
+            'challenge'    => $challenge,
+            'expires_in'   => self::TTL_SECONDS,
+            'resend_after' => self::RESEND_AFTER_SECONDS,
         ];
     }
 
@@ -159,6 +243,12 @@ final class VerificationCodes
         // Consume before returning, so the same code cannot be replayed.
         $row->update(['consumed_at' => now()]);
 
+        // A stand-in has no account to hand back. Its code was never known,
+        // so this cannot happen -- but if it did, it must not count as proof.
+        if ($row->user === null) {
+            return ['status' => 'unknown'];
+        }
+
         return [
             'status'  => 'ok',
             'user'    => $row->user,
@@ -194,8 +284,10 @@ final class VerificationCodes
         }
 
         $user = $row->user;
+        $isDecoy = $row->user_id === null;
 
-        if ($user === null) {
+        if ($user === null && !$isDecoy) {
+            // The account was deleted since the code was sent.
             return ['status' => 'unknown'];
         }
 
@@ -209,7 +301,15 @@ final class VerificationCodes
             'expires_at'   => now()->addSeconds(self::TTL_SECONDS),
         ]);
 
-        if (!$this->deliver($user, $code)) {
+        if ($isDecoy) {
+            $this->pause();
+
+            return ['status' => 'sent', 'masked_mobile' => '', 'expires_in' => self::TTL_SECONDS];
+        }
+
+        $channels = $this->reachable($user, (array) ($row->context['channels'] ?? [self::CHANNEL_SMS]));
+
+        if ($this->deliver($user, $code, $row->purpose, $channels) === []) {
             return ['status' => 'send_failed'];
         }
 
@@ -218,6 +318,11 @@ final class VerificationCodes
             'masked_mobile' => (string) $this->sms->maskedMobile($user),
             'expires_in'    => self::TTL_SECONDS,
         ];
+    }
+
+    public static function isPasswordReset(string $purpose): bool
+    {
+        return $purpose === self::PURPOSE_ADMIN_RESET || $purpose === self::PURPOSE_RESIDENT_RESET;
     }
 
     /** Retire every pending code for an account, e.g. after a password reset. */
@@ -278,16 +383,63 @@ final class VerificationCodes
     }
 
     /**
-     * True only when Semaphore accepted the message.
+     * The requested channels this account can actually be reached on.
      *
-     * SmsService marks a send "sent" when Semaphore returns a message id, and
-     * records anything else -- a missing key, a refusal -- as "failed" rather
-     * than throwing, so the status is the only reliable signal.
+     * @param array<int, string> $channels
+     * @return array<int, string>
      */
-    private function deliver(User $user, string $code): bool
+    private function reachable(User $user, array $channels): array
     {
-        $log = $this->sms->sendVerificationCode($user, $code);
+        $reachable = [];
 
-        return $log !== null && (string) $log->status === 'sent';
+        if (in_array(self::CHANNEL_SMS, $channels, true) && $this->sms->canReceiveCodes($user)) {
+            $reachable[] = self::CHANNEL_SMS;
+        }
+
+        if (in_array(self::CHANNEL_EMAIL, $channels, true) && $this->mail->canReceive($user)) {
+            $reachable[] = self::CHANNEL_EMAIL;
+        }
+
+        return $reachable;
+    }
+
+    /**
+     * Send the code on each channel; return the ones that took it.
+     *
+     * SMS counts only when Semaphore accepted the message. SmsService marks a
+     * send "sent" when Semaphore returns a message id, and records anything
+     * else -- a missing key, a refusal -- as "failed" rather than throwing, so
+     * the status is the only reliable signal.
+     *
+     * @param array<int, string> $channels
+     * @return array<int, string>
+     */
+    private function deliver(User $user, string $code, string $purpose, array $channels): array
+    {
+        $reset = self::isPasswordReset($purpose);
+        $delivered = [];
+
+        if (in_array(self::CHANNEL_SMS, $channels, true)) {
+            $log = $reset
+                ? $this->sms->sendPasswordResetCode($user, $code)
+                : $this->sms->sendVerificationCode($user, $code);
+
+            if ($log !== null && (string) $log->status === 'sent') {
+                $delivered[] = self::CHANNEL_SMS;
+            }
+        }
+
+        // Only reset codes go by email so far; every other code is SMS-only.
+        if ($reset && in_array(self::CHANNEL_EMAIL, $channels, true) && $this->mail->sendPasswordResetCode($user, $code)) {
+            $delivered[] = self::CHANNEL_EMAIL;
+        }
+
+        return $delivered;
+    }
+
+    /** A real send takes about a second; a stand-in waits as long. */
+    private function pause(): void
+    {
+        usleep(random_int(self::DECOY_DELAY_MS[0], self::DECOY_DELAY_MS[1]) * 1000);
     }
 }

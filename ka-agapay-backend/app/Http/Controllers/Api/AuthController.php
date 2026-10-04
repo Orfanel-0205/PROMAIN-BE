@@ -10,6 +10,9 @@ use App\Models\User;
 use App\Models\UserRole;
 use App\Services\BiometricAuthService;
 use App\Services\Auth\VerificationCodes;
+use App\Services\Notification\AccountMailService;
+use App\Services\Notification\AccountSmsService;
+use App\Services\PasswordPolicyService;
 use App\Support\AppSettings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -902,48 +905,279 @@ class AuthController extends Controller
     }
 
     /*
-     * Self-service account recovery is not offered. These three endpoints say so.
-     *
-     * They were written for an OTP flow that was never finished. No client calls
-     * them -- not the mobile app, not the admin -- and the otp_code column they
-     * read and write does not exist in the production database, so for a real
-     * account forgot-password and resend-otp failed with a server error while
-     * telling the code it had "sent" an OTP, and reset-password could never
-     * succeed. Nothing was ever texted.
-     *
-     * The one live effect was a privacy leak. An unknown number got "Account not
-     * found" and a registered one got an error, so anyone could learn whether a
-     * given mobile number belongs to a registered patient of the RHU.
-     *
-     * Passwords are reset by RHU staff from the admin Users page, which texts the
-     * account holder that it changed (AdminUserController::update). That is the
-     * real process, so this answers every request the same way, without looking
-     * the account up. Building self-service recovery properly needs SMS delivery,
-     * an attempt limit per code and a per-number SMS cap so the endpoint cannot be
-     * used to drain the prepaid Semaphore credit -- a feature, not a fix.
+     * resend-otp belonged to an OTP flow that was never finished: the otp_code
+     * column it used does not exist in production, and no client calls it. It
+     * stays closed. Forgot password, below, replaced the rest of that flow.
      */
     public function resendOtp(Request $request): JsonResponse
     {
-        return $this->recoveryByStaffOnly();
-    }
-
-    public function forgotPassword(Request $request): JsonResponse
-    {
-        return $this->recoveryByStaffOnly();
-    }
-
-    public function resetPassword(Request $request): JsonResponse
-    {
-        return $this->recoveryByStaffOnly();
-    }
-
-    /** One answer for every recovery request, whoever it names. */
-    private function recoveryByStaffOnly(): JsonResponse
-    {
         return response()->json([
-            'message' => 'Password reset is done by RHU staff. Please visit or call your '
-                . 'Rural Health Unit and they will set a new password for you.',
+            'message' => 'This step is no longer used. To reset a forgotten password, use "Forgot password?" on the sign-in screen.',
         ], 410);
+    }
+
+    // =========================================================================
+    // FORGOT PASSWORD
+    //   POST /api/v1/forgot-password               { login }      residents
+    //   POST /api/v1/forgot-password/resend        { challenge }
+    //   POST /api/v1/reset-password                { challenge, code, password, password_confirmation }
+    //   POST /api/v1/admin/forgot-password         { login }      RHU staff
+    //   POST /api/v1/admin/forgot-password/resend  { challenge }
+    //   POST /api/v1/admin/reset-password          { challenge, code, password, password_confirmation }
+    // =========================================================================
+    //
+    // The person types their mobile number or email. A six-digit code goes to
+    // the account's mobile number, and to its email when it has a real one;
+    // the code and a new password together set the password.
+    //
+    // NOTHING HERE SAYS WHETHER AN ACCOUNT EXISTS
+    // An earlier version answered an unknown number with "Account not found",
+    // which let anyone check whether a given number belongs to a patient of
+    // the RHU. Now every request gets the same answer and a challenge. When no
+    // account matches -- or it is the wrong kind, inactive, over its code
+    // limit, or the text could not be sent -- the challenge is a stand-in
+    // (VerificationCodes::issueDecoy) that behaves like a real one in every
+    // later step. The reason is written to the activity log, not the reply.
+    //
+    // A staff number on the resident app, or a resident's on the admin page,
+    // is treated as no match: each sign-in screen resets only its own accounts.
+    //
+    // AFTER A RESET
+    // Every signed-in device is signed out, pending codes are retired, the
+    // wrong-password check is cleared, and the account holder is told by SMS
+    // and email. Viewing API keys pauses for a day (password_reset_at), so a
+    // super admin whose phone was taken over does not hand over the keys too.
+
+    public function forgotPassword(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->startPasswordReset($request, $codes, 'resident');
+    }
+
+    public function adminForgotPassword(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->startPasswordReset($request, $codes, 'admin');
+    }
+
+    public function resetPassword(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->finishPasswordReset($request, $codes, 'resident');
+    }
+
+    public function adminResetPassword(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->finishPasswordReset($request, $codes, 'admin');
+    }
+
+    public function resendResetCode(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->resendPasswordResetCode($request, $codes, 'resident');
+    }
+
+    public function adminResendResetCode(Request $request, VerificationCodes $codes): JsonResponse
+    {
+        return $this->resendPasswordResetCode($request, $codes, 'admin');
+    }
+
+    private function startPasswordReset(Request $request, VerificationCodes $codes, string $audience): JsonResponse
+    {
+        $validated = $request->validate([
+            'login' => ['nullable', 'string', 'max:150'],
+            'mobile_number' => ['nullable', 'string', 'max:30'],
+            'email' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        $login = trim((string) ($validated['login'] ?? $validated['mobile_number'] ?? $validated['email'] ?? ''));
+
+        if ($login === '') {
+            return response()->json([
+                'message' => 'Enter the mobile number or email on your account.',
+                'errors' => ['login' => ['Enter the mobile number or email on your account.']],
+            ], 422);
+        }
+
+        $purpose = $this->resetPurpose($audience);
+        $user = $this->findUserByLogin($login);
+        $reason = $user === null ? 'no_account' : $this->resetRefusal($user, $audience);
+
+        $issued = null;
+
+        if ($reason === null) {
+            $issued = $codes->issue(
+                $user,
+                $purpose,
+                [],
+                $request,
+                [VerificationCodes::CHANNEL_SMS, VerificationCodes::CHANNEL_EMAIL],
+            );
+
+            if ($issued['status'] === 'sent') {
+                $this->logActivity($user, 'PASSWORD_RESET_CODE_SENT', [
+                    'audience' => $audience,
+                    'channels' => $issued['channels'] ?? [],
+                ], $request);
+            } else {
+                $reason = $issued['status'];
+                $issued = null;
+            }
+        }
+
+        if ($issued === null) {
+            // Recorded against the account when there is one, so staff can see
+            // why someone says the code never came.
+            if ($user !== null) {
+                $this->logActivity($user, 'PASSWORD_RESET_CODE_SKIPPED', [
+                    'audience' => $audience,
+                    'reason' => $reason,
+                ], $request);
+            }
+
+            $issued = $codes->issueDecoy($purpose, $request);
+        }
+
+        return response()->json([
+            'message' => 'If an account uses that number or email, we sent it a 6-digit code: by text to its mobile number, '
+                . 'and by email if it has one. It expires in 5 minutes.',
+            'challenge' => $issued['challenge'],
+            'expires_in' => $issued['expires_in'],
+            'resend_after' => $issued['resend_after'],
+        ]);
+    }
+
+    private function finishPasswordReset(Request $request, VerificationCodes $codes, string $audience): JsonResponse
+    {
+        // The new password is checked first, so a weak one costs no code attempt.
+        $validated = $request->validate([
+            'challenge' => ['required', 'string', 'max:64'],
+            'code' => ['required', 'string', 'max:12'],
+            'password' => ['required', 'string', 'confirmed', PasswordPolicyService::standard()],
+            'password_confirmation' => ['required', 'string'],
+        ]);
+
+        $result = $codes->verify($validated['challenge'], $this->resetPurpose($audience), $validated['code']);
+
+        if ($result['status'] === 'wrong') {
+            $left = (int) $result['attempts_left'];
+
+            if (($result['user'] ?? null) instanceof User) {
+                $this->logActivity($result['user'], 'PASSWORD_RESET_CODE_FAILED', ['attempts_left' => $left], $request);
+            }
+
+            return response()->json([
+                'message' => $left > 0
+                    ? "Incorrect code. {$left} attempt" . ($left === 1 ? '' : 's') . ' left.'
+                    : 'Incorrect code. Ask for a new one to try again.',
+                'attempts_left' => $left,
+                'restart' => $left === 0,
+            ], $left > 0 ? 422 : 410);
+        }
+
+        if ($result['status'] !== 'ok' || !(($result['user'] ?? null) instanceof User)) {
+            return response()->json([
+                'message' => 'This code has expired. Ask for a new one.',
+                'restart' => true,
+            ], 410);
+        }
+
+        /** @var User $user */
+        $user = $result['user']->loadMissing('role');
+
+        // What may have changed in the five minutes since the code was sent.
+        if ($this->resetRefusal($user, $audience) !== null) {
+            return response()->json([
+                'message' => 'This account can no longer be reset here. Please contact your Rural Health Unit.',
+                'restart' => true,
+            ], 403);
+        }
+
+        $updates = [
+            'password' => Hash::make($validated['password']),
+            'failed_login_count' => 0,
+            'locked_until' => null,
+        ];
+
+        if (Schema::hasColumn('users', 'password_reset_at')) {
+            $updates['password_reset_at'] = now();
+        }
+
+        $user->forceFill($updates)->save();
+
+        $codes->retireAll($user);
+
+        // Whoever was signed in -- possibly the person who learned the old
+        // password -- is signed out everywhere.
+        $user->tokens()->delete();
+
+        app(AccountSmsService::class)->sendPasswordResetNotice($user);
+        app(AccountMailService::class)->sendPasswordResetNotice($user);
+
+        $this->logActivity($user, 'PASSWORD_RESET', [
+            'audience' => $audience,
+            'method' => 'reset_code',
+        ], $request);
+
+        return response()->json([
+            'message' => 'Your password has been changed. Sign in with your new password.',
+        ]);
+    }
+
+    private function resendPasswordResetCode(Request $request, VerificationCodes $codes, string $audience): JsonResponse
+    {
+        $validated = $request->validate([
+            'challenge' => ['required', 'string', 'max:64'],
+        ]);
+
+        $result = $codes->resend($validated['challenge'], $this->resetPurpose($audience));
+
+        return match ($result['status']) {
+            // A failed send answers like a sent one: stand-ins never fail, so
+            // anything else would reveal that this challenge is real.
+            'sent', 'send_failed' => response()->json([
+                'message' => 'We sent a new code. Only the newest code works.',
+                'expires_in' => VerificationCodes::TTL_SECONDS,
+                'resend_after' => VerificationCodes::RESEND_AFTER_SECONDS,
+            ]),
+            'wait' => response()->json([
+                'message' => "Wait {$result['wait']} seconds before asking for another code.",
+                'wait' => $result['wait'],
+            ], 429),
+            'limit' => response()->json([
+                'message' => 'No more codes can be sent for this request. Start again later, or ask RHU staff to reset your password.',
+                'restart' => true,
+            ], 429),
+            default => response()->json([
+                'message' => 'This request has expired. Start again to get a new code.',
+                'restart' => true,
+            ], 410),
+        };
+    }
+
+    private function resetPurpose(string $audience): string
+    {
+        return $audience === 'admin'
+            ? VerificationCodes::PURPOSE_ADMIN_RESET
+            : VerificationCodes::PURPOSE_RESIDENT_RESET;
+    }
+
+    /**
+     * Why this account cannot be reset from this screen, or null if it can.
+     *
+     * Only active accounts: a pending, suspended or rejected account could not
+     * sign in with a new password anyway, and a code sent to it is credit
+     * spent for nothing.
+     */
+    private function resetRefusal(User $user, string $audience): ?string
+    {
+        $isStaff = in_array($this->normalizeRoleName($this->resolveUserRoleName($user)), self::ADMIN_ROLES, true);
+
+        if ($audience === 'admin' ? !$isStaff : $isStaff) {
+            return 'other_audience';
+        }
+
+        if ($this->normalizeStatus((string) ($user->account_status ?? '')) !== 'active') {
+            return 'not_active';
+        }
+
+        return null;
     }
 
     // =========================================================================

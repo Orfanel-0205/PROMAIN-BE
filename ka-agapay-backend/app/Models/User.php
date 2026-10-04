@@ -82,6 +82,8 @@ class User extends Authenticatable
         'locked_until' => 'datetime',
         // Set by UserMobileObserver; pauses viewing API keys for a day after a change.
         'mobile_changed_at' => 'datetime',
+        // Set by "Forgot password"; also pauses viewing API keys for a day.
+        'password_reset_at' => 'datetime',
         'has_seen_onboarding' => 'boolean',
         'staff_approved_at' => 'datetime',
         'terms_accepted_at' => 'datetime',

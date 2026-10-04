@@ -226,6 +226,19 @@ class IntegrationSettingsController extends Controller
             ], 423);
         }
 
+        // Likewise after "Forgot password": whoever reset it has the phone
+        // or the mailbox, which is not yet proof of being the super admin.
+        $resetAt = $user->password_reset_at;
+
+        if ($resetAt && $resetAt->gt(now()->subHours(self::MOBILE_CHANGE_COOLDOWN_HOURS))) {
+            $until = $resetAt->copy()->addHours(self::MOBILE_CHANGE_COOLDOWN_HOURS);
+
+            return response()->json([
+                'message' => 'Your password was reset with "Forgot password" recently, so viewing keys is paused until '
+                    . $until->timezone('Asia/Manila')->format('M j, g:i A') . '. Replacing a key still works.',
+            ], 423);
+        }
+
         $issued = $this->codes->issue($user, VerificationCodes::PURPOSE_REVEAL_KEY, [
             'integration' => $integration,
             'field' => $field,

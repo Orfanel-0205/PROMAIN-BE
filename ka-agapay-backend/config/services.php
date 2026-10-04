@@ -158,4 +158,21 @@ return [
     'base_url' => env('SEMAPHORE_BASE_URL', 'https://api.semaphore.co/api/v4'),
 ],
 
+/*
+ * The mailbox that sends account email: password reset codes and "your
+ * password was changed" notices. A Gmail address and an app password, usually
+ * pasted by a super admin in Settings > API keys (IntegrationCredentials).
+ *
+ * Separate from MAIL_MAILER on purpose. Account email uses its own connection
+ * (AccountMailService), so it works without touching the server's .env, and
+ * with no sender set it is simply skipped -- codes still go by SMS.
+ */
+'mail_sender' => [
+    'address' => env('MAIL_SENDER_ADDRESS'),
+    'app_password' => env('MAIL_SENDER_APP_PASSWORD'),
+    'host' => env('MAIL_SENDER_HOST', 'smtp.gmail.com'),
+    'port' => (int) env('MAIL_SENDER_PORT', 587),
+    'from_name' => env('MAIL_SENDER_NAME', 'Ka-Agapay RHU'),
+],
+
 ];

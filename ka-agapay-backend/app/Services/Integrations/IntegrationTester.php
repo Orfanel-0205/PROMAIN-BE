@@ -3,11 +3,15 @@
 
 namespace App\Services\Integrations;
 
+use App\Services\Notification\AccountMailService;
 use App\Services\Video\JitsiTokenService;
 use App\Support\IntegrationCredentials;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
+use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
+use Symfony\Component\Mailer\Transport\Smtp\Stream\SocketStream;
 
 /**
  * Proves a key works before it is saved.
@@ -55,6 +59,7 @@ final class IntegrationTester
                 'semaphore' => $this->semaphore($candidate),
                 'ocr_space' => $this->ocrSpace($candidate),
                 'jaas'      => $this->jaas($candidate, $submitted),
+                'email'     => $this->email($candidate),
                 default     => $this->fail('Unknown integration.'),
             };
         } catch (ConnectionException) {
@@ -278,6 +283,60 @@ final class IntegrationTester
             'warning' => '8x8 confirms the key itself only when a call starts. Start a test call after saving.',
             'details' => array_filter(['fingerprint' => $fingerprint]),
         ];
+    }
+
+    /**
+     * Sign in to the mailbox without sending anything.
+     *
+     * Connecting and logging in is exactly what a send does first, so a pass
+     * here means reset codes will go out. Nothing is sent, so the test does
+     * not fill the mailbox or count against Gmail's daily sending limit.
+     *
+     * @param array<string, string> $c
+     */
+    private function email(array $c): array
+    {
+        $address = AccountMailService::deliverableAddress($c['address'] ?? '');
+        $password = AccountMailService::appPassword($c['app_password'] ?? '');
+
+        if ($address === null) {
+            return $this->fail('Enter the Gmail address that will send account email, for example kaagapay.rhu@gmail.com.');
+        }
+
+        if ($password === '') {
+            return $this->fail('Enter an app password for that Gmail account.');
+        }
+
+        $config = AccountMailService::transportConfig($address, $password);
+
+        try {
+            $transport = new EsmtpTransport($config['host'], $config['port'], $config['scheme'] === 'smtps');
+            $transport->setUsername($address);
+            $transport->setPassword($password);
+
+            $stream = $transport->getStream();
+
+            if ($stream instanceof SocketStream) {
+                $stream->setTimeout(self::TIMEOUT_SECONDS);
+            }
+
+            $transport->start();
+            $transport->stop();
+        } catch (TransportExceptionInterface $e) {
+            $reason = $this->scrub($e->getMessage(), $c + ['password' => $password]);
+
+            // 535 is "username and password not accepted".
+            if (str_contains($reason, '535') || stripos($reason, 'authenticat') !== false) {
+                return $this->fail(
+                    'Gmail did not accept this address and app password. Use a 16-letter app password '
+                    . '(Google Account > Security > 2-Step Verification > App passwords), not the normal Gmail password.'
+                );
+            }
+
+            return $this->fail("Could not connect to {$config['host']}: " . Str::limit($reason, 160));
+        }
+
+        return $this->pass("Signed in to {$address}. Password reset codes will also be sent by email.", ['address' => $address]);
     }
 
     // ------------------------------------------------------------------

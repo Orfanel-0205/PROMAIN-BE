@@ -28,6 +28,16 @@ class AccountSmsService
      */
     public const VERIFICATION_CODE_MESSAGE = 'Ka-Agapay code: %s. It expires in 5 minutes. Never share it; RHU staff will never ask for it. Not you? Change your password.';
 
+    /**
+     * The password reset code. "Ignore this" rather than "change your
+     * password": anyone can ask for a reset with someone else's number, and
+     * the account holder who did not ask has nothing to fix.
+     */
+    public const PASSWORD_RESET_CODE_MESSAGE = 'Ka-Agapay password reset code: %s. It expires in 5 minutes. Never share it. Did not ask for this? Ignore this text; your password is unchanged.';
+
+    /** Sent once a reset succeeds, so a reset nobody asked for is noticed. */
+    public const PASSWORD_RESET_NOTICE = 'Ka-Agapay: your password was just reset and other devices were signed out. Not you? Contact your RHU right away.';
+
     public function __construct(private readonly SmsService $sms)
     {
     }
@@ -213,15 +223,34 @@ class AccountSmsService
      */
     public function sendVerificationCode(User $user, string $code): ?SmsLog
     {
+        return $this->sendCode($user, $code, self::VERIFICATION_CODE_MESSAGE, 'verification_code');
+    }
+
+    /** A password reset code. Same handling as sendVerificationCode(). */
+    public function sendPasswordResetCode(User $user, string $code): ?SmsLog
+    {
+        return $this->sendCode($user, $code, self::PASSWORD_RESET_CODE_MESSAGE, 'password_reset_code');
+    }
+
+    /** Tell the account holder their password was reset. */
+    public function sendPasswordResetNotice(User $user): ?SmsLog
+    {
+        $mobile = $this->recipientMobile($user);
+
+        return $mobile === null ? null : $this->dispatch($user, $mobile, self::PASSWORD_RESET_NOTICE, 'password_reset');
+    }
+
+    private function sendCode(User $user, string $code, string $template, string $type): ?SmsLog
+    {
         $mobile = $this->recipientMobile($user);
 
         if ($mobile === null) {
             return null;
         }
 
-        $message = sprintf(self::VERIFICATION_CODE_MESSAGE, $code);
+        $message = sprintf($template, $code);
 
-        $log = $this->dispatch($user, $mobile, $message, 'verification_code');
+        $log = $this->dispatch($user, $mobile, $message, $type);
 
         if ($log !== null) {
             try {

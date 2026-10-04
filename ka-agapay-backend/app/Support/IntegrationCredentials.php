@@ -94,6 +94,13 @@ final class IntegrationCredentials
                 'private_key' => ['label' => 'Private key (PEM)', 'config' => 'services.jitsi.private_key', 'secret' => true],
             ],
         ],
+        'email' => [
+            'label' => 'Email sender (Gmail)',
+            'fields' => [
+                'address'      => ['label' => 'Gmail address', 'config' => 'services.mail_sender.address', 'secret' => false],
+                'app_password' => ['label' => 'App password', 'config' => 'services.mail_sender.app_password', 'secret' => true],
+            ],
+        ],
     ];
 
     /**
