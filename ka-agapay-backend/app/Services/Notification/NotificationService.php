@@ -1129,10 +1129,11 @@ class NotificationService
 
             $patient = trim((string) ($consultation->resident?->full_name ?? '')) ?: 'A patient';
             $by = trim((string) ($finalizedBy?->full_name ?? '')) ?: 'RHU staff';
-            $diagnosis = \Illuminate\Support\Str::limit(
+            // Without its own final full stop, which the sentence adds.
+            $diagnosis = rtrim(\Illuminate\Support\Str::limit(
                 trim((string) ($consultation->diagnosis ?: $consultation->assessment ?: '')),
                 90
-            );
+            ), '. ');
 
             $title = 'SOAP ready for e-prescription';
             $message = "{$patient}'s SOAP was finalized by {$by}."

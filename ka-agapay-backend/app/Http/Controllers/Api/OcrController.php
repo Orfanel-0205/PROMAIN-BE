@@ -412,7 +412,7 @@ class OcrController extends Controller
         );
 
         $file = $request->file('soap_file');
-        $ocr = $this->runOcr((string) $file->getRealPath(), (string) $file->getMimeType());
+        $ocr = $this->runOcrThorough((string) $file->getRealPath(), (string) $file->getMimeType());
         $text = trim((string) ($ocr['text'] ?? ''));
 
         if ($text === '') {
@@ -761,6 +761,55 @@ class OcrController extends Controller
             }
 
             return $last;
+        } finally {
+            if ($cleanup && is_file($ocrPath)) {
+                @unlink($ocrPath);
+            }
+        }
+    }
+
+    /**
+     * Read a page until two reads agree, and keep the most complete one.
+     *
+     * OCR.space does not always return the whole page. Measured on a printed
+     * SOAP form read five times: three reads had all ten lines, two came back
+     * with the top four lines missing -- on either engine, with no error. A
+     * single read therefore loses the Subjective and the vital signs about a
+     * third of the time, silently. Up to three reads, alternating engines,
+     * stopping as soon as two have the same number of lines.
+     */
+    private function runOcrThorough(string $fullPath, string $mimeType): array
+    {
+        $apiKey = config('services.ocr_space.key') ?: env('OCR_SPACE_API_KEY');
+
+        if (!$apiKey) {
+            return $this->runOcr($fullPath, $mimeType);
+        }
+
+        [$ocrPath, $ocrMime, $cleanup] = $this->prepareImageForOcr($fullPath, $mimeType);
+
+        try {
+            $best = ['text' => '', 'confidence' => 0, 'raw' => ['provider' => 'ocr.space']];
+            $seenLineCounts = [];
+
+            foreach ([self::OCR_PRIMARY_ENGINE, self::OCR_FALLBACK_ENGINE, self::OCR_PRIMARY_ENGINE] as $engine) {
+                $result = $this->callOcrSpace($ocrPath, $ocrMime, (string) $apiKey, $engine);
+                $text = trim((string) ($result['text'] ?? ''));
+
+                if (strlen($text) > strlen(trim((string) $best['text']))) {
+                    $best = $result;
+                }
+
+                $lines = $text === '' ? 0 : count(preg_split('/\R/u', $text) ?: []);
+
+                if ($lines > 0 && in_array($lines, $seenLineCounts, true)) {
+                    break;
+                }
+
+                $seenLineCounts[] = $lines;
+            }
+
+            return $best;
         } finally {
             if ($cleanup && is_file($ocrPath)) {
                 @unlink($ocrPath);
