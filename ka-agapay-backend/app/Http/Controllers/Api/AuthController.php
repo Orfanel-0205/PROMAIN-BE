@@ -26,6 +26,9 @@ use Illuminate\Validation\Rules\Password;
 
 class AuthController extends Controller
 {
+    /** Every forgot-password reply takes at least this long. See answerNoSoonerThan(). */
+    private const RESET_REPLY_SECONDS = 3.0;
+
     /*
      * Web admin portal roles.
      * FIX: staff, staff_admin, admin, it_staff, municipal_mayor, and superadmin are included.
@@ -995,6 +998,7 @@ class AuthController extends Controller
             ], 422);
         }
 
+        $startedAt = microtime(true);
         $purpose = $this->resetPurpose($audience);
         $user = $this->findUserByLogin($login);
         $reason = $user === null ? 'no_account' : $this->resetRefusal($user, $audience);
@@ -1033,6 +1037,8 @@ class AuthController extends Controller
 
             $issued = $codes->issueDecoy($purpose, $request);
         }
+
+        $this->answerNoSoonerThan($startedAt);
 
         return response()->json([
             'message' => 'If an account uses that number or email, we sent it a 6-digit code: by text to its mobile number, '
@@ -1126,7 +1132,10 @@ class AuthController extends Controller
             'challenge' => ['required', 'string', 'max:64'],
         ]);
 
+        $startedAt = microtime(true);
         $result = $codes->resend($validated['challenge'], $this->resetPurpose($audience));
+
+        $this->answerNoSoonerThan($startedAt);
 
         return match ($result['status']) {
             // A failed send answers like a sent one: stand-ins never fail, so
@@ -1149,6 +1158,26 @@ class AuthController extends Controller
                 'restart' => true,
             ], 410),
         };
+    }
+
+    /**
+     * Hold a forgot-password reply until a fixed time has passed.
+     *
+     * A real request waits on Semaphore (about half a second) and, once email
+     * is set up, on Gmail (a second or two); a stand-in sends nothing. Without
+     * this the reply time alone would tell anyone timing it whether a number
+     * has an account. Every reply -- real, stand-in, refused -- takes the same
+     * three seconds or so, which is still quick for someone who forgot their
+     * password.
+     */
+    private function answerNoSoonerThan(float $startedAt): void
+    {
+        $target = self::RESET_REPLY_SECONDS + random_int(0, 300) / 1000;
+        $remaining = $target - (microtime(true) - $startedAt);
+
+        if ($remaining > 0) {
+            usleep((int) round($remaining * 1_000_000));
+        }
     }
 
     private function resetPurpose(string $audience): string

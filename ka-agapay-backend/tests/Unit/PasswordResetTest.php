@@ -97,6 +97,24 @@ class PasswordResetTest extends TestCase
     }
 
     #[Test]
+    #[TestDox('a reply takes the same time whether or not a code was sent')]
+    public function reply_time_does_not_depend_on_the_account(): void
+    {
+        // Measured on production before this rule: a real request answered in
+        // 0.5s (Semaphore), a stand-in in 1.4s. Timing alone told them apart.
+        $source = (string) file_get_contents(self::AUTH);
+
+        foreach (['private function startPasswordReset(', 'private function resendPasswordResetCode('] as $method) {
+            $body = (string) substr($source, (int) strpos($source, $method), 5000);
+            $evened = strpos($body, '$this->answerNoSoonerThan(');
+            $reply = strrpos(substr($body, 0, (int) strpos($body, "\n    }\n")), 'return ');
+
+            $this->assertNotFalse($evened, "{$method} replies without evening out the time.");
+            $this->assertLessThan($reply, $evened, "{$method} replies before evening out the time.");
+        }
+    }
+
+    #[Test]
     #[TestDox('a reset signs out every device and tells the account holder')]
     public function a_reset_signs_out_and_notifies(): void
     {

@@ -80,9 +80,6 @@ final class VerificationCodes
      */
     public const MAX_CODES_PER_DAY = 10;
 
-    /** How long a stand-in takes to answer, so it is not told apart by speed. */
-    private const DECOY_DELAY_MS = [700, 1600];
-
     public function __construct(
         private readonly AccountSmsService $sms,
         private readonly AccountMailService $mail,
@@ -168,7 +165,8 @@ final class VerificationCodes
      * Stored like a real one, with no account and the hash of a code that is
      * never sent or kept, so nobody can enter it. Wrong-code counts, resends,
      * the wait between them and expiry all behave exactly as for a real
-     * challenge, and the answer takes about as long as a real send.
+     * challenge. The caller evens out the reply time (a real send waits on
+     * Semaphore; this does not): see AuthController::answerNoSoonerThan().
      *
      * @return array{status:string, challenge:string, expires_in:int, resend_after:int}
      */
@@ -189,8 +187,6 @@ final class VerificationCodes
             'ip_address'   => $request->ip(),
             'user_agent'   => Str::limit((string) $request->userAgent(), 250, ''),
         ]);
-
-        $this->pause();
 
         return [
             'status'       => 'sent',
@@ -302,8 +298,6 @@ final class VerificationCodes
         ]);
 
         if ($isDecoy) {
-            $this->pause();
-
             return ['status' => 'sent', 'masked_mobile' => '', 'expires_in' => self::TTL_SECONDS];
         }
 
@@ -437,9 +431,4 @@ final class VerificationCodes
         return $delivered;
     }
 
-    /** A real send takes about a second; a stand-in waits as long. */
-    private function pause(): void
-    {
-        usleep(random_int(self::DECOY_DELAY_MS[0], self::DECOY_DELAY_MS[1]) * 1000);
-    }
 }
