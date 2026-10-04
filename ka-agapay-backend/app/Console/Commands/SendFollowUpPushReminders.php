@@ -42,6 +42,7 @@ class SendFollowUpPushReminders extends Command
             'sent' => 0,
             'duplicates' => 0,
             'missing_token' => 0,
+            'no_account' => 0,
             'failed' => 0,
             'sms_sent' => 0,
             'sms_failed' => 0,
@@ -76,6 +77,13 @@ class SendFollowUpPushReminders extends Command
                             };
                         }
 
+                        // Most follow-ups belong to patients without an app
+                        // account; for them the text above is the reminder.
+                        if ($reminder->user_id === null) {
+                            $summary['no_account']++;
+                            continue;
+                        }
+
                         $result = $notifications->notifyFollowUpReminder($reminder, $stage);
 
                         if ($result['duplicate'] ?? false) {
@@ -103,11 +111,12 @@ class SendFollowUpPushReminders extends Command
         ], $summary));
 
         $this->info(sprintf(
-            'Follow-up reminders checked=%d push_sent=%d duplicates=%d missing_token=%d failed=%d sms_sent=%d sms_failed=%d sms_skipped=%d',
+            'Follow-up reminders checked=%d push_sent=%d duplicates=%d missing_token=%d no_account=%d failed=%d sms_sent=%d sms_failed=%d sms_skipped=%d',
             $summary['checked'],
             $summary['sent'],
             $summary['duplicates'],
             $summary['missing_token'],
+            $summary['no_account'],
             $summary['failed'],
             $summary['sms_sent'],
             $summary['sms_failed'],
