@@ -91,7 +91,8 @@ class ProfileController extends Controller
                 'nullable',
                 'string',
                 'max:30',
-                Rule::unique('users', 'mobile_number')->ignore($user->user_id, 'user_id')->whereNull('deleted_at'),
+                // Among accounts of this one's kind; see User::booted().
+                \App\Models\User::uniqueMobileRule((bool) $user->is_staff, $user->user_id),
             ],
 
             'phone' => ['nullable', 'string', 'max:30'],

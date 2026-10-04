@@ -257,8 +257,14 @@ class AdminUserController extends Controller
             $duplicateErrors['email'] = ['Email is already registered.'];
         }
 
-        if (User::withTrashed()->where('mobile_number', $mobile)->exists()) {
-            $duplicateErrors['mobile_number'] = ['Mobile number is already registered.'];
+        // Among accounts of the same kind only: a staff member's resident
+        // account may already use this number (User::booted()).
+        $newIsStaff = !$this->isResidentRole($roleName);
+
+        if (User::withTrashed()->where('mobile_number', $mobile)->ofKind($newIsStaff)->exists()) {
+            $duplicateErrors['mobile_number'] = [$newIsStaff
+                ? 'This mobile number is already on another staff account.'
+                : 'This mobile number is already on another resident account.'];
         }
 
         if (!empty($duplicateErrors)) {
@@ -578,13 +584,18 @@ class AdminUserController extends Controller
             abort_if($mobile === '', 422, 'Mobile number is required.');
             abort_unless($this->isValidPhilippineMobile($mobile), 422, 'Mobile number must use this format: 09XXXXXXXXX.');
 
+            // Among accounts of this one's kind. If the same request also
+            // changes the role to the other kind, User::booted() checks again.
             abort_if(
                 User::withTrashed()
                     ->where('mobile_number', $mobile)
                     ->where('user_id', '!=', $user->user_id)
+                    ->ofKind((bool) $user->is_staff)
                     ->exists(),
                 422,
-                'Mobile number is already registered.'
+                $user->is_staff
+                    ? 'This mobile number is already on another staff account.'
+                    : 'This mobile number is already on another resident account.'
             );
 
             $updates['mobile_number'] = $mobile;

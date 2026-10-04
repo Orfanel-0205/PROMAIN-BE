@@ -33,7 +33,8 @@ class RegisterRequest extends FormRequest
                 'required',
                 'string',
                 'regex:/^09\d{9}$/',
-                Rule::unique('users', 'mobile_number')->whereNull('deleted_at'),
+                // Among resident accounts only; see User::booted().
+                \App\Models\User::uniqueMobileRule(false),
             ],
             'password'              => [
                 'required',

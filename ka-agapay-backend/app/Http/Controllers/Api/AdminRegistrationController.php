@@ -93,7 +93,9 @@ class AdminRegistrationController extends Controller
             // Ignore archived (soft-deleted) accounts so a released number/email
             // can be reused — see Part 6 archive-not-delete premise.
             'email' => ['nullable', 'email', 'max:150', Rule::unique('users', 'email')->whereNull('deleted_at')],
-            'mobile_number' => ['required', 'regex:/^09\d{9}$/', Rule::unique('users', 'mobile_number')->whereNull('deleted_at')],
+            // Among staff accounts only: the person may already have a resident
+            // account on the same number (User::booted()).
+            'mobile_number' => ['required', 'regex:/^09\d{9}$/', \App\Models\User::uniqueMobileRule(true)],
             // Barangay is a required dropdown validated against the live list — no
             // free text (BarangayList's own guidance: use Rule::exists, not the const).
             'barangay' => ['required', 'string', Rule::exists('barangays', 'name')],

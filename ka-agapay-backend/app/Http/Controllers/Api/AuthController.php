@@ -228,6 +228,9 @@ class AuthController extends Controller
                 $query->orWhere('mobile_number', $login)
                     ->orWhere('email', $login);
             })
+            // A number can be on a staff and a resident account; this is
+            // the staff sign-in. See User::booted().
+            ->preferKind(true)
             ->first();
 
         if ($user && $user->locked_until && $user->locked_until->isFuture()) {
@@ -392,6 +395,9 @@ class AuthController extends Controller
 
         $user = User::with('role')
             ->where('mobile_number', $mobile)
+            // The app is for residents: their account first when the same
+            // number is also on a staff account. See User::booted().
+            ->preferKind(false)
             ->first();
 
         if ($user && $user->locked_until && $user->locked_until->isFuture()) {
@@ -706,7 +712,9 @@ class AuthController extends Controller
             // Ignore archived (soft-deleted) accounts — a released number/email
             // must be reusable (Part 6 archive-not-delete premise).
             'email' => ['nullable', 'email', Rule::unique('users', 'email')->whereNull('deleted_at'), 'max:255'],
-            'mobile_number' => ['required', 'string', 'regex:/^09\d{9}$/', Rule::unique('users', 'mobile_number')->whereNull('deleted_at')],
+            // Unique among resident accounts: the same number may also be on
+            // this person's staff account (User::booted()).
+            'mobile_number' => ['required', 'string', 'regex:/^09\d{9}$/', User::uniqueMobileRule(false)],
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()->symbols()],
             'password_confirmation' => ['required'],
 
@@ -1000,7 +1008,9 @@ class AuthController extends Controller
 
         $startedAt = microtime(true);
         $purpose = $this->resetPurpose($audience);
-        $user = $this->findUserByLogin($login);
+        // Only this screen's kind of account: the same number may also be on
+        // an account of the other kind, which this screen does not reset.
+        $user = $this->findUserByLogin($login, $audience === 'admin');
         $reason = $user === null ? 'no_account' : $this->resetRefusal($user, $audience);
 
         $issued = null;
@@ -1494,7 +1504,11 @@ class AuthController extends Controller
         return null;
     }
 
-    private function findUserByLogin(?string $login): ?User
+    /**
+     * @param bool|null $staff only accounts of that kind (a number can be on
+     *                         one staff and one resident account), or any
+     */
+    private function findUserByLogin(?string $login, ?bool $staff = null): ?User
     {
         $login = trim((string) $login);
         $mobile = $this->normalizeMobileNumber($login);
@@ -1513,6 +1527,7 @@ class AuthController extends Controller
                 $query->orWhere('mobile_number', $login)
                     ->orWhere('email', $login);
             })
+            ->when($staff !== null, fn ($query) => $query->ofKind($staff))
             ->first();
     }
 

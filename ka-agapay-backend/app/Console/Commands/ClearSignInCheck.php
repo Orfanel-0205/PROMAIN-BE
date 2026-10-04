@@ -22,10 +22,16 @@ use Illuminate\Console\Command;
  * It clears the failed-login count, any lockout, and any codes in flight. It
  * does not change the password. Fix the mobile number on the account
  * afterwards, or the next mistyped password ends in the same place.
+ *
+ * A number can be on a staff and a resident account. Add --staff or
+ * --resident to pick one; without either, the command asks.
  */
 class ClearSignInCheck extends Command
 {
-    protected $signature = 'auth:clear-sign-in-check {login : The account\'s mobile number or email}';
+    protected $signature = 'auth:clear-sign-in-check
+        {login : The account\'s mobile number or email}
+        {--staff : The staff account (admin website)}
+        {--resident : The resident account (mobile app)}';
 
     protected $description = 'Let an account sign in without an SMS code (clears failed logins, lockout and pending codes)';
 
@@ -38,7 +44,7 @@ class ClearSignInCheck extends Command
             $digits = '0' . $m[1];
         }
 
-        $user = User::query()
+        $matches = User::query()
             ->where(function ($q) use ($login, $digits) {
                 if ($digits !== '') {
                     $q->where('mobile_number', $digits);
@@ -46,12 +52,26 @@ class ClearSignInCheck extends Command
 
                 $q->orWhereRaw('LOWER(email) = ?', [strtolower($login)]);
             })
-            ->first();
+            ->when($this->option('staff'), fn ($q) => $q->ofKind(true))
+            ->when($this->option('resident'), fn ($q) => $q->ofKind(false))
+            ->get();
 
-        if (!$user) {
+        if ($matches->isEmpty()) {
             $this->error('No account matches that mobile number or email.');
 
             return self::FAILURE;
+        }
+
+        $user = $matches->first();
+
+        if ($matches->count() > 1) {
+            $labels = $matches->mapWithKeys(fn (User $u) => [
+                "#{$u->user_id}" => "#{$u->user_id} " . trim($u->first_name . ' ' . $u->last_name)
+                    . ($u->is_staff ? ' (staff)' : ' (resident)'),
+            ])->all();
+
+            $picked = $this->choice('That number is on more than one account. Which one?', array_values($labels));
+            $user = $matches->first(fn (User $u) => $labels["#{$u->user_id}"] === $picked);
         }
 
         $name = trim((string) $user->first_name . ' ' . (string) $user->last_name) ?: 'that account';

@@ -119,7 +119,15 @@ class AdminDeletedRecordController extends Controller
         if ($module === 'users') {
             $conflict = User::where($record->getKeyName(), '!=', $record->getKey())
                 ->where(function ($query) use ($record) {
-                    $query->where('mobile_number', $record->mobile_number);
+                    // The number collides only with an account of the same
+                    // kind: one staff and one resident account may share it.
+                    $query->where(function ($sameNumber) use ($record) {
+                        $sameNumber->where('mobile_number', $record->mobile_number);
+
+                        if (User::hasStaffColumn()) {
+                            $sameNumber->where('is_staff', (bool) $record->is_staff);
+                        }
+                    });
 
                     if (!empty($record->email)) {
                         $query->orWhere('email', $record->email);
