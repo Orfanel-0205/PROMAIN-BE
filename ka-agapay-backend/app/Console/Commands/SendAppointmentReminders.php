@@ -38,7 +38,9 @@ class SendAppointmentReminders extends Command
     {
         $anchor = $this->option('date')
             ? Carbon::parse((string) $this->option('date'))->startOfDay()
-            : today();
+            // Today in the Philippines: the 6:30 AM run is still yesterday on
+            // the UTC clock, and would remind people of yesterday's visits.
+            : Carbon::parse(\App\Support\LocalTime::today()->toDateString());
 
         $stage = (string) $this->option('stage');
 

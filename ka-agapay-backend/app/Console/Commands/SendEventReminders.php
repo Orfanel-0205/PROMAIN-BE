@@ -31,7 +31,8 @@ class SendEventReminders extends Command
             return self::FAILURE;
         }
 
-        $targetDate = now()->addDays(3)->toDateString();
+        // Three days from today in the Philippines, not on the UTC clock.
+        $targetDate = \App\Support\LocalTime::today()->addDays(3)->toDateString();
 
         $events = Event::query()
             ->where('is_published', true)

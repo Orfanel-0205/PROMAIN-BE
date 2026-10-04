@@ -978,7 +978,7 @@ class NotificationService
             $followUpDate = $reminder->follow_up_date?->toDateString()
                 ?? $reminder->follow_up_at?->toDateString()
                 ?? now()->toDateString();
-            $stage = $stage === 'day_of' ? 'day_of' : 'three_days_before';
+            $stage = in_array($stage, ['day_of', 'day_before'], true) ? $stage : 'three_days_before';
             $dedupeKey = "followup_reminder:{$reminder->id}:{$stage}:{$followUpDate}";
 
             if ($this->notificationDedupeExists($userId, $dedupeKey)) {
@@ -988,12 +988,23 @@ class NotificationService
                 return $result;
             }
 
-            $title = $stage === 'day_of'
-                ? 'RHU follow-up today'
-                : 'Upcoming RHU follow-up';
-            $message = $stage === 'day_of'
-                ? 'Your RHU follow-up is scheduled today. Please check your consultation details.'
-                : "Your RHU follow-up is scheduled on {$followUpDate}. Please check your consultation details.";
+            // "Tue, Oct 7 at 9:00 AM": follow_up_time is the Philippine wall
+            // clock staff entered, so it is shown as it is.
+            $readableDate = \Illuminate\Support\Carbon::parse($followUpDate)->format('D, M j');
+            $readableTime = $reminder->follow_up_time
+                ? ' at ' . \Illuminate\Support\Carbon::createFromFormat('H:i', substr((string) $reminder->follow_up_time, 0, 5))->format('g:i A')
+                : '';
+
+            $title = match ($stage) {
+                'day_of' => 'RHU follow-up today',
+                'day_before' => 'RHU follow-up tomorrow',
+                default => 'Upcoming RHU follow-up',
+            };
+            $message = match ($stage) {
+                'day_of' => "Your RHU follow-up is today{$readableTime}. Please check your consultation details.",
+                'day_before' => "Your RHU follow-up is tomorrow, {$readableDate}{$readableTime}. Please check your consultation details.",
+                default => "Your RHU follow-up is on {$readableDate}{$readableTime}, in 3 days. Please check your consultation details.",
+            };
             $payload = [
                 'type' => 'followup_reminder',
                 'screen' => 'consultations',

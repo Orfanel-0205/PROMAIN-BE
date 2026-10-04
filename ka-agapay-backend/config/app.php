@@ -80,6 +80,13 @@ return [
     'timezone' => 'UTC',
 
     /*
+    | The clinic's own time zone. The database keeps UTC (above), but people
+    | mean Philippine time when they say "9:00 AM" or "today", and reminders
+    | must go out at hours that make sense here. See App\Support\LocalTime.
+    */
+    'local_timezone' => env('APP_LOCAL_TIMEZONE', 'Asia/Manila'),
+
+    /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration
     |--------------------------------------------------------------------------

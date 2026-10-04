@@ -7,7 +7,9 @@ use App\Http\Controllers\Controller;
 use App\Models\Consultation;
 use App\Models\FollowUpReminder;
 use App\Models\User;
+use App\Services\Audit\AuditService;
 use App\Services\Notification\SmsService;
+use App\Support\LocalTime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -64,42 +66,28 @@ class FollowUpReminderController extends Controller
         $base = FollowUpReminder::query();
         $this->applyScope($base, $request);
 
-        $today = today();
-        $monthStart = now()->startOfMonth();
-        $missedCutoff = today()->subDays(self::MISSED_GRACE_DAYS);
+        $monthStart = LocalTime::today()->startOfMonth()->utc();
 
-        $active = fn ($q) => $q->whereIn('status', self::ACTIVE_STATUSES);
+        // Each count is the same query as its tab, so a card can never say
+        // "3 overdue" over a tab that lists none.
+        $count = function (string $tab) use ($base): int {
+            $query = clone $base;
+            $this->applyStatusFilter($query, $tab);
+
+            return (int) $query->count();
+        };
 
         return response()->json([
             'data' => [
                 'total' => (int) (clone $base)->count(),
-                'overdue' => (int) (clone $base)
-                    ->where($active)
-                    ->whereNotNull('follow_up_at')
-                    ->whereDate('follow_up_at', '<', $today)
-                    ->count(),
-                'due_today' => (int) (clone $base)
-                    ->where($active)
-                    ->whereDate('follow_up_at', $today)
-                    ->count(),
-                'upcoming' => (int) (clone $base)
-                    ->where($active)
-                    ->whereDate('follow_up_at', '>', $today)
-                    ->count(),
+                'overdue' => $count('overdue'),
+                'due_today' => $count('due_today'),
+                'upcoming' => $count('upcoming'),
                 'completed_this_month' => (int) (clone $base)
                     ->where('status', 'completed')
                     ->where('updated_at', '>=', $monthStart)
                     ->count(),
-                'missed' => (int) (clone $base)
-                    ->where(function ($q) use ($missedCutoff) {
-                        $q->where('status', 'missed')
-                            ->orWhere(function ($q2) use ($missedCutoff) {
-                                $q2->whereIn('status', self::ACTIVE_STATUSES)
-                                    ->whereNotNull('follow_up_at')
-                                    ->whereDate('follow_up_at', '<', $missedCutoff);
-                            });
-                    })
-                    ->count(),
+                'missed' => $count('missed'),
             ],
         ]);
     }
@@ -163,34 +151,33 @@ class FollowUpReminderController extends Controller
 
     private function applyStatusFilter($query, string $status): void
     {
-        $today = today();
+        // Philippine dates: "due today" means today at the clinic.
+        $today = LocalTime::today()->toDateString();
 
         switch ($status) {
             case 'overdue':
-                $query->whereIn('status', self::ACTIVE_STATUSES)
-                    ->whereNotNull('follow_up_at')
-                    ->whereDate('follow_up_at', '<', $today);
+                $query->whereIn('status', self::ACTIVE_STATUSES);
+                $this->whereFollowUpDay($query, '<', $today);
                 break;
 
             case 'today':
             case 'due_today':
-                $query->whereIn('status', self::ACTIVE_STATUSES)
-                    ->whereDate('follow_up_at', $today);
+                $query->whereIn('status', self::ACTIVE_STATUSES);
+                $this->whereFollowUpDay($query, '=', $today);
                 break;
 
             case 'upcoming':
-                $query->whereIn('status', self::ACTIVE_STATUSES)
-                    ->whereDate('follow_up_at', '>', $today);
+                $query->whereIn('status', self::ACTIVE_STATUSES);
+                $this->whereFollowUpDay($query, '>', $today);
                 break;
 
             case 'missed':
-                $cutoff = today()->subDays(self::MISSED_GRACE_DAYS);
+                $cutoff = LocalTime::today()->subDays(self::MISSED_GRACE_DAYS)->toDateString();
                 $query->where(function ($q) use ($cutoff) {
                     $q->where('status', 'missed')
                         ->orWhere(function ($q2) use ($cutoff) {
-                            $q2->whereIn('status', self::ACTIVE_STATUSES)
-                                ->whereNotNull('follow_up_at')
-                                ->whereDate('follow_up_at', '<', $cutoff);
+                            $q2->whereIn('status', self::ACTIVE_STATUSES);
+                            $this->whereFollowUpDay($q2, '<', $cutoff);
                         });
                 });
                 break;
@@ -413,7 +400,22 @@ class FollowUpReminderController extends Controller
             'status' => ['required', Rule::in(FollowUpReminder::STATUSES)],
         ]);
 
+        $previous = (string) $reminder->status;
+
         $reminder->update(['status' => $validated['status']]);
+
+        // Recorded, so "who marked this completed, and when?" has an answer.
+        // Without it, four follow-ups were found completed within five
+        // seconds of each other with nothing to say by whom.
+        if ($previous !== $validated['status']) {
+            app(AuditService::class)->info('follow_ups', 'FOLLOW_UP_STATUS_CHANGED', [
+                'follow_up_id' => $reminder->id,
+                'consultation_id' => $reminder->consultation_id,
+                'from' => $previous,
+                'to' => $validated['status'],
+                'by_user_id' => $user->user_id,
+            ], $request);
+        }
 
         return response()->json([
             'message' => 'Reminder status updated.',
@@ -696,6 +698,11 @@ class FollowUpReminderController extends Controller
         ];
     }
 
+    /**
+     * The date and time staff entered, read as Philippine time and stored as
+     * UTC. Reading it as UTC stored 9:00 AM as 9:00 UTC, which the admin then
+     * showed as 5:00 PM.
+     */
     private function combineDateTime(?string $date, ?string $time): ?Carbon
     {
         if (!$date) {
@@ -703,11 +710,20 @@ class FollowUpReminderController extends Controller
         }
 
         try {
-            $t = $time ? substr($time, 0, 5) : '09:00';
-            return Carbon::parse("{$date} {$t}");
+            return LocalTime::toUtc($date, $time);
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * Compare the follow-up's own date -- the day staff picked, in the
+     * Philippines -- rather than the date of the stored UTC instant, which is
+     * the previous day for anything before 8:00 AM.
+     */
+    private function whereFollowUpDay($query, string $operator, string $date)
+    {
+        return $query->whereRaw("COALESCE(follow_up_date, CAST(follow_up_at AS DATE)) {$operator} ?", [$date]);
     }
 
     /**

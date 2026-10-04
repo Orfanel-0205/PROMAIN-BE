@@ -2,6 +2,7 @@
 
 namespace App\Console;
 
+use App\Support\LocalTime;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
 use Illuminate\Support\Facades\Log;
@@ -105,22 +106,33 @@ class Kernel extends ConsoleKernel
          *
          * Evening, for tomorrow: late enough that the day is settled, early
          * enough to rearrange. Morning, for today: before people leave home.
+         *
+         * Every reminder below runs on Philippine time. The scheduler's own
+         * clock is UTC, so "17:00" used to mean 1:00 AM in Manila -- the
+         * "tomorrow" reminder reached patients in the middle of the night of
+         * the appointment day -- and "06:30" meant 2:30 PM.
          */
         $schedule->command('appointments:send-reminders --stage=day_before')
             ->dailyAt('17:00')
+            ->timezone(LocalTime::zone())
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Appointment reminders (day before)'));
 
         $schedule->command('appointments:send-reminders --stage=day_of')
             ->dailyAt('06:30')
+            ->timezone(LocalTime::zone())
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Appointment reminders (day of)'));
+
+        // Follow-ups: three days before and the day before by SMS and app
+        // notification, and an app notification on the day. 8:00 AM.
         $schedule->command('followups:send-reminders')
-            ->name('Send follow-up reminder push notifications')
+            ->name('Send follow-up reminders (3 days before, day before, day of)')
             ->dailyAt('08:00')
+            ->timezone(LocalTime::zone())
             ->withoutOverlapping()
             ->onFailure(fn (Stringable $output) => $this->reportScheduleFailure(
-                'Send follow-up reminder push notifications',
+                'Send follow-up reminders',
                 (string) $output
             ));
 
@@ -129,6 +141,7 @@ class Kernel extends ConsoleKernel
         $schedule->command('events:send-reminders')
             ->name('Send 3-days-before event SMS reminders to target audiences')
             ->dailyAt('08:15')
+            ->timezone(LocalTime::zone())
             ->withoutOverlapping()
             ->onFailure(fn (Stringable $output) => $this->reportScheduleFailure(
                 'Send 3-days-before event SMS reminders to target audiences',

@@ -40,9 +40,23 @@ class FollowUpReminder extends Model
         'sms_error_message',
         'sms_log_id',
         'sms_last_attempt_at',
+        // Which reminder texts have gone out, per stage. See
+        // FollowUpReminderSms and the followups:send-reminders command.
+        'reminders_sent',
     ];
 
+    /** The days before a follow-up when the patient is reminded, by stage. */
+    public const REMINDER_STAGES = [
+        'three_days_before' => 3,
+        'day_before' => 1,
+        'day_of' => 0,
+    ];
+
+    /** Stages that also go by SMS. The day itself is an app notification only. */
+    public const SMS_REMINDER_STAGES = ['three_days_before', 'day_before'];
+
     protected $casts = [
+        'reminders_sent' => 'array',
         'follow_up_at' => 'datetime',
         'follow_up_date' => 'date:Y-m-d',
         'follow_up_start_date' => 'date:Y-m-d',
