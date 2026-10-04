@@ -462,6 +462,13 @@ class ConsultationController extends Controller
 
     private function syncCompletedConsultationFlow(Consultation $consultation, Request $request): void
     {
+        // The SOAP is done: ask the MHO for the e-prescription. After the
+        // commit, so nobody is told about a save that rolled back; skipped
+        // when an MHO finalized it themselves.
+        $finalizedBy = $request->user();
+        DB::afterCommit(fn () => app(\App\Services\Notification\NotificationService::class)
+            ->notifyMhoSoapFinalized($consultation->fresh() ?? $consultation, $finalizedBy));
+
         $appointmentId = (int) ($consultation->appointment_id ?? 0);
 
         $staffId = $this->currentUserId($request);

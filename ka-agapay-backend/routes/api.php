@@ -584,6 +584,11 @@ Route::prefix('v1')->group(function () {
             ->group(function () {
                 Route::put('/consultations/{id}/soap',       [ConsultationController::class, 'updateSoap']);
                 Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
+
+                // Read a photographed paper SOAP form into suggestions. Calls
+                // OCR.space, so the same tighter limit as the other OCR routes.
+                Route::post('/consultations/{id}/scan-soap', [OcrController::class, 'scanSoap'])
+                    ->middleware('throttle:20,1');
             });
 
         // =====================================================================

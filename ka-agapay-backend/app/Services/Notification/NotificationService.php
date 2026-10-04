@@ -5,6 +5,7 @@ namespace App\Services\Notification;
 
 use App\Models\Announcement;
 use App\Models\Appointment;
+use App\Models\Consultation;
 use App\Models\Event;
 use App\Models\FollowUpReminder;
 use App\Models\InventoryItem;
@@ -1077,6 +1078,102 @@ class NotificationService
             ]);
 
             return $result;
+        }
+    }
+
+    /**
+     * A SOAP note was finalized: ask the MHO to issue the e-prescription.
+     *
+     * The MHO is the RHU's doctor and the one who releases prescriptions.
+     * Without this, a SOAP finished by a doctor or the Super Admin waited
+     * until the MHO happened to open it. The notification opens that
+     * consultation, where Create E-Prescription is.
+     *
+     * Not sent when there is nothing to ask for:
+     *   - an MHO finalized it -- they can prescribe right there;
+     *   - the consultation already has a prescription or lab request.
+     * Sent once per consultation and MHO, however often it is completed.
+     * MHOs cover every RHU. Never throws: a notification must not undo a save.
+     *
+     * @return int how many people were notified
+     */
+    public function notifyMhoSoapFinalized(Consultation $consultation, ?User $finalizedBy): int
+    {
+        try {
+            $mhoRoles = ['mho', 'mho_admin'];
+
+            if ($finalizedBy && $finalizedBy->hasAnyRole($mhoRoles)) {
+                return 0;
+            }
+
+            if (
+                Schema::hasTable('prescriptions')
+                && DB::table('prescriptions')->where('consultation_id', $consultation->id)->exists()
+            ) {
+                return 0;
+            }
+
+            $roleIds = $this->resolveRoleIds($mhoRoles);
+
+            if ($roleIds === []) {
+                return 0;
+            }
+
+            $recipients = User::query()
+                ->whereIn('role_id', $roleIds)
+                ->where('account_status', 'active')
+                ->get()
+                ->filter(fn (User $user) => (int) $user->user_id !== (int) ($finalizedBy?->user_id ?? 0));
+
+            $consultation->loadMissing('resident');
+
+            $patient = trim((string) ($consultation->resident?->full_name ?? '')) ?: 'A patient';
+            $by = trim((string) ($finalizedBy?->full_name ?? '')) ?: 'RHU staff';
+            $diagnosis = \Illuminate\Support\Str::limit(
+                trim((string) ($consultation->diagnosis ?: $consultation->assessment ?: '')),
+                90
+            );
+
+            $title = 'SOAP ready for e-prescription';
+            $message = "{$patient}'s SOAP was finalized by {$by}."
+                . ($diagnosis !== '' ? " Diagnosis: {$diagnosis}." : '')
+                . ' Review it and issue the e-prescription or lab request.';
+
+            $dedupeKey = "soap_finalized:{$consultation->id}";
+            $notified = 0;
+
+            foreach ($recipients as $recipient) {
+                $existing = DB::table('notifications')
+                    ->where('type', NotificationTypes::SOAP_FINALIZED)
+                    ->where('notifiable_type', User::class)
+                    ->where('notifiable_id', $recipient->user_id);
+
+                $this->whereNotificationDataContains($existing, $dedupeKey);
+
+                if ($existing->exists()) {
+                    continue;
+                }
+
+                $sent = $this->notifyUser($recipient, NotificationTypes::SOAP_FINALIZED, $title, $message, [
+                    'consultation_id' => $consultation->id,
+                    'dedupe_key' => $dedupeKey,
+                    'related_type' => 'consultation',
+                    'related_id' => $consultation->id,
+                ], "/consultations/{$consultation->id}");
+
+                if ($sent) {
+                    $notified++;
+                }
+            }
+
+            return $notified;
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] SOAP-finalized notification failed.', [
+                'consultation_id' => $consultation->id ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return 0;
         }
     }
 

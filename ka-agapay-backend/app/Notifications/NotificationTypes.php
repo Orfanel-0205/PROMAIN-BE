@@ -23,6 +23,8 @@ class NotificationTypes
     // Consultations
     public const CONSULTATION_STARTED = 'consultation_started';
     public const CONSULTATION_COMPLETED = 'consultation_completed';
+    // To the MHO and doctors: a SOAP is finalized and waits for an e-prescription.
+    public const SOAP_FINALIZED = 'soap_finalized';
 
     // Telemedicine
     public const TELE_REQUEST_RECEIVED = 'telemedicine_request_received';

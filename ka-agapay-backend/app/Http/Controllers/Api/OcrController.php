@@ -371,6 +371,80 @@ class OcrController extends Controller
     }
 
     // =========================================================================
+    // PAPER SOAP OCR
+    // POST /api/v1/admin/consultations/{id}/scan-soap   { soap_file }
+    // =========================================================================
+
+    /**
+     * Read a photographed paper SOAP form into suggestions for the SOAP page.
+     *
+     * Saves nothing. The page fills only the EMPTY fields from the answer and
+     * staff review everything before saving the SOAP themselves -- OCR
+     * misreads, handwriting worst of all. Same people as editing a SOAP: the
+     * route sits in the Doctor/MHO/Super Admin group.
+     *
+     * The photo is read and thrown away, never stored: the SOAP that staff
+     * save is the record, and keeping a second copy of every patient's notes
+     * as an image would only be one more thing to protect.
+     *
+     * Read with OCR.space, which handles printed forms well and handwriting
+     * poorly. Gemini reads handwriting far better, but sending patient notes
+     * to it on the free tier lets Google use them; it can replace runOcr()
+     * here once the RHU's Gemini project has billing on.
+     */
+    public function scanSoap(Request $request, int $consultationId): JsonResponse
+    {
+        $request->validate([
+            'soap_file' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
+        ], [
+            'soap_file.required' => 'Choose a photo or PDF of the SOAP form.',
+            'soap_file.mimes' => 'Only JPG, PNG, WEBP or PDF files can be scanned.',
+            'soap_file.max' => 'That file is over 10 MB. Take the photo again at a lower size.',
+        ]);
+
+        $consultation = DB::table('consultations')->where('id', $consultationId)->first(['id', 'status']);
+
+        abort_unless($consultation, 404, 'Consultation not found.');
+        abort_if(
+            $consultation->status === 'completed',
+            422,
+            'This consultation is completed, so its SOAP can no longer be changed.'
+        );
+
+        $file = $request->file('soap_file');
+        $ocr = $this->runOcr((string) $file->getRealPath(), (string) $file->getMimeType());
+        $text = trim((string) ($ocr['text'] ?? ''));
+
+        if ($text === '') {
+            return response()->json([
+                'message' => 'No text could be read from this file. Try a sharper, well-lit photo, taken straight on, of a printed or clearly written form.',
+            ], 422);
+        }
+
+        $parsed = \App\Services\Consultation\SoapScanParser::parse($text);
+
+        // What was found, never the content: the audit log is read by more
+        // people than the patient's chart.
+        app(\App\Services\Audit\AuditService::class)->info('consultations', 'SOAP_SCANNED', [
+            'consultation_id' => $consultationId,
+            'fields_found' => array_keys($parsed['fields']),
+            'vitals_found' => array_keys($parsed['vitals']),
+            'lab_tests_found' => count($parsed['lab_tests']['laboratory'])
+                + count($parsed['lab_tests']['xray'])
+                + count($parsed['lab_tests']['ultrasound']),
+        ], $request);
+
+        return response()->json([
+            'message' => 'Read the form. Check every suggested field before saving.',
+            'fields' => (object) $parsed['fields'],
+            'vitals' => (object) $parsed['vitals'],
+            'lab_tests' => $parsed['lab_tests'],
+            'confidence' => (float) ($ocr['confidence'] ?? 0),
+            'text' => $text,
+        ]);
+    }
+
+    // =========================================================================
     // E-PRESCRIPTION OCR
     // POST /api/v1/ocr/prescription/{consultationId}
     // =========================================================================
