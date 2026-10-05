@@ -52,6 +52,34 @@ final class SoapScanParser
         'labs' => ['laboratory request', 'laboratory requests', 'lab request', 'lab requests', 'laboratory', 'labs', 'diagnostics', 'requests'],
     ];
 
+    /**
+     * The printed labels of the RHU's Individual Treatment Record.
+     *
+     * A photo of the folded form at an angle is read column by column, so the
+     * right-hand column's empty labels ("Bdate:", "FP Method:", "Cp #:") and
+     * checkbox rows ("Y N :Hypertension") turn up inside the S/O/A/P text --
+     * measured on a real photo of the form. A line is dropped when nothing is
+     * left of it but these labels, units and checkbox letters; anything with a
+     * value ("Age: 34", "BP 110/70") or real words is kept.
+     */
+    private const FORM_LABELS = [
+        'office of the municipal health officer', 'individual treatment record', 'municipality of malasiqui',
+        'pediatric client aged 0-24 months', 'others, please specify', 'personal/social history',
+        'past medical history', 'body circumference', 'head circumference', 'skinfold thickness',
+        'for females only', 'consultation date', 'altered sensorium', "guardian's name", 'awake and alert',
+        'period duration', 'menopausal age', 'general survey', 'visual acuity', 'civil status', 'client type',
+        'no. of child', 'middle name', 'philhealth #', 'first name', 'blood type', 'full name', 'last name',
+        'fp method', 'philhealth', 'education', 'dependent', 'religion', 'address', 'gender', 'member',
+        'length', 'limbs', 'bdate', 'cycle', 'waist', 'cp #', 'muac', 'none', 'spo2', 'temp', 'age', 'bmi',
+        'hip', 'lmp', 'v/s', 'bp', 'ht', 'wt', 'hr', 'pr', 'rr',
+    ];
+
+    /** The ITR's yes/no checklist; only dropped on a line with checkbox marks. */
+    private const CHECKLIST_ITEMS = [
+        'copd/emphysema/bronchitis', 'bronchial asthma', 'alcohol intake', 'heart disease', 'hypertension',
+        'tuberculosis', 'emphysema', 'bronchitis', 'allergies', 'diabetes', 'smoking', 'cancer', 'stroke', 'copd',
+    ];
+
     /** Shorthand clinicians write, mapped to the catalogue's stored values. */
     private const ALIASES = [
         'laboratory' => [
@@ -129,6 +157,10 @@ final class SoapScanParser
                 continue;
             }
 
+            if ($heading === null && self::isFormBoilerplate($line)) {
+                continue;
+            }
+
             $collected[$current][] = trim($line);
         }
 
@@ -156,11 +188,12 @@ final class SoapScanParser
         foreach ($alternatives as $word => $field) {
             $quoted = preg_quote($word, '/');
 
-            // One letter needs a colon ("S:") or a dash and a space ("S- ", as
-            // on the RHU's own form) -- never "A patient" or "A-fib". A word
-            // may also stand alone on its line, or be followed by a dash.
+            // One letter needs a colon ("S:"), or a dash or full stop and a
+            // space ("S- ", as on the RHU's own form, which OCR sometimes
+            // reads as "p. ") -- never "A patient" or "A-fib". A word may
+            // also stand alone on its line, or be followed by a dash.
             $pattern = strlen($word) === 1
-                ? '/^\s*' . $quoted . '\s*(?::|[\-\x{2013}](?=\s|$))\s*(.*)$/iu'
+                ? '/^\s*' . $quoted . '\s*(?::|[\-\x{2013}.](?=\s|$))\s*(.*)$/iu'
                 : '/^\s*' . $quoted . '\s*(?:[:\-\x{2013}]\s*(.*)|$)/iu';
 
             if (preg_match($pattern, $line, $m) === 1) {
@@ -169,6 +202,63 @@ final class SoapScanParser
         }
 
         return null;
+    }
+
+    /**
+     * Whether a line is only the ITR's printing: empty labels, units, and
+     * checkbox rows. See FORM_LABELS.
+     */
+    public static function isFormBoilerplate(string $line): bool
+    {
+        $text = mb_strtolower(trim($line));
+
+        if ($text === '') {
+            return false;
+        }
+
+        // Stray marks: "DY", "R", "cm".
+        if (mb_strlen((string) preg_replace('/[^\p{L}\p{N}]/u', '', $text)) <= 2) {
+            return true;
+        }
+
+        $tokens = preg_split('/[^\p{L}\p{N}]+/u', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $hasCheckboxMarks = str_contains($text, ':')
+            && array_intersect($tokens, ['y', 'n', 'on', 'dy', 'ly', 'yn', 'd', 'o']) !== [];
+
+        $matchedPrinting = false;
+
+        if ($hasCheckboxMarks) {
+            foreach (self::CHECKLIST_ITEMS as $item) {
+                if (str_contains($text, $item)) {
+                    $text = str_replace($item, ' ', $text);
+                    $matchedPrinting = true;
+                }
+            }
+        }
+
+        foreach (self::FORM_LABELS as $label) {
+            $pattern = '/(?<![\p{L}\p{N}])' . preg_quote($label, '/') . '(?![\p{L}\p{N}])/u';
+
+            if (preg_match($pattern, $text) === 1) {
+                $text = (string) preg_replace($pattern, ' ', $text);
+                $matchedPrinting = true;
+            }
+        }
+
+        if (!$matchedPrinting) {
+            return false;
+        }
+
+        $text = (string) preg_replace('/(?<![\p{L}\p{N}])(?:cm|°c|c|mm\/hg|kg)(?![\p{L}\p{N}])/u', ' ', $text);
+
+        // Only checkbox letters left ("Y", "ON", "CM DD") -- no value, no words.
+        foreach (preg_split('/[^\p{L}\p{N}]+/u', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+            if (preg_match('/^\p{L}{1,2}$/u', $token) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** @return array<string, string> the SOAP page's vital-sign fields */

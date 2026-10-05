@@ -165,6 +165,58 @@ class SoapScanParserTest extends TestCase
     }
 
     #[Test]
+    #[TestDox('a real phone photo of the ITR: the printed right-hand column does not leak into the SOAP')]
+    public function real_photo_of_the_itr(): void
+    {
+        // OCR.space's text for a phone photo of the folded form, taken at an
+        // angle (2026-10-05). It reads column by column, so the right-hand
+        // column's empty labels and checkboxes land between A- and P-, and
+        // the side column's after "Prescribe Drug/s". The handwriting itself
+        // ("Subjective", "Doctor") is misread, which is OCR, not parsing.
+        $ocr = <<<'TXT'
+            General Survey
+            JAwake and Alert
+            • Altered Sensorium
+            Chief Complaint
+            S- Subjectise
+            o- ob cotire
+            A- Arsesmeat (lite Diagnosis hr He Nores/ mitute)
+            Bdate:
+            FP Method:
+            -Y ON: Hypertension
+            DY ON :COPD/emphysema/bronchitis
+            LY ON: Tuberculosis
+            Skinfold Thickness:
+            cm
+            _cm Limbs :
+            cm MUAC :
+            cm
+            p. Planning (what is your plan for nures (midate)
+            Remarks & Diagnosis
+            Preter
+            Prescribe Drug/s
+            Member Dependent
+            Client Type: CM DD
+            Cp #:
+            Menopausal Age:
+            •:Others, please specify:
+            •:NONE
+            TXT;
+
+        $fields = SoapScanParser::parse($ocr)['fields'];
+
+        $this->assertSame('Arsesmeat (lite Diagnosis hr He Nores/ mitute)', $fields['assessment']);
+        $this->assertSame('Planning (what is your plan for nures (midate)', $fields['plan']);
+        $this->assertSame('Preter', $fields['diagnosis']);
+        $this->assertArrayNotHasKey('prescribed_drugs', $fields, 'Printed labels were taken for prescribed drugs.');
+
+        // Real notes are never dropped as "printing".
+        foreach (['Age: 34', 'BP 110/70 mm/Hg', 'Hypertension', 'Hx: Hypertension', 'Patient awake and alert, afebrile'] as $note) {
+            $this->assertFalse(SoapScanParser::isFormBoilerplate($note), "\"{$note}\" was dropped.");
+        }
+    }
+
+    #[Test]
     #[TestDox('"A-fib" in a note is not an Assessment heading')]
     public function a_dash_needs_a_space(): void
     {
