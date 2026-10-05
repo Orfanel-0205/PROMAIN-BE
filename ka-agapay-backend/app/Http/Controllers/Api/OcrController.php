@@ -395,11 +395,14 @@ class OcrController extends Controller
     public function scanSoap(Request $request, int $consultationId): JsonResponse
     {
         $request->validate([
-            'soap_file' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
+            // 25 MB: a phone camera's full-size photo is 15-20 MB. The admin
+            // shrinks photos before uploading; this is the safety net, and
+            // runOcr() shrinks again before OCR.space's own limit.
+            'soap_file' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:25600'],
         ], [
             'soap_file.required' => 'Choose a photo or PDF of the SOAP form.',
             'soap_file.mimes' => 'Only JPG, PNG, WEBP or PDF files can be scanned.',
-            'soap_file.max' => 'That file is over 10 MB. Take the photo again at a lower size.',
+            'soap_file.max' => 'That file is over 25 MB. Take the photo again at a lower size.',
         ]);
 
         $consultation = DB::table('consultations')->where('id', $consultationId)->first(['id', 'status', 'rhu_id']);
