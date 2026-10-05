@@ -1113,18 +1113,6 @@ class NotificationService
                 return 0;
             }
 
-            $roleIds = $this->resolveRoleIds($mhoRoles);
-
-            if ($roleIds === []) {
-                return 0;
-            }
-
-            $recipients = User::query()
-                ->whereIn('role_id', $roleIds)
-                ->where('account_status', 'active')
-                ->get()
-                ->filter(fn (User $user) => (int) $user->user_id !== (int) ($finalizedBy?->user_id ?? 0));
-
             $consultation->loadMissing('resident');
 
             $patient = trim((string) ($consultation->resident?->full_name ?? '')) ?: 'A patient';
@@ -1135,39 +1123,16 @@ class NotificationService
                 90
             ), '. ');
 
-            $title = 'SOAP ready for e-prescription';
-            $message = "{$patient}'s SOAP was finalized by {$by}."
-                . ($diagnosis !== '' ? " Diagnosis: {$diagnosis}." : '')
-                . ' Review it and issue the e-prescription or lab request.';
-
-            $dedupeKey = "soap_finalized:{$consultation->id}";
-            $notified = 0;
-
-            foreach ($recipients as $recipient) {
-                $existing = DB::table('notifications')
-                    ->where('type', NotificationTypes::SOAP_FINALIZED)
-                    ->where('notifiable_type', User::class)
-                    ->where('notifiable_id', $recipient->user_id);
-
-                $this->whereNotificationDataContains($existing, $dedupeKey);
-
-                if ($existing->exists()) {
-                    continue;
-                }
-
-                $sent = $this->notifyUser($recipient, NotificationTypes::SOAP_FINALIZED, $title, $message, [
-                    'consultation_id' => $consultation->id,
-                    'dedupe_key' => $dedupeKey,
-                    'related_type' => 'consultation',
-                    'related_id' => $consultation->id,
-                ], "/consultations/{$consultation->id}");
-
-                if ($sent) {
-                    $notified++;
-                }
-            }
-
-            return $notified;
+            return $this->notifyActiveMhos(
+                $consultation,
+                $finalizedBy,
+                NotificationTypes::SOAP_FINALIZED,
+                "soap_finalized:{$consultation->id}",
+                'SOAP ready for e-prescription',
+                "{$patient}'s SOAP was finalized by {$by}."
+                    . ($diagnosis !== '' ? " Diagnosis: {$diagnosis}." : '')
+                    . ' Review it and issue the e-prescription or lab request.'
+            );
         } catch (\Throwable $e) {
             logger()->warning('[NotificationService] SOAP-finalized notification failed.', [
                 'consultation_id' => $consultation->id ?? null,
@@ -1176,6 +1141,100 @@ class NotificationService
 
             return 0;
         }
+    }
+
+    /**
+     * A nurse, midwife or BHW sent their part of the SOAP to the MHO.
+     *
+     * As on the MHO's Individual Treatment Record: they fill the vital signs
+     * and S, O, A, P; the doctor writes Remarks & Diagnosis and Prescribe
+     * Drug/s, completes the record and issues the e-prescription. The
+     * notification opens the consultation for that. Once per consultation
+     * and MHO; never throws.
+     *
+     * @return int how many people were notified
+     */
+    public function notifyMhoSoapForReview(Consultation $consultation, ?User $sentBy): int
+    {
+        try {
+            $consultation->loadMissing('resident');
+
+            $patient = trim((string) ($consultation->resident?->full_name ?? '')) ?: 'A patient';
+            $by = trim((string) ($sentBy?->full_name ?? '')) ?: 'RHU staff';
+            $assessment = rtrim(\Illuminate\Support\Str::limit(trim((string) ($consultation->assessment ?? '')), 90), '. ');
+
+            return $this->notifyActiveMhos(
+                $consultation,
+                $sentBy,
+                NotificationTypes::SOAP_FOR_REVIEW,
+                "soap_for_review:{$consultation->id}",
+                'SOAP sent for your review',
+                "{$by} sent {$patient}'s SOAP for your review."
+                    . ($assessment !== '' ? " Their assessment: {$assessment}." : '')
+                    . ' Add the diagnosis and drugs, complete the record, and issue the e-prescription.'
+            );
+        } catch (\Throwable $e) {
+            logger()->warning('[NotificationService] SOAP-for-review notification failed.', [
+                'consultation_id' => $consultation->id ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+    }
+
+    /**
+     * One notification to every active MHO (they cover all RHUs), except the
+     * person who caused it, and never twice for the same dedupe key. Opens
+     * the consultation.
+     */
+    private function notifyActiveMhos(
+        Consultation $consultation,
+        ?User $except,
+        string $type,
+        string $dedupeKey,
+        string $title,
+        string $message
+    ): int {
+        $roleIds = $this->resolveRoleIds(['mho', 'mho_admin']);
+
+        if ($roleIds === []) {
+            return 0;
+        }
+
+        $recipients = User::query()
+            ->whereIn('role_id', $roleIds)
+            ->where('account_status', 'active')
+            ->get()
+            ->filter(fn (User $user) => (int) $user->user_id !== (int) ($except?->user_id ?? 0));
+
+        $notified = 0;
+
+        foreach ($recipients as $recipient) {
+            $existing = DB::table('notifications')
+                ->where('type', $type)
+                ->where('notifiable_type', User::class)
+                ->where('notifiable_id', $recipient->user_id);
+
+            $this->whereNotificationDataContains($existing, $dedupeKey);
+
+            if ($existing->exists()) {
+                continue;
+            }
+
+            $sent = $this->notifyUser($recipient, $type, $title, $message, [
+                'consultation_id' => $consultation->id,
+                'dedupe_key' => $dedupeKey,
+                'related_type' => 'consultation',
+                'related_id' => $consultation->id,
+            ], "/consultations/{$consultation->id}");
+
+            if ($sent) {
+                $notified++;
+            }
+        }
+
+        return $notified;
     }
 
     public function notifyEventPublished(Event $event): void

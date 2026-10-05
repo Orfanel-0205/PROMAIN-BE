@@ -584,23 +584,30 @@ Route::prefix('v1')->group(function () {
                 Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
             });
 
-        // Writing and finishing a SOAP: the RHU staff who see the patient, as
-        // on the MHO's Individual Treatment Record -- nurses, midwives and
-        // BHWs fill the vitals and S/O/A/P, the doctor the diagnosis and the
-        // drugs. Finishing a SOAP tells the MHO to issue the e-prescription,
-        // which only a Doctor, MHO or Super Admin can do
-        // (PrescriptionController). Each writes only their own RHU's
-        // consultations (ConsultationController::assertCanWriteSoap).
+        // Writing a SOAP, as on the MHO's Individual Treatment Record: nurses,
+        // midwives and BHWs fill the vitals and S/O/A/P and Send to MHO; the
+        // doctor writes Remarks & Diagnosis and Prescribe Drug/s
+        // (ConsultationController::assertNotWritingDoctorPart). Each writes
+        // only their own RHU's consultations (assertCanWriteSoap).
         Route::middleware('role:doctor,mho,super_admin,nurse,midwife,bhw')
             ->prefix('admin')
             ->group(function () {
-                Route::put('/consultations/{id}/soap',       [ConsultationController::class, 'updateSoap']);
-                Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
+                Route::put('/consultations/{id}/soap',             [ConsultationController::class, 'updateSoap']);
+                Route::post('/consultations/{id}/send-for-review', [ConsultationController::class, 'sendForReview']);
 
                 // Read a photographed paper SOAP form into suggestions. Calls
                 // OCR.space, so the same tighter limit as the other OCR routes.
                 Route::post('/consultations/{id}/scan-soap', [OcrController::class, 'scanSoap'])
                     ->middleware('throttle:20,1');
+            });
+
+        // Completing the record is the doctor's, after the diagnosis and drugs.
+        // Completing tells the MHO to issue the e-prescription when a doctor
+        // other than the MHO completed it.
+        Route::middleware('role:doctor,mho,mho_admin,super_admin')
+            ->prefix('admin')
+            ->group(function () {
+                Route::patch('/consultations/{id}/complete', [ConsultationController::class, 'complete']);
             });
 
         // =====================================================================

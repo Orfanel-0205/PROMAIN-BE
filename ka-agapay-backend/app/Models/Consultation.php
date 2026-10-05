@@ -80,6 +80,9 @@ class Consultation extends Model
         'heatmap_posted_at' => 'datetime',
         'heatmap_signal_expires_at' => 'datetime',
 
+        // "Send to MHO" by a nurse, midwife or BHW (ConsultationController::sendForReview).
+        'sent_for_review_at' => 'datetime',
+
         'pediatric_client' => 'boolean',
         'awake_and_alert' => 'boolean',
         'altered_sensorium' => 'boolean',
@@ -103,6 +106,12 @@ class Consultation extends Model
     public function firstAttendant(): BelongsTo
     {
         return $this->belongsTo(User::class, 'first_attended_by', 'user_id');
+    }
+
+    /** The nurse, midwife or BHW who sent the SOAP to the MHO. */
+    public function reviewRequester(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'sent_for_review_by', 'user_id');
     }
 
     public function medicalReports(): HasMany

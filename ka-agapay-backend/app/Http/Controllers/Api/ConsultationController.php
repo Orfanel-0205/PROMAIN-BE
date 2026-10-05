@@ -262,21 +262,62 @@ class ConsultationController extends Controller
         );
     }
 
-    public function updateSoap(Request $request, int $id): JsonResponse
+    /*
+     * WHO WRITES WHICH PART -- the MHO's Individual Treatment Record
+     *
+     * Nurses, midwives and BHWs fill the vital signs and S, O, A (their own
+     * assessment) and P (their plan), then Send to MHO. The doctor -- the MHO,
+     * a doctor, or the Super Admin -- writes Remarks & Diagnosis, Treatment and
+     * Prescribe Drug/s, completes the record, and issues the e-prescription.
+     */
+    public const DOCTOR_ROLES = ['doctor', 'mho', 'mho_admin', 'super_admin', 'superadmin'];
+
+    /** The doctor's sections of the form. */
+    private const DOCTOR_FIELDS = ['diagnosis', 'treatment', 'treatment_plan', 'prescribed_drugs'];
+
+    private function isDoctorSide(Request $request): bool
     {
-        $consultation = Consultation::with('appointment')->findOrFail($id);
+        return (bool) $request->user()?->hasAnyRole(self::DOCTOR_ROLES);
+    }
 
-        $this->assertCanWriteSoap($request, $consultation);
-
-        if ($consultation->status === 'completed') {
-            return response()->json([
-                'message' => 'This consultation is already completed and cannot be edited.',
-            ], 422);
+    /**
+     * Nurses, midwives and BHWs may send the doctor's sections back unchanged
+     * -- the SOAP page posts the whole form -- but not change them, and may
+     * not complete the record.
+     */
+    private function assertNotWritingDoctorPart(Request $request, Consultation $consultation, array $payload): void
+    {
+        if ($this->isDoctorSide($request)) {
+            return;
         }
 
-        $this->ensureFirstAttended($consultation, $request);
+        abort_if(
+            ($payload['status'] ?? null) === 'completed',
+            403,
+            'The doctor (MHO) completes the record. Use "Send to MHO" when your part of the SOAP is done.'
+        );
 
-        $validated = $request->validate([
+        $changed = array_filter(self::DOCTOR_FIELDS, function (string $field) use ($payload, $consultation) {
+            if (!array_key_exists($field, $payload)) {
+                return false;
+            }
+
+            $column = $field === 'treatment_plan' ? 'treatment' : $field;
+
+            return trim((string) $payload[$field]) !== trim((string) ($consultation->{$column} ?? ''));
+        });
+
+        abort_if(
+            $changed !== [],
+            403,
+            'Remarks & Diagnosis, Treatment and Prescribe Drug/s are written by the doctor (MHO). Write your assessment and plan, then use "Send to MHO".'
+        );
+    }
+
+    /** What the SOAP page may send. */
+    private function soapRules(): array
+    {
+        return [
             'consultation_date' => ['nullable', 'date'],
             'chief_complaint' => ['nullable', 'string'],
             'diagnosis' => ['nullable', 'string'],
@@ -316,7 +357,91 @@ class ConsultationController extends Controller
             'general_survey' => ['nullable', 'string', 'max:100'],
             'awake_and_alert' => ['nullable', 'boolean'],
             'altered_sensorium' => ['nullable', 'boolean'],
+        ];
+    }
+
+    /**
+     * POST /admin/consultations/{id}/send-for-review
+     *
+     * A nurse, midwife or BHW has done their part of the SOAP: save what is
+     * on screen, mark it sent, and tell the MHO. The record stays open -- the
+     * MHO adds the diagnosis and drugs and completes it.
+     */
+    public function sendForReview(Request $request, int $id): JsonResponse
+    {
+        $consultation = Consultation::with('appointment')->findOrFail($id);
+
+        $this->assertCanWriteSoap($request, $consultation);
+
+        if (in_array($consultation->status, ['completed', 'cancelled'], true)) {
+            return response()->json([
+                'message' => 'This consultation is already ' . $consultation->status . '.',
+            ], 422);
+        }
+
+        $this->ensureFirstAttended($consultation, $request);
+
+        $validated = $request->validate($this->soapRules());
+        unset($validated['status']);
+
+        $this->assertNotWritingDoctorPart($request, $consultation, $validated);
+
+        if ($validated !== []) {
+            $updates = $this->buildSoapUpdates($consultation, $validated, $request);
+            unset($updates['status'], $updates['completed_at']);
+            $consultation->update($updates);
+            $consultation->refresh();
+        }
+
+        // The nurse's part of the form: the complaint, their assessment and plan.
+        $missing = array_keys(array_filter([
+            'Subjective' => trim((string) ($consultation->subjective ?: $consultation->chief_complaint)),
+            'Assessment' => trim((string) $consultation->assessment),
+            'Plan' => trim((string) $consultation->plan),
+        ], fn ($value) => $value === ''));
+
+        if ($missing !== []) {
+            return response()->json([
+                'message' => 'Fill in ' . implode(', ', $missing) . ' before sending the SOAP to the MHO.',
+                'errors' => ['soap' => ['Subjective, Assessment and Plan are required.']],
+            ], 422);
+        }
+
+        $consultation->forceFill(array_filter([
+            'sent_for_review_at' => now(),
+            'sent_for_review_by' => $this->currentUserId($request) ?: null,
+            // A record a nurse has worked on is no longer just "open".
+            'status' => $consultation->status === 'open' ? 'ongoing' : null,
+        ], fn ($value) => $value !== null))->save();
+
+        $notified = app(\App\Services\Notification\NotificationService::class)
+            ->notifyMhoSoapForReview($consultation->fresh(), $request->user());
+
+        return response()->json([
+            'message' => $notified > 0
+                ? "Sent to the MHO. {$notified} MHO" . ($notified === 1 ? ' was' : 's were') . ' notified.'
+                : 'Sent to the MHO.',
+            'consultation' => $consultation->fresh($this->consultationRelations()),
         ]);
+    }
+
+    public function updateSoap(Request $request, int $id): JsonResponse
+    {
+        $consultation = Consultation::with('appointment')->findOrFail($id);
+
+        $this->assertCanWriteSoap($request, $consultation);
+
+        if ($consultation->status === 'completed') {
+            return response()->json([
+                'message' => 'This consultation is already completed and cannot be edited.',
+            ], 422);
+        }
+
+        $this->ensureFirstAttended($consultation, $request);
+
+        $validated = $request->validate($this->soapRules());
+
+        $this->assertNotWritingDoctorPart($request, $consultation, $validated);
 
         $updates = $this->buildSoapUpdates($consultation, $validated, $request);
 
@@ -430,12 +555,17 @@ class ConsultationController extends Controller
             $updates['chief_complaint'] = $updates['subjective'];
         }
 
-        if (!empty($updates['assessment']) && empty($updates['diagnosis'])) {
-            $updates['diagnosis'] = $updates['assessment'];
-        }
+        // A doctor's own assessment and plan stand in for an empty diagnosis
+        // and treatment. A nurse's, midwife's or BHW's do not: on the ITR the
+        // diagnosis is the doctor's to write, after reviewing theirs.
+        if ($this->isDoctorSide($request)) {
+            if (!empty($updates['assessment']) && empty($updates['diagnosis'])) {
+                $updates['diagnosis'] = $updates['assessment'];
+            }
 
-        if (!empty($updates['plan']) && empty($updates['treatment'])) {
-            $updates['treatment'] = $updates['plan'];
+            if (!empty($updates['plan']) && empty($updates['treatment'])) {
+                $updates['treatment'] = $updates['plan'];
+            }
         }
 
         if (($updates['status'] ?? null) === 'completed') {
@@ -785,6 +915,11 @@ class ConsultationController extends Controller
 
         if (method_exists(Consultation::class, 'firstAttendant')) {
             $relations[] = 'firstAttendant';
+        }
+
+        // Who sent the SOAP to the MHO, for the banner on the SOAP page.
+        if (Schema::hasColumn('consultations', 'sent_for_review_by')) {
+            $relations[] = 'reviewRequester';
         }
 
         if (method_exists(Consultation::class, 'medicalReports')) {

@@ -49,39 +49,76 @@ class SoapWorkflowTest extends TestCase
     #[TestDox('only the MHO is told, once, and not when there is nothing to ask for')]
     public function the_notification_rules(): void
     {
-        $notify = $this->method(
-            $this->source('Services/Notification/NotificationService.php'),
-            'public function notifyMhoSoapFinalized(',
-            4500
-        );
+        $service = $this->source('Services/Notification/NotificationService.php');
+        $notify = $this->method($service, 'public function notifyMhoSoapFinalized(', 2200);
 
         // Not when an MHO finalized it, nor when a prescription already exists.
         $this->assertMatchesRegularExpression('/hasAnyRole\(\$mhoRoles\)\)\s*\{\s*return 0;/', $notify);
         $this->assertStringContainsString("->where('consultation_id', \$consultation->id)->exists()", $notify);
-
-        // MHOs only, active ones, never the person who finalized it.
         $this->assertStringContainsString("\$mhoRoles = ['mho', 'mho_admin'];", $notify);
-        $this->assertStringContainsString("->where('account_status', 'active')", $notify);
 
-        // Once per consultation, and it opens that consultation.
+        // Once per consultation; a notification must never undo the save.
         $this->assertStringContainsString('"soap_finalized:{$consultation->id}"', $notify);
-        $this->assertStringContainsString('"/consultations/{$consultation->id}"', $notify);
-
-        // A notification must never undo the save.
         $this->assertStringContainsString('catch (\Throwable $e)', $notify);
+
+        // "Sent for your review" goes the same way, with its own once-only key.
+        $review = $this->method($service, 'public function notifyMhoSoapForReview(', 1800);
+        $this->assertStringContainsString('"soap_for_review:{$consultation->id}"', $review);
+        $this->assertStringContainsString('catch (\Throwable $e)', $review);
+
+        // To active MHOs only, never the person who caused it, opening the record.
+        $send = $this->method($service, 'private function notifyActiveMhos(', 1800);
+        $this->assertStringContainsString("['mho', 'mho_admin']", $send);
+        $this->assertStringContainsString("->where('account_status', 'active')", $send);
+        $this->assertStringContainsString('!== (int) ($except?->user_id ?? 0)', $send);
+        $this->assertStringContainsString('"/consultations/{$consultation->id}"', $send);
     }
 
     #[Test]
-    #[TestDox('nurses, midwives and BHWs write, finish and scan SOAPs alongside doctors, MHOs and the Super Admin')]
+    #[TestDox('nurses, midwives and BHWs write, scan and send SOAPs; only the doctor completes them')]
     public function soap_writers(): void
     {
         $routes = (string) file_get_contents(__DIR__ . '/../../routes/api.php');
-        $group = $this->method($routes, "Route::middleware('role:doctor,mho,super_admin,nurse,midwife,bhw')", 900);
+        $writers = $this->method($routes, "Route::middleware('role:doctor,mho,super_admin,nurse,midwife,bhw')", 900);
 
-        $this->assertStringContainsString("Route::put('/consultations/{id}/soap'", $group);
-        $this->assertStringContainsString("Route::patch('/consultations/{id}/complete'", $group);
-        $this->assertStringContainsString("Route::post('/consultations/{id}/scan-soap', [OcrController::class, 'scanSoap'])", $group);
-        $this->assertStringContainsString("->middleware('throttle:20,1')", $group);
+        $this->assertStringContainsString("Route::put('/consultations/{id}/soap'", $writers);
+        $this->assertStringContainsString("Route::post('/consultations/{id}/send-for-review'", $writers);
+        $this->assertStringContainsString("Route::post('/consultations/{id}/scan-soap', [OcrController::class, 'scanSoap'])", $writers);
+        $this->assertStringContainsString("->middleware('throttle:20,1')", $writers);
+        $this->assertStringNotContainsString('/complete', $writers, 'Nurses, midwives or BHWs can complete the record.');
+
+        $doctors = $this->method($routes, "Route::middleware('role:doctor,mho,mho_admin,super_admin')", 400);
+        $this->assertStringContainsString("Route::patch('/consultations/{id}/complete'", $doctors);
+    }
+
+    #[Test]
+    #[TestDox("the doctor's sections of the ITR are the doctor's: nurses can neither change them nor have them filled for them")]
+    public function the_doctors_part(): void
+    {
+        $controller = $this->source('Http/Controllers/Api/ConsultationController.php');
+
+        $this->assertStringContainsString(
+            "private const DOCTOR_FIELDS = ['diagnosis', 'treatment', 'treatment_plan', 'prescribed_drugs'];",
+            $controller
+        );
+
+        // Checked on every way a SOAP is written by the staff.
+        foreach (['public function updateSoap(', 'public function sendForReview('] as $action) {
+            $this->assertStringContainsString(
+                '$this->assertNotWritingDoctorPart($request, $consultation,',
+                $this->method($controller, $action, 1800),
+                "{$action} lets a nurse write the doctor's sections."
+            );
+        }
+
+        // A nurse's assessment is not copied into the diagnosis.
+        $build = $this->method($controller, 'private function buildSoapUpdates(', 1600);
+        $guard = strpos($build, 'if ($this->isDoctorSide($request)) {');
+        $copy = strpos($build, "\$updates['diagnosis'] = \$updates['assessment'];");
+
+        $this->assertNotFalse($guard);
+        $this->assertNotFalse($copy);
+        $this->assertLessThan($copy, $guard, 'The assessment is copied into the diagnosis for everyone.');
     }
 
     #[Test]

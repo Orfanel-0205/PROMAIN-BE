@@ -25,6 +25,8 @@ class NotificationTypes
     public const CONSULTATION_COMPLETED = 'consultation_completed';
     // To the MHO and doctors: a SOAP is finalized and waits for an e-prescription.
     public const SOAP_FINALIZED = 'soap_finalized';
+    // To the MHO: a nurse, midwife or BHW sent their part of the SOAP for review.
+    public const SOAP_FOR_REVIEW = 'soap_for_review';
 
     // Telemedicine
     public const TELE_REQUEST_RECEIVED = 'telemedicine_request_received';
