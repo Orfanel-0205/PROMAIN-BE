@@ -39,7 +39,8 @@ class SoapScanParserTest extends TestCase
         $this->assertStringStartsWith('BP 120/80', $fields['objective']);
         $this->assertSame('Community acquired pneumonia', $fields['assessment']);
         $this->assertStringStartsWith('CBC, U/A, CXR PA', $fields['plan']);
-        $this->assertSame('Amoxicillin 500mg TID x 7 days', $fields['treatment']);
+        // "Rx:" is the prescription: the SOAP page's Prescribed Drug/s field.
+        $this->assertSame('Amoxicillin 500mg TID x 7 days', $fields['prescribed_drugs']);
 
         foreach ($fields as $text) {
             $this->assertStringNotContainsString('Juan Dela Cruz', $text, 'The form header leaked into the SOAP.');
@@ -103,6 +104,74 @@ class SoapScanParserTest extends TestCase
 
         $this->assertSame([], $labs['ultrasound']);
         $this->assertSame(['ALT', 'Random Blood Sugar'], $labs['laboratory']);
+    }
+
+    #[Test]
+    #[TestDox("the RHU's own Individual Treatment Record is read")]
+    public function the_rhu_itr_form(): void
+    {
+        // Shaped like OCR of the Malasiqui MHO's ITR: printed labels, the
+        // blanks staff fill, "S-" headings, and the doctor's sections below.
+        $form = <<<'TXT'
+            Municipality of Malasiqui
+            OFFICE OF THE MUNICIPAL HEALTH OFFICER
+            Individual Treatment Record
+            Consultation Date: 10/05/2026            Client Type: M  D
+            Full Name: Sample, Test Demo
+            Age: 34  Bdate: 01/01/1990  Gender: M  Civil Status: S
+            V/S: Ht: 165  Wt: 61  BMI: 22.4  Temp: 38.4 °C  BP: 110/70 mm/Hg  SpO2: 96  HR: 98  PR: 98  RR: 22
+            Blood Type: O  Visual Acuity: L 20/20  R 20/30
+            Personal/Social History
+            Y N :Smoking   Y N :Alcohol Intake
+            Past Medical History
+            Y N :Hypertension   Y N :Tuberculosis
+            General Survey
+            Awake and Alert   Altered Sensorium
+            Chief Complaint
+            S- Fever and cough for 3 days
+            O- Crackles right lower lung
+            A- Ineffective airway clearance
+            P- Increase fluids, monitor temperature, refer to MHO
+            Remarks & Diagnosis
+            Community acquired pneumonia. Request CBC, CXR PA
+            Prescribe Drug/s
+            Amoxicillin 500mg TID x 7 days
+            TXT;
+
+        $parsed = SoapScanParser::parse($form);
+
+        $this->assertSame('Fever and cough for 3 days', $parsed['fields']['subjective']);
+        $this->assertSame('Crackles right lower lung', $parsed['fields']['objective']);
+        $this->assertSame('Ineffective airway clearance', $parsed['fields']['assessment']);
+        $this->assertSame('Increase fluids, monitor temperature, refer to MHO', $parsed['fields']['plan']);
+        $this->assertSame('Community acquired pneumonia. Request CBC, CXR PA', $parsed['fields']['diagnosis']);
+        $this->assertSame('Amoxicillin 500mg TID x 7 days', $parsed['fields']['prescribed_drugs']);
+
+        // The patient details and checklists above "Chief Complaint" stay out.
+        foreach ($parsed['fields'] as $text) {
+            $this->assertStringNotContainsString('Smoking', $text);
+            $this->assertStringNotContainsString('Sample, Test', $text);
+        }
+
+        $this->assertSame('110/70', $parsed['vitals']['blood_pressure']);
+        $this->assertSame('38.4', $parsed['vitals']['temperature_celsius']);
+        $this->assertSame('22.4', $parsed['vitals']['bmi']);
+        $this->assertSame('20/20', $parsed['vitals']['visual_acuity_left']);
+        $this->assertSame('20/30', $parsed['vitals']['visual_acuity_right']);
+
+        // Lab requests written in the doctor's remarks are found.
+        $this->assertSame(['CBC'], $parsed['lab_tests']['laboratory']);
+        $this->assertSame(['CXR - PA View'], $parsed['lab_tests']['xray']);
+    }
+
+    #[Test]
+    #[TestDox('"A-fib" in a note is not an Assessment heading')]
+    public function a_dash_needs_a_space(): void
+    {
+        $fields = SoapScanParser::parse("S- palpitations\nA-fib on ECG last year")['fields'];
+
+        $this->assertArrayNotHasKey('assessment', $fields);
+        $this->assertStringContainsString('A-fib on ECG last year', $fields['subjective']);
     }
 
     #[Test]

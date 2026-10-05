@@ -572,18 +572,26 @@ Route::prefix('v1')->group(function () {
                 Route::patch('/appointments/{id}/status',            [AppointmentController::class, 'adminUpdateStatus']);
                 Route::post('/appointments/{id}/add-to-queue',       [AppointmentController::class, 'addToQueueFromAppointment']);
                 Route::post('/appointments/{id}/start-consultation', [AppointmentController::class, 'startConsultationFromAppointment']);
+            });
 
+        // Consultations: also BHWs, who conduct SOAPs on the RHU's ITR form
+        // (see below). The list is scoped to each person's RHU.
+        Route::middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife,bhw')
+            ->prefix('admin')
+            ->group(function () {
                 Route::get('/consultations',      [ConsultationController::class, 'index']);
                 Route::post('/consultations',     [ConsultationController::class, 'store']);
                 Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
             });
 
-        // Writing and finishing a SOAP: the clinical staff who see the patient.
-        // Nurses and midwives document; finishing a SOAP tells the MHO to
-        // issue the e-prescription, which only a Doctor, MHO or Super Admin
-        // can do (PrescriptionController). Each writes only their own RHU's
+        // Writing and finishing a SOAP: the RHU staff who see the patient, as
+        // on the MHO's Individual Treatment Record -- nurses, midwives and
+        // BHWs fill the vitals and S/O/A/P, the doctor the diagnosis and the
+        // drugs. Finishing a SOAP tells the MHO to issue the e-prescription,
+        // which only a Doctor, MHO or Super Admin can do
+        // (PrescriptionController). Each writes only their own RHU's
         // consultations (ConsultationController::assertCanWriteSoap).
-        Route::middleware('role:doctor,mho,super_admin,nurse,midwife')
+        Route::middleware('role:doctor,mho,super_admin,nurse,midwife,bhw')
             ->prefix('admin')
             ->group(function () {
                 Route::put('/consultations/{id}/soap',       [ConsultationController::class, 'updateSoap']);

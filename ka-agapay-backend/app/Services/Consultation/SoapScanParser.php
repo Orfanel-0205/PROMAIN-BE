@@ -32,14 +32,22 @@ use App\Support\LabTestCatalogue;
  */
 final class SoapScanParser
 {
-    /** Heading words for each field, as written on paper forms. */
+    /**
+     * Heading words for each field, as written on paper forms.
+     *
+     * Includes the RHU's own Individual Treatment Record: "Chief Complaint"
+     * over "S-", "O-", "A-", "P-" lines, then "Remarks & Diagnosis" and
+     * "Prescribe Drug/s" for the doctor.
+     */
     private const HEADINGS = [
         'subjective' => ['subjective', 'chief complaint', 'history of present illness', 'hpi', 'c/c', 'cc', 's'],
         'objective' => ['objective', 'physical examination', 'physical exam', 'p.e.', 'pe', 'o'],
         'assessment' => ['assessment', 'a'],
-        'diagnosis' => ['diagnosis', 'impression', 'dx'],
-        'plan' => ['plan', 'p'],
-        'treatment' => ['treatment', 'management', 'medications', 'meds', 'tx', 'rx'],
+        'diagnosis' => ['remarks & diagnosis', 'remarks and diagnosis', 'remarks', 'diagnosis', 'impression', 'dx'],
+        'plan' => ['planning', 'plan', 'p'],
+        'treatment' => ['treatment', 'management', 'tx'],
+        // The SOAP page's "Prescribed Drug/s" field.
+        'prescribed_drugs' => ['prescribe drug/s', 'prescribed drug/s', 'prescribe drugs', 'prescribed drugs', 'prescribed drug', 'medications', 'meds', 'rx'],
         // Not a SOAP field: only searched for lab tests.
         'labs' => ['laboratory request', 'laboratory requests', 'lab request', 'lab requests', 'laboratory', 'labs', 'diagnostics', 'requests'],
     ];
@@ -81,7 +89,14 @@ final class SoapScanParser
         return [
             'fields' => $sections,
             'vitals' => self::vitals($text),
-            'lab_tests' => self::labTests(trim(($sections['plan'] ?? '') . "\n" . ($sections['treatment'] ?? '') . "\n" . $labs)),
+            // Where requests are written: the plan, the doctor's remarks, the
+            // drugs/treatment, and any "Labs" section.
+            'lab_tests' => self::labTests(trim(implode("\n", [
+                $sections['plan'] ?? '',
+                $sections['diagnosis'] ?? '',
+                $sections['treatment'] ?? '',
+                $labs,
+            ]))),
         ];
     }
 
@@ -141,10 +156,11 @@ final class SoapScanParser
         foreach ($alternatives as $word => $field) {
             $quoted = preg_quote($word, '/');
 
-            // One letter needs a colon ("S:"); a word may also stand alone on
-            // its line, or be followed by a dash.
+            // One letter needs a colon ("S:") or a dash and a space ("S- ", as
+            // on the RHU's own form) -- never "A patient" or "A-fib". A word
+            // may also stand alone on its line, or be followed by a dash.
             $pattern = strlen($word) === 1
-                ? '/^\s*' . $quoted . '\s*:\s*(.*)$/iu'
+                ? '/^\s*' . $quoted . '\s*(?::|[\-\x{2013}](?=\s|$))\s*(.*)$/iu'
                 : '/^\s*' . $quoted . '\s*(?:[:\-\x{2013}]\s*(.*)|$)/iu';
 
             if (preg_match($pattern, $line, $m) === 1) {
@@ -192,6 +208,25 @@ final class SoapScanParser
 
             if ($weight > 0 && $weight < 400) {
                 $vitals['weight'] = rtrim(rtrim(number_format($weight, 1, '.', ''), '0'), '.');
+            }
+        }
+
+        if (preg_match('/\bBMI\s*[:=]?\s*(\d{1,2}(?:[.,]\d{1,2})?)\b/iu', $text, $m) === 1) {
+            $bmi = (float) str_replace(',', '.', $m[1]);
+
+            if ($bmi >= 10 && $bmi <= 70) {
+                $vitals['bmi'] = rtrim(rtrim(number_format($bmi, 1, '.', ''), '0'), '.');
+            }
+        }
+
+        // "Visual Acuity: L 20/20  R 20/30", as on the RHU form.
+        if (preg_match('/visual\s*acuity\s*[:=]?(.*)$/imu', $text, $line) === 1) {
+            if (preg_match('/\bL\s*[:=\-]?\s*(\d{1,3}\s*\/\s*\d{1,3})/u', $line[1], $m) === 1) {
+                $vitals['visual_acuity_left'] = preg_replace('/\s+/', '', $m[1]);
+            }
+
+            if (preg_match('/\bR\s*[:=\-]?\s*(\d{1,3}\s*\/\s*\d{1,3})/u', $line[1], $m) === 1) {
+                $vitals['visual_acuity_right'] = preg_replace('/\s+/', '', $m[1]);
             }
         }
 

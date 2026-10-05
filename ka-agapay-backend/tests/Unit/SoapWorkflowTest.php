@@ -72,11 +72,11 @@ class SoapWorkflowTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('nurses and midwives write, finish and scan SOAPs alongside doctors, MHOs and the Super Admin')]
+    #[TestDox('nurses, midwives and BHWs write, finish and scan SOAPs alongside doctors, MHOs and the Super Admin')]
     public function soap_writers(): void
     {
         $routes = (string) file_get_contents(__DIR__ . '/../../routes/api.php');
-        $group = $this->method($routes, "Route::middleware('role:doctor,mho,super_admin,nurse,midwife')", 900);
+        $group = $this->method($routes, "Route::middleware('role:doctor,mho,super_admin,nurse,midwife,bhw')", 900);
 
         $this->assertStringContainsString("Route::put('/consultations/{id}/soap'", $group);
         $this->assertStringContainsString("Route::patch('/consultations/{id}/complete'", $group);
