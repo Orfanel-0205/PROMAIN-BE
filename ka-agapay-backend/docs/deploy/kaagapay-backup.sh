@@ -46,6 +46,21 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
+# Never as root: run again as www-data.
+# ---------------------------------------------------------------------------
+# artisan writes into storage/ -- cache entries, the day's log -- as whoever
+# runs it. Run as root, those files belong to root and the web server
+# (www-data) can no longer read or write them. That is what produced the
+# "fopen(.../storage/framework/cache/...): Permission denied" and "Unable to
+# create a directory at .../storage/app/private/chat/attachments" alerts of
+# 21-25 September 2026. Run as root, the file archive also fails, so the dump
+# never leaves the droplet (4 times, 4-5 October 2026). The cron entry already
+# runs as www-data; this makes a manual "sudo kaagapay-backup.sh" safe too.
+if [ "$(id -u)" -eq 0 ]; then
+    exec sudo -u www-data -H "$0" "$@"
+fi
+
+# ---------------------------------------------------------------------------
 # Configure these three lines for the droplet, then leave the rest alone.
 # ---------------------------------------------------------------------------
 

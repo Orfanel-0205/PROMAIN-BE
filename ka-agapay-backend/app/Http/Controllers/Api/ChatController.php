@@ -296,6 +296,27 @@ class ChatController extends Controller
      *
      * @return array<int, array{mime:string, data:string}>
      */
+    /**
+     * The type to tell Gemini.
+     *
+     * The chat takes photos and voice notes, never video. But a voice note
+     * is an MPEG-4 container, and an Android recording's plain "isom" brand
+     * is detected as video/mp4. Told it was video, Gemini looked for frames
+     * and refused the message: "The video is corrupted or has wrong video
+     * metadata. 0 Frames found." (production, 2026-10-04, three times).
+     * Reproduced with an Android-style .m4a, which the same request accepts
+     * as audio/mp4.
+     */
+    public static function geminiMime(string $detected): string
+    {
+        return match (strtolower($detected)) {
+            'video/mp4', 'video/quicktime' => 'audio/mp4',
+            'video/3gpp' => 'audio/3gpp',
+            'video/webm' => 'audio/webm',
+            default => $detected,
+        };
+    }
+
     private function attachmentPart(Request $request): array
     {
         $file = $request->file('attachment');
@@ -305,7 +326,7 @@ class ChatController extends Controller
         }
 
         // Read from the file itself, not from the type the client claimed.
-        $mime = (string) $file->getMimeType();
+        $mime = self::geminiMime((string) $file->getMimeType());
 
         $contents = @file_get_contents($file->getRealPath());
 
