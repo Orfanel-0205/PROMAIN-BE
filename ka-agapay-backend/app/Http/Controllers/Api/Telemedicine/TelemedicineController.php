@@ -36,10 +36,17 @@ class TelemedicineController extends Controller
             'per_page'      => ['nullable', 'integer', 'min:5', 'max:100'],
         ]);
 
+        $user = $request->user();
+
+        // Staff see their RHU's board; a resident sees only their own requests
+        // (the app uses /requests/mine). Before this, a resident calling this
+        // list got every request at their RHU, complaints included.
+        $isStaff = $user->isStaffAccount();
+
         // RHU isolation: global staff may focus a facility (or see all); everyone
         // else is HARD-LOCKED to their own RHU regardless of the requested id.
         $rhuId = Rhu::filterRhuId(
-            $request->user(),
+            $user,
             isset($validated['rhu_id']) ? (int) $validated['rhu_id'] : null
         );
 
@@ -54,7 +61,10 @@ class TelemedicineController extends Controller
                 'session.assignedDoctor',
                 'session.bhwCompanion',
             ])
-            ->when($rhuId, fn ($q) => $q->forRhu((int) $rhuId))
+            ->when($isStaff && $rhuId, fn ($q) => $q->forRhu((int) $rhuId))
+            ->when(!$isStaff, fn ($q) => $q->where(fn ($own) => $own
+                ->where('resident_profile_id', $user->residentProfile?->id ?? 0)
+                ->orWhere('requested_by', $user->user_id)))
             ->when(
                 $request->filled('status') && $request->status !== 'all',
                 fn ($q) => $q->where('status', $request->status)
@@ -208,6 +218,9 @@ class TelemedicineController extends Controller
      */
     public function show(TelemedicineRequest $request): JsonResponse
     {
+        // The resident it is for, or staff of its RHU (TelemedicinePolicy::view).
+        $this->authorize('view', $request);
+
         $request->load([
             'residentProfile.user',
             'residentProfile.barangay',
@@ -328,6 +341,10 @@ class TelemedicineController extends Controller
         Request $request,
         TelemedicineRequest $telemedicineRequest
     ): JsonResponse {
+        // Nurses, midwives, the MHO and super admin, at the request's RHU
+        // (TelemedicinePolicy::cancel).
+        $this->authorize('cancel', $telemedicineRequest);
+
         $request->validate([
             'cancellation_reason' => ['required', 'string', 'max:500'],
         ]);

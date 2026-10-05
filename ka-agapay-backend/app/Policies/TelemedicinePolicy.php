@@ -6,6 +6,7 @@ namespace App\Policies;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
 use App\Models\User;
+use App\Support\Rhu;
 
 class TelemedicinePolicy
 {
@@ -39,19 +40,59 @@ class TelemedicinePolicy
         return $user->hasAnyRole(['staff_admin', 'mho', 'super_admin', 'bhw']);
     }
 
+    /**
+     * Who may cancel a telemedicine request: the RHU's nurses and midwives,
+     * and the MHO and super admin. Residents cannot; they ask the RHU. Set by
+     * the RHU (Oct 2026). Before, nobody's permission was checked at all, and
+     * any signed-in account could cancel anyone's request.
+     */
+    private const CANCEL_ROLES = ['nurse', 'midwife', 'mho', 'super_admin'];
+
     public function view(User $user, TelemedicineRequest|TelemedicineSession $model): bool
     {
-        if ($user->hasAnyRole(['staff_admin', 'mho', 'super_admin', 'bhw'])) {
-            return true;
-        }
-
         if ($model instanceof TelemedicineSession) {
+            if ($user->hasAnyRole(['staff_admin', 'mho', 'super_admin', 'bhw'])) {
+                return true;
+            }
+
             return $user->hasAnyRole(self::SESSION_STAFF_ROLES)
                 || $this->isSessionParticipant($user, $model);
         }
 
-        // Resident can see their own requests
-        return $user->residentProfile?->id === $model->resident_profile_id;
+        // A request: the resident it is for (or who booked it for them), or
+        // staff of the RHU it was sent to. It holds the complaint, vitals,
+        // the session notes and any referral. Until this was used, any
+        // signed-in account could read any request by its number.
+        return $this->isRequestOwner($user, $model)
+            || $this->isStaffOfRequestRhu($user, $model);
+    }
+
+    /** The resident the request is for, or whoever submitted it for them. */
+    public function isRequestOwner(User $user, TelemedicineRequest $request): bool
+    {
+        if ($request->requested_by !== null && (int) $request->requested_by === (int) $user->user_id) {
+            return true;
+        }
+
+        $profileId = $user->residentProfile?->id;
+
+        return $profileId !== null && (int) $profileId === (int) $request->resident_profile_id;
+    }
+
+    /**
+     * Staff at the request's RHU, by the rule the request LIST already uses
+     * (Rhu::filterRhuId): the MHO and super admin see every RHU, everyone
+     * else their own, so a staff member can open whatever their list shows.
+     */
+    private function isStaffOfRequestRhu(User $user, TelemedicineRequest $request): bool
+    {
+        if (!$user->isStaffAccount()) {
+            return false;
+        }
+
+        $rhuId = Rhu::filterRhuId($user, null);
+
+        return $rhuId === null || $rhuId === (int) $request->rhu_id;
     }
 
     /**
@@ -102,9 +143,8 @@ class TelemedicinePolicy
 
     public function cancel(User $user, TelemedicineRequest $request): bool
     {
-        // Admin can cancel any. Resident can only cancel their own.
-        if ($user->hasAnyRole(['staff_admin', 'mho', 'super_admin'])) return true;
-        return $user->residentProfile?->id === $request->resident_profile_id;
+        return $user->hasAnyRole(self::CANCEL_ROLES)
+            && $this->isStaffOfRequestRhu($user, $request);
     }
 
     public function createSession(User $user, TelemedicineRequest $request): bool

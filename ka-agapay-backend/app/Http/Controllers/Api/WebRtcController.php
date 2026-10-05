@@ -22,9 +22,13 @@ class WebRtcController extends Controller
         $session = TelemedicineSession::findOrFail($id);
         $user = $request->user();
 
-        // Authorize: only doctor or resident participant
-        // For simplicity, we allow authorized users.
-        // In production, add strict checks here.
+        // Only someone who may open this consultation gets its room: the
+        // patient, whoever booked it for them, the doctor, the BHW companion,
+        // or RHU telemedicine staff (TelemedicinePolicy::view). Knowing the
+        // room name is enough to join the call, so handing it out is handing
+        // out the call. Before this check any signed-in account, a resident
+        // included, could join any consultation by its session number.
+        $this->authorize('view', $session);
 
         // Create room if not exists
         if (!$session->room_id) {
@@ -44,6 +48,9 @@ class WebRtcController extends Controller
     public function signal(Request $request, int $id): JsonResponse
     {
         $session = TelemedicineSession::findOrFail($id);
+
+        // The same people as may join (see getJoinToken).
+        $this->authorize('view', $session);
 
         $request->validate([
             'receiver_id' => ['required', 'integer'],
@@ -84,6 +91,10 @@ class WebRtcController extends Controller
     public function getSignals(Request $request, int $id): JsonResponse
     {
         $session = TelemedicineSession::findOrFail($id);
+
+        // The same people as may join (see getJoinToken).
+        $this->authorize('view', $session);
+
         $signals = $this->webrtc->getPendingSignals($session, $request->user());
 
         return response()->json(['data' => $signals]);

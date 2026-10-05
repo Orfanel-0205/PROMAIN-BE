@@ -4,6 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,6 +24,16 @@ class PatientController extends Controller
 
     public function searchForPrescription(Request $request): JsonResponse
     {
+        // Staff only. This is the patient picker for prescriptions and walk-in
+        // queue tickets, and it returns names, mobile numbers and emails.
+        // Before this check any signed-in account, a resident included, could
+        // look anyone up.
+        abort_unless(
+            $request->user()?->isStaffAccount(),
+            403,
+            'Only RHU staff can search patients.'
+        );
+
         $validated = $request->validate([
             'search' => ['nullable', 'string', 'max:100'],
             'limit'  => ['nullable', 'integer', 'min:1', 'max:20'],
@@ -54,7 +65,12 @@ class PatientController extends Controller
             ? 'ILIKE'
             : 'LIKE';
 
+        // Patients are resident accounts. Staff accounts used to come back too
+        // (and were given a patient profile below); a staff member who is
+        // also a patient has a resident account of their own for that.
         $query = DB::table('users as u')
+            ->join('user_roles as ur', 'ur.role_id', '=', 'u.role_id')
+            ->whereIn(DB::raw('LOWER(ur.name)'), User::RESIDENT_ROLES)
             ->leftJoin('resident_profiles as rp', 'rp.user_id', '=', 'u.user_id');
 
         if (Schema::hasTable('barangays')) {

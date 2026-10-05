@@ -43,6 +43,10 @@ class FollowUpReminderController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        if ($denied = $this->staffOnly($request, 'view follow-ups')) {
+            return $denied;
+        }
+
         $query = FollowUpReminder::query()
             ->with(['user', 'rhu', 'createdBy', 'consultation'])
             ->orderByRaw('CASE WHEN status IN (\'pending\', \'scheduled\') THEN 0 ELSE 1 END')
@@ -53,9 +57,11 @@ class FollowUpReminderController extends Controller
         $this->applyScope($query, $request);
         $this->applyFilters($query, $request);
 
-        return response()->json(
-            $query->paginate($request->integer('per_page', 25))
-        );
+        // At most 100 a page: the board asks for 25, and an unbounded size
+        // let one request pull every follow-up at once.
+        $perPage = min(max($request->integer('per_page', 25), 1), 100);
+
+        return response()->json($query->paginate($perPage));
     }
 
     /**
@@ -63,6 +69,10 @@ class FollowUpReminderController extends Controller
      */
     public function summary(Request $request): JsonResponse
     {
+        if ($denied = $this->staffOnly($request, 'view follow-ups')) {
+            return $denied;
+        }
+
         $base = FollowUpReminder::query();
         $this->applyScope($base, $request);
 
@@ -203,6 +213,11 @@ class FollowUpReminderController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        // Saving can text the patient (a real, billed SMS), so staff only.
+        if ($denied = $this->staffOnly($request, 'create follow-ups')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'consultation_id' => ['nullable', 'integer'],
             'appointment_id' => ['nullable', 'integer'],
@@ -316,7 +331,21 @@ class FollowUpReminderController extends Controller
      */
     public function update(Request $request, int $id): JsonResponse
     {
+        if ($denied = $this->staffOnly($request, 'edit follow-ups')) {
+            return $denied;
+        }
+
         $reminder = FollowUpReminder::with('consultation.resident.residentProfile')->findOrFail($id);
+
+        // Their own RHU's reminders, as for a status change (updateStatus).
+        $user = $request->user();
+
+        if (
+            !$user->isGlobalRhuScope()
+            && (int) $reminder->rhu_id !== (int) ($user->effectiveRhuId() ?? 0)
+        ) {
+            return response()->json(['message' => 'You can only edit reminders for your assigned RHU.'], 403);
+        }
 
         $validated = $request->validate([
             'follow_up_type' => ['nullable', Rule::in(['single', 'range'])],
@@ -759,6 +788,19 @@ class FollowUpReminderController extends Controller
     private function isStaff(?User $user): bool
     {
         return $user ? $user->hasAnyRole(self::STAFF_ROLES) : false;
+    }
+
+    /**
+     * A 403 for anyone but RHU staff, or null to go on. Follow-ups carry
+     * patients' names, numbers and reasons for a visit, and saving one can
+     * text the patient; list, summary, create and edit had no check, so any
+     * signed-in resident could do all four.
+     */
+    private function staffOnly(Request $request, string $doing): ?JsonResponse
+    {
+        return $this->isStaff($request->user())
+            ? null
+            : response()->json(['message' => "Only RHU staff can {$doing}."], 403);
     }
 
     private function userId(Request $request): int

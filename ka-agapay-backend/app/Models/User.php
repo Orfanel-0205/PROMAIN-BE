@@ -107,6 +107,19 @@ class User extends Authenticatable
     /** The roles that are not staff. Every other role signs in to the admin website. */
     public const RESIDENT_ROLES = ['resident', 'patient'];
 
+    /**
+     * Whether this is a staff account: any role but a resident's. The rule
+     * that sets is_staff, read from the role itself so it also holds for a
+     * row saved before that column existed. An account with no role is not
+     * staff.
+     */
+    public function isStaffAccount(): bool
+    {
+        $role = strtolower(trim((string) $this->role?->name));
+
+        return $role !== '' && !in_array($role, self::RESIDENT_ROLES, true);
+    }
+
     private static ?bool $hasStaffColumn = null;
 
     /*
