@@ -21,6 +21,8 @@ class InventoryTransaction extends Model
         'quantity_after',
         'reference_number',
         'prescription_id',
+        // The event a stock-out was handed out at, for the event report.
+        'event_id',
         'reason',
         'notes',
         'created_at',

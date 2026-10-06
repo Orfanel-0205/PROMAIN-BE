@@ -185,10 +185,10 @@ reported; they are things to plan around.
 - **Telemedicine is for non-emergency consultations only.** It does not replace
   physical examination, and the queue system does not replace a clinician's
   professional judgment.
-- **The underlying framework is past its security-support window.** It works, but
-  it will not receive further security patches. Budget for an upgrade project —
-  see `OPERATIONS.md` §9 for scope. This is not urgent-today, but it should not
-  be left indefinitely.
+- **The framework (Laravel 12) is on security fixes only, until February 2027.**
+  Its bug-fix support ended in August 2026; security patches continue until
+  February 2027 (checked Oct 2026: the server runs 12.69). Budget for the upgrade
+  to the next version before then — see `OPERATIONS.md` §9 for scope.
 - **The mobile app's dependencies are behind** and need a major update before the
   app stores stop accepting new builds.
 - **A newly opened RHU does not become any barangay's home facility (open

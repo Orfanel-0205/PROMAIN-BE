@@ -4,8 +4,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Event;
 use App\Models\InventoryItem;
 use App\Models\InventoryPersonnel;
+use App\Support\LocalTime;
 use App\Support\Rhu;
 use App\Services\Audit\AuditService;
 use App\Services\Inventory\InventoryService;
@@ -530,6 +532,8 @@ class InventoryController extends Controller
             'quantity'        => ['required', 'integer', 'min:1'],
             'reason'          => ['required', 'string', 'max:300'],
             'prescription_id' => ['nullable', 'integer', 'exists:prescriptions,id'],
+            // Handed out at an event: it then shows in that event's report.
+            'event_id'        => ['nullable', 'integer', 'exists:events,id'],
             'notes'           => ['nullable', 'string', 'max:500'],
         ]);
 
@@ -699,6 +703,41 @@ class InventoryController extends Controller
                 'user_id' => $row->user_id ? (int) $row->user_id : null,
                 'name' => $name,
             ],
+        ]);
+    }
+
+    /**
+     * GET /api/v1/inventory/event-options
+     *
+     * The events a stock-out can be recorded against, for the stock-out
+     * form: published events from a week ago to a week ahead (what was
+     * handed out is often written up after the day). Newest first.
+     */
+    public function eventOptions(Request $request): JsonResponse
+    {
+        $this->authorizeInventory($request);
+
+        $from = LocalTime::today()->subDays(7)->utc();
+        $until = LocalTime::today()->addDays(8)->utc();
+
+        $events = Event::query()
+            ->published()
+            ->where('event_type', '!=', 'announcement')
+            ->where(function ($query) use ($from, $until) {
+                $query->whereBetween('starts_at', [$from, $until])
+                    ->orWhere(fn ($dated) => $dated->whereNull('starts_at')->whereBetween('event_date', [$from, $until]));
+            })
+            ->orderByRaw('COALESCE(starts_at, event_date) DESC')
+            ->limit(50)
+            ->get(['id', 'title', 'starts_at', 'event_date', 'barangay_target']);
+
+        return response()->json([
+            'data' => $events->map(fn (Event $event) => [
+                'id' => $event->id,
+                'title' => $event->title,
+                'starts_at' => optional($event->starts_at ?? $event->event_date)->toISOString(),
+                'barangays' => $event->barangay_target ?? 'all',
+            ])->values(),
         ]);
     }
 

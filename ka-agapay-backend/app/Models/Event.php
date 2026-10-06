@@ -66,6 +66,7 @@ class Event extends Model
         'starts_at' => 'datetime',
         'ends_at' => 'datetime',
         'published_at' => 'datetime',
+        'report_generated_at' => 'datetime',
         'sms_sent_at' => 'datetime',
         'reminder_sms_sent_at' => 'datetime',
 
@@ -130,6 +131,58 @@ class Event extends Model
     public function scopeDraft(Builder $query): Builder
     {
         return $query->where('is_published', false);
+    }
+
+    /**
+     * WHEN AN EVENT HAS ENDED -- one rule for the residents' list, the
+     * heatmap, registration and the event report.
+     *
+     * At its end time if it has one; otherwise at the end of the day it
+     * starts on, in the Philippines (an 8:00 AM event without an end time
+     * stays up until midnight). A post with no date at all never ends.
+     * Ended events are not deleted: the dashboard keeps them under
+     * "Past / History" for the records.
+     */
+    public function endTime(): ?\Illuminate\Support\Carbon
+    {
+        if ($this->ends_at) {
+            return $this->ends_at->copy();
+        }
+
+        $start = $this->starts_at ?? $this->event_date;
+
+        if (!$start) {
+            return null;
+        }
+
+        return \Illuminate\Support\Carbon::parse($start)
+            ->setTimezone(\App\Support\LocalTime::zone())
+            ->endOfDay()
+            ->utc();
+    }
+
+    public function hasEnded(): bool
+    {
+        $end = $this->endTime();
+
+        return $end !== null && $end->isPast();
+    }
+
+    /** The same rule as hasEnded(), in SQL: events that have not ended yet. */
+    public function scopeNotEnded(Builder $query): Builder
+    {
+        $startOfToday = \App\Support\LocalTime::today()->utc();
+
+        return $query->where(function (Builder $q) use ($startOfToday) {
+            $q->where('ends_at', '>=', now())
+                ->orWhere(function (Builder $q) use ($startOfToday) {
+                    $q->whereNull('ends_at')->where(function (Builder $d) use ($startOfToday) {
+                        $d->where('starts_at', '>=', $startOfToday)
+                            ->orWhere(fn (Builder $e) => $e->whereNull('starts_at')->where('event_date', '>=', $startOfToday))
+                            ->orWhere(fn (Builder $e) => $e->whereNull('starts_at')->whereNull('event_date'));
+                    });
+                });
+        });
     }
 
     public function scopeUpcoming(Builder $query): Builder

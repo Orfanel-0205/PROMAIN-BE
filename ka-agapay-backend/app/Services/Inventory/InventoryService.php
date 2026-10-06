@@ -241,6 +241,7 @@ class InventoryService
 
             'reference_number' => $data['reference_number'] ?? null,
             'prescription_id' => $data['prescription_id'] ?? null,
+            'event_id' => $data['event_id'] ?? null,
             'reason' => $data['reason'] ?? $this->defaultReason($transactionType),
             'notes' => $data['notes'] ?? null,
 

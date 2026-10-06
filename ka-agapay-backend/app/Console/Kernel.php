@@ -148,6 +148,28 @@ class Kernel extends ConsoleKernel
                 (string) $output
             ));
 
+        // An RHU's staff hear when its queue turns heavy (26+ waiting) or over
+        // capacity (51+), or an event is nearly full -- once per rise.
+        $schedule->command('queue:pressure-alerts')
+            ->name('Alert RHU staff when a queue or an event is overloaded')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->onFailure(fn (Stringable $output) => $this->reportScheduleFailure(
+                'Alert RHU staff when a queue or an event is overloaded',
+                (string) $output
+            ));
+
+        // When an event has ended its report is announced to the RHU's staff,
+        // once (events.report_generated_at).
+        $schedule->command('events:close-ended')
+            ->name('Announce the report of each event that has ended')
+            ->everyFifteenMinutes()
+            ->withoutOverlapping()
+            ->onFailure(fn (Stringable $output) => $this->reportScheduleFailure(
+                'Announce the report of each event that has ended',
+                (string) $output
+            ));
+
         // Part 2 (trigger #4) — daily staff alerts for low/out/expiring inventory
         // so alerts are not limited to items that had a stock movement. Deduped.
         //

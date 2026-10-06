@@ -14,11 +14,15 @@ class EventRegistration extends Model
         'queue_number',
         'registered_at',
         'cancelled_at',
+        // Who marked the resident attended or no-show, and when.
+        'attendance_marked_by',
+        'attendance_marked_at',
     ];
 
     protected $casts = [
         'registered_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'attendance_marked_at' => 'datetime',
     ];
 
     public const STATUS_REGISTERED = 'registered';

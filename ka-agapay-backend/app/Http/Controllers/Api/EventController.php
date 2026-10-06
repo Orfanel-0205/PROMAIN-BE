@@ -7,8 +7,13 @@ use App\Http\Controllers\Controller;
 use App\Models\Event;
 use App\Models\EventRegistration;
 use App\Models\User;
+use App\Services\Audit\AuditActions;
 use App\Services\Audit\AuditService;
+use App\Services\Events\EventReportService;
+use App\Support\EventFacility;
+use App\Support\LocalTime;
 use App\Support\Rhu;
+use Illuminate\Support\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +42,11 @@ class EventController extends Controller
                 },
             ])
             ->latest('published_at');
+
+        // An event that has ended drops off the residents' list (Event::
+        // scopeNotEnded); announcements are not events and stay. The
+        // dashboard keeps ended events under Past / History.
+        $query->where(fn ($q) => $q->where('event_type', 'announcement')->orWhere(fn ($e) => $e->notEnded()));
 
         $this->restrictToResidentsFacility($query, $user);
 
@@ -203,7 +213,9 @@ class EventController extends Controller
     public function adminIndex(Request $request): JsonResponse
     {
         $query = Event::query()
-            ->with('creator:user_id,first_name,last_name')
+            // The whole poster and their role: EventFacility::hostRhuId needs
+            // their RHU. Only the name is sent (formatEvent).
+            ->with('creator.role')
             ->withCount([
                 'registrations as total_registered' => function ($query) {
                     $query->where('status', EventRegistration::STATUS_REGISTERED);
@@ -587,6 +599,12 @@ class EventController extends Controller
                 ], 422);
             }
 
+            if ($event->hasEnded()) {
+                return response()->json([
+                    'message' => 'This event has already ended.',
+                ], 422);
+            }
+
             $registration = EventRegistration::query()
                 ->where('event_id', $event->id)
                 ->where('user_id', $user->user_id)
@@ -764,6 +782,83 @@ class EventController extends Controller
         });
     }
 
+    /**
+     * PATCH /api/v1/admin/events/{id}/registrants/{registrationId}/attendance
+     *
+     * Mark a registered resident attended or no-show (or back to registered,
+     * to undo a slip), from the registrants page on the day or afterwards.
+     * Who marked it and when stays on the registration and in the audit
+     * trail; the event report counts from these.
+     */
+    public function markAttendance(Request $request, int $id, int $registrationId, AuditService $audit): JsonResponse
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in([
+                EventRegistration::STATUS_ATTENDED,
+                EventRegistration::STATUS_NO_SHOW,
+                EventRegistration::STATUS_REGISTERED,
+            ])],
+        ]);
+
+        $event = Event::query()->findOrFail($id);
+        $registration = EventRegistration::query()
+            ->where('event_id', $event->id)
+            ->findOrFail($registrationId);
+
+        if ($registration->status === EventRegistration::STATUS_CANCELLED) {
+            return response()->json([
+                'message' => 'This registration was cancelled. The resident needs to register again first.',
+            ], 422);
+        }
+
+        $start = $event->starts_at ?? $event->event_date;
+
+        if ($start && Carbon::parse($start)->setTimezone(LocalTime::zone())->toDateString() > LocalTime::today()->toDateString()) {
+            return response()->json([
+                'message' => 'Attendance can be marked from the day of the event.',
+            ], 422);
+        }
+
+        $before = $registration->status;
+
+        $registration->update([
+            'status' => $validated['status'],
+            'attendance_marked_by' => $request->user()?->user_id,
+            'attendance_marked_at' => now(),
+        ]);
+
+        $audit->log(
+            request: $request,
+            action: AuditActions::EVENT_ATTENDANCE_MARKED,
+            module: 'events',
+            subject: $event,
+            oldValues: ['registration_id' => $registration->id, 'status' => $before],
+            newValues: ['registration_id' => $registration->id, 'status' => $validated['status']],
+            metadata: ['resident_user_id' => $registration->user_id],
+        );
+
+        return response()->json([
+            'message' => match ($validated['status']) {
+                EventRegistration::STATUS_ATTENDED => 'Marked as attended.',
+                EventRegistration::STATUS_NO_SHOW => 'Marked as no-show.',
+                default => 'Attendance mark removed.',
+            },
+            'data' => $this->formatRegistration($registration->fresh()),
+        ]);
+    }
+
+    /**
+     * GET /api/v1/admin/events/{id}/report
+     *
+     * Who registered, who came, and what was handed out (EventReportService).
+     */
+    public function report(int $id, EventReportService $reports): JsonResponse
+    {
+        $event = Event::query()->with('creator')->findOrFail($id);
+
+        return response()->json(['data' => $reports->build($event)]);
+    }
+
     private function formatEvent(Event $event, ?EventRegistration $registration = null): array
     {
         return [
@@ -802,6 +897,13 @@ class EventController extends Controller
 
             'priority' => $event->priority ?? 'normal',
             'visibility' => $event->visibility ?? 'public',
+
+            // Where it is on the map (its target barangays) and whose it is
+            // (EventFacility); whether it is over (Event::hasEnded).
+            'pins' => EventFacility::pins($event),
+            'host_rhu_id' => EventFacility::hostRhuId($event),
+            'has_ended' => $event->hasEnded(),
+            'report_generated_at' => optional($event->report_generated_at)->toISOString(),
 
             'is_published' => (bool) $event->is_published,
             'published_at' => optional($event->published_at)->toISOString(),

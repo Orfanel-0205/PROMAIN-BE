@@ -52,6 +52,14 @@ class NotificationTypes
     public const ANNOUNCEMENT_PUBLISHED = 'announcement_published';
     public const PROGRAM_PUBLISHED = 'program_published';
 
+    // To an RHU's staff (StaffAlertService): its queue is heavy or over
+    // capacity; an event is nearly full; an event has ended and its report is
+    // ready. "queue" and "crowd" in the names make the dashboard treat the
+    // first two as urgent.
+    public const QUEUE_OVERLOAD = 'queue_overload';
+    public const EVENT_CROWDING = 'event_crowding';
+    public const EVENT_REPORT_READY = 'event_report_ready';
+
     // SMS
     public const SMS_SENT = 'sms_sent';
     public const SMS_FAILED = 'sms_failed';

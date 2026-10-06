@@ -531,6 +531,8 @@ Route::prefix('v1')->group(function () {
         // Declared BEFORE apiResource so 'assigned-personnel' is not
         // swallowed by the /inventory/{inventory} wildcard.
         Route::get('/inventory/assigned-personnel',  [InventoryController::class, 'assignedPersonnel']);
+        // Events a stock-out can name, for the event report.
+        Route::get('/inventory/event-options',       [InventoryController::class, 'eventOptions']);
         Route::post('/inventory/assigned-personnel', [InventoryController::class, 'assignPersonnel']);
         Route::post('/inventory/{item}/stock-in',    [InventoryController::class, 'stockIn']);
         Route::post('/inventory/{item}/stock-out',   [InventoryController::class, 'stockOut']);
@@ -987,12 +989,24 @@ Route::prefix('v1')->group(function () {
                 Route::patch('/events/{id}/publish', [EventController::class, 'publish']);
                 Route::delete('/events/{id}',        [EventController::class, 'destroy']);
 
-                Route::get('/events/{id}/registrants', [
-                    EventController::class,
-                    'registrants',
-                ]);
-
                 Route::post('/programs', [EventController::class, 'store']);
+            });
+
+        // =====================================================================
+        // EVENT DAY AND AFTER — registrants, attendance, the event report
+        //
+        // Every staff role: the nurses, midwives and BHWs running an event are
+        // the ones checking residents in, and the report is read by whoever
+        // accounts for the event afterwards. Posting and editing events stays
+        // with the CMS roles above.
+        // =====================================================================
+
+        Route::middleware('role:admin,staff,staff_admin,rhu_admin,super_admin,mho,doctor,nurse,midwife,bhw')
+            ->prefix('admin')
+            ->group(function () {
+                Route::get('/events/{id}/registrants', [EventController::class, 'registrants']);
+                Route::patch('/events/{id}/registrants/{registrationId}/attendance', [EventController::class, 'markAttendance']);
+                Route::get('/events/{id}/report', [EventController::class, 'report']);
             });
 
         // =====================================================================
