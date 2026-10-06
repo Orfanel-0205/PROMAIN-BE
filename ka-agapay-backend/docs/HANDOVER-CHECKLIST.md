@@ -191,6 +191,16 @@ reported; they are things to plan around.
   be left indefinitely.
 - **The mobile app's dependencies are behind** and need a major update before the
   app stores stop accepting new builds.
+- **A newly opened RHU does not become any barangay's home facility (open
+  decision, Oct 2026).** Administration → RHU Facilities can add barangays to a
+  new RHU's *coverage*, but every barangay already has a home RHU (the column
+  cannot be empty) and nothing in the system changes it. So residents of those
+  barangays are still routed to RHU 1/2 by default, and posts restricted to the
+  new RHU reach none of them. Coverage currently shows only in the RHU
+  Facilities page and analytics. Before a third RHU goes live, decide how a
+  barangay's home should move (for example, an explicit "make this the home
+  RHU" action) and build it. Two skipped tests (`RhuFacilityTest`,
+  `EventVisibilityTest`) are waiting on that decision.
 
 ---
 
