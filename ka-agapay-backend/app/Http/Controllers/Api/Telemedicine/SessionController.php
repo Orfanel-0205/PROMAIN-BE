@@ -159,6 +159,9 @@ class SessionController extends Controller
     {
         $session->loadMissing(['request.residentProfile.user', 'request.rhu']);
 
+        // Any staff member at the session's RHU (TelemedicinePolicy::notifyPatient).
+        $this->authorize('notifyPatient', $session);
+
         $result = app(\App\Services\Notification\NotificationService::class)
             ->notifyTelemedicineCalling($session);
 

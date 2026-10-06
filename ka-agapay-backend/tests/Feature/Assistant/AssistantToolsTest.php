@@ -130,6 +130,8 @@ class AssistantToolsTest extends TestCase
                 'code' => 'RHU3',
                 'name' => 'RHU 3 Malasiqui',
                 'short_name' => 'RHU 3',
+                'latitude' => 15.9187,
+                'longitude' => 120.4138,
             ])
             ->assertCreated()
             ->json('data.id');

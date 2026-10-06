@@ -302,6 +302,11 @@ class AiController extends Controller
      */
     public function summarizeEvents(Request $request): JsonResponse
     {
+        // Staff only, like every other AI action here. It was the one
+        // without a check. Neither app calls it any more (Oct 2026); the
+        // mobile dashboard named above stopped using it.
+        $this->authorizeAi($request);
+
         $validated = $request->validate([
             'events' => ['nullable', 'string', 'max:10000'],
             'language' => ['nullable', 'string', 'max:100'],

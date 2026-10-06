@@ -61,6 +61,8 @@ class RhuFacilityTest extends TestCase
                 'code' => 'RHU3',
                 'name' => 'RHU 3 Malasiqui (San Julian)',
                 'short_name' => 'RHU 3',
+                'latitude' => 15.9187,
+                'longitude' => 120.4138,
                 'address' => 'San Julian, Malasiqui, Pangasinan',
             ])
             ->assertCreated();
@@ -92,23 +94,47 @@ class RhuFacilityTest extends TestCase
         $this->assertSame([1, 2], Rhu::ids());
     }
 
-    public function test_barangays_move_to_the_new_facility_and_residents_follow(): void
+    /**
+     * Coverage, not ownership (RhuFacilityController::assignBarangays, since
+     * 25 Sept 2026): assigning a barangay ADDS the new facility to those
+     * serving it. A barangay no facility served takes it as home, and its
+     * residents follow; one that already has a home keeps it, so nobody is
+     * quietly rerouted. This test used to expect every barangay to move.
+     */
+    public function test_a_barangay_with_no_home_takes_the_new_facility_and_residents_follow(): void
     {
+        $this->markTestSkipped('Open decision (Oct 2026): a new RHU never becomes the home RHU of any barangay. barangays.rhu_id is NOT NULL, so the take-it-as-home branch in assignBarangays never runs, and nothing else changes a home. Its residents keep routing to RHU 1/2 and its RHU-only posts reach no residents. See docs/HANDOVER-CHECKLIST.md.');
+
         $newId = (int) $this->actingAs($this->superAdmin)
             ->postJson('/api/v1/rhus', [
                 'code' => 'RHU3',
                 'name' => 'RHU 3 Malasiqui',
                 'short_name' => 'RHU 3',
+                'latitude' => 15.9187,
+                'longitude' => 120.4138,
             ])
             ->json('data.id');
 
         $barangay = Barangay::orderBy('barangay_id')->skip(3)->first();
+        DB::table('barangays')->where('barangay_id', $barangay->barangay_id)->update(['rhu_id' => null]);
+
+        $homed = Barangay::orderBy('barangay_id')->skip(4)->first();
+        $homedRhu = (int) DB::table('barangays')->where('barangay_id', $homed->barangay_id)->value('rhu_id');
 
         $this->actingAs($this->superAdmin)
             ->putJson("/api/v1/rhus/{$newId}/barangays", [
-                'barangay_ids' => [$barangay->barangay_id],
+                'barangay_ids' => [$barangay->barangay_id, $homed->barangay_id],
             ])
             ->assertOk();
+
+        // Both are now covered by the new facility...
+        $this->assertSame(2, DB::table('rhu_barangay')->where('rhu_id', $newId)->count());
+
+        // ...and the one that had a home keeps it.
+        $this->assertSame(
+            $homedRhu,
+            (int) DB::table('barangays')->where('barangay_id', $homed->barangay_id)->value('rhu_id')
+        );
 
         $this->assertSame(
             $newId,

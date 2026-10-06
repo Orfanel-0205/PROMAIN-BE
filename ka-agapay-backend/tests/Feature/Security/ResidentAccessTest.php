@@ -12,7 +12,9 @@
 //
 // plus who may CANCEL a telemedicine request: nurses, midwives, the MHO and
 // the super admin, at the request's RHU (the RHU's rule; residents ask the
-// RHU). Every test also checks that the people who need access keep it.
+// RHU); who may send "Notify Patient" (any staff at the RHU); and the AI
+// event summary (staff). Every test also checks that the people who need
+// access keep it.
 
 namespace Tests\Feature\Security;
 
@@ -23,6 +25,8 @@ use App\Models\TelemedicineSession;
 use App\Models\User;
 use App\Models\UserRole;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class ResidentAccessTest extends TestCase
@@ -210,6 +214,37 @@ class ResidentAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('per_page', 100)
             ->assertJsonPath('total', 1);
+    }
+
+    // ------------------------------------------------------ notify patient
+
+    public function test_only_the_rhus_staff_can_tell_a_patient_the_doctor_is_calling(): void
+    {
+        Http::fake();
+        $url = "/api/v1/telemedicine/sessions/{$this->session->id}/notify-patient";
+        $before = DB::table('notifications')->count();
+
+        // Not residents (not even the patient), not another RHU's staff.
+        $this->actingAs($this->otherResident)->postJson($url)->assertForbidden();
+        $this->actingAs($this->patient)->postJson($url)->assertForbidden();
+        $this->actingAs($this->nurseRhu2)->postJson($url)->assertForbidden();
+        Http::assertNothingSent();
+        $this->assertSame($before, DB::table('notifications')->count());
+
+        // Any staff member of the RHU can send it, so whoever is free does.
+        foreach ([$this->nurse, $this->midwife, $this->staffAdmin, $this->mho] as $staff) {
+            $this->actingAs($staff)->postJson($url)->assertOk();
+        }
+    }
+
+    // ------------------------------------------------------ AI event summary
+
+    public function test_the_ai_event_summary_is_staff_only(): void
+    {
+        $body = ['events' => '1. Free vaccination drive on Friday 2. Dental mission on Monday'];
+
+        $this->actingAs($this->otherResident)->postJson('/api/v1/ai/summarize-events', $body)->assertForbidden();
+        $this->actingAs($this->nurse)->postJson('/api/v1/ai/summarize-events', $body)->assertOk();
     }
 
     // ---------------------------------------------------------------- helpers

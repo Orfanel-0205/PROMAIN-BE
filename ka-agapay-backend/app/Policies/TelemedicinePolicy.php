@@ -141,6 +141,22 @@ class TelemedicinePolicy
         return $user->hasAnyRole(['staff_admin', 'mho', 'super_admin']);
     }
 
+    /**
+     * Who may tell a patient their room is ready ("Notify Patient"): any
+     * staff member at the session's RHU (the MHO and super admin: any RHU),
+     * so whoever is free can send it. Before this check anyone signed in, a
+     * resident included, could send any patient a "the doctor is calling"
+     * alert and push.
+     */
+    public function notifyPatient(User $user, TelemedicineSession $session): bool
+    {
+        $request = $session->relationLoaded('request')
+            ? $session->request
+            : $session->loadMissing('request')->request;
+
+        return $request !== null && $this->isStaffOfRequestRhu($user, $request);
+    }
+
     public function cancel(User $user, TelemedicineRequest $request): bool
     {
         return $user->hasAnyRole(self::CANCEL_ROLES)

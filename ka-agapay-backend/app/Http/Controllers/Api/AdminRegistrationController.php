@@ -429,9 +429,32 @@ class AdminRegistrationController extends Controller
      * submission.
      *
      * POST /api/v1/admin/register/extract-employee-id
+     *
+     * Only for someone holding a valid staff invite: the photo is read by
+     * OCR.space, on the RHU's credit, and before this check anyone could run
+     * it without signing in (20 a minute from each address). The invite is
+     * checked here, not used up; that happens when the account is created
+     * (store()). Same switch as store(): no invites table, no invite needed.
      */
     public function extractEmployeeId(Request $request): JsonResponse
     {
+        $inviteService = app(RegistrationInviteService::class);
+
+        if ($inviteService->isEnabled()) {
+            $inviteCheck = $inviteService->validateParams([
+                'token' => $request->input('invite_token'),
+                'expires' => $request->input('invite_expires'),
+                'signature' => $request->input('invite_signature'),
+            ]);
+
+            if (!$inviteCheck['ok']) {
+                return response()->json([
+                    'message' => $inviteCheck['message'],
+                    'code' => $inviteCheck['code'],
+                ], $inviteCheck['status']);
+            }
+        }
+
         $request->validate([
             'employee_id' => ['required', 'file', 'mimes:jpg,jpeg,png', 'max:5120'],
         ], [
