@@ -60,7 +60,7 @@ class ApprovalController extends Controller
         // Notify resident (Notification logic placeholder)
         // $approval->user->notify(new \App\Notifications\RegistrationApprovedNotification());
 
-        $this->audit->info('registration.approved', 'approvals', [
+        $this->audit->info('approvals', 'registration.approved', [
             'subject_id'    => $approval->user_id,
             'subject_label' => $approval->user->first_name . ' ' . $approval->user->last_name,
         ]);
@@ -88,7 +88,7 @@ class ApprovalController extends Controller
         // Notification logic placeholder
         // $approval->user->notify(new \App\Notifications\RegistrationRejectedNotification($request->rejection_reason));
 
-        $this->audit->warning('registration.rejected', 'approvals', [
+        $this->audit->warning('approvals', 'registration.rejected', [
             'subject_id'    => $approval->user_id,
             'subject_label' => $approval->user->first_name . ' ' . $approval->user->last_name,
             'metadata'      => ['reason' => $request->rejection_reason],

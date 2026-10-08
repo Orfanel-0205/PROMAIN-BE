@@ -263,8 +263,11 @@
 
             <div class="brand-right">
                 <strong>Official E-Prescription</strong><br>
-                Rural Health Unit<br>
-                {{ $municipality ?? 'Malasiqui, Pangasinan' }}
+                {{ $rhuName ?? 'Rural Health Unit' }}<br>
+                {{ !empty($rhuAddress) ? $rhuAddress : ($municipality ?? 'Malasiqui, Pangasinan') }}
+                @if (!empty($rhuContact))<br>Tel. {{ $rhuContact }}@endif
+                @if (!empty($rhuEmail))<br>{{ $rhuEmail }}@endif
+                @if (!empty($rhuHours))<br>Open {{ $rhuHours }}@endif
             </div>
 
             <div class="rx-title">Medical Prescription</div>

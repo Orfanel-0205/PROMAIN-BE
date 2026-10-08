@@ -407,7 +407,8 @@ class AdminSettingsTest extends TestCase
             ->getJson('/api/v1/admin/settings')
             ->assertOk()
             ->assertJsonPath('meta.max_login_attempts_enforced', true)
-            ->assertJsonPath('meta.session_timeout_enforced', false)
+            // Since Oct 2026 the dashboard signs staff out after it.
+            ->assertJsonPath('meta.session_timeout_enforced', true)
             ->assertJsonPath('meta.sms_settings_enforced', false);
     }
 }

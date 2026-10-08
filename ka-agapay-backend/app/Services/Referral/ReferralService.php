@@ -56,7 +56,7 @@ class ReferralService
                 ],
             ]);
 
-            $this->audit->info(AuditActions::REFERRAL_CREATED, 'referral', [
+            $this->audit->info('referral', AuditActions::REFERRAL_CREATED, [
                 'subject'       => $referral,
                 'subject_label' => $referral->getAuditLabel(),
                 'new_values'    => [
@@ -158,7 +158,7 @@ class ReferralService
             'metadata'    => $metadata,
         ]);
 
-        $this->audit->info('referral.bhw_report_submitted', 'referral', [
+        $this->audit->info('referral', 'referral.bhw_report_submitted', [
             'subject'       => $referral,
             'subject_label' => $referral->getAuditLabel(),
         ]);

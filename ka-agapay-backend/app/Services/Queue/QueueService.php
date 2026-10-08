@@ -1334,7 +1334,7 @@ class QueueService
     private function auditInfoSafely(string $action, QueueTicket $ticket, array $newValues): void
     {
         try {
-            $this->audit->info($action, 'queue', [
+            $this->audit->info('queue', $action, [
                 'subject' => $ticket,
                 'subject_label' => "Queue Ticket #{$ticket->ticket_number}",
                 'new_values' => $newValues,

@@ -84,7 +84,7 @@ class RhuFacilityController extends Controller
 
         Rhu::flushCache();
 
-        $this->audit->info(AuditActions::RHU_CREATED, 'rhu', [
+        $this->audit->info('rhu', AuditActions::RHU_CREATED, [
             'subject_type' => 'rhu',
             'subject_id' => $facility->id,
             'subject_label' => $facility->name,
@@ -130,7 +130,7 @@ class RhuFacilityController extends Controller
 
         Rhu::flushCache();
 
-        $this->audit->info(AuditActions::RHU_UPDATED, 'rhu', [
+        $this->audit->info('rhu', AuditActions::RHU_UPDATED, [
             'subject_type' => 'rhu',
             'subject_id' => $facility->id,
             'subject_label' => $facility->name,
@@ -219,7 +219,7 @@ class RhuFacilityController extends Controller
         // this the app and the dashboard would route residents by the old map.
         Cache::forget('barangays_list_v2');
 
-        $this->audit->info(AuditActions::RHU_UPDATED, 'rhu', [
+        $this->audit->info('rhu', AuditActions::RHU_UPDATED, [
             'subject_type' => 'rhu',
             'subject_id' => $facility->id,
             'subject_label' => $facility->name,

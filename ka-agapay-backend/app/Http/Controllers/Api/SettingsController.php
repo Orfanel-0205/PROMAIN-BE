@@ -152,7 +152,9 @@ class SettingsController extends Controller
                 // What the server really does, so the panel can be honest about
                 // the gap between a stored value and enforced behaviour.
                 'session_lifetime_minutes_actual' => (int) config('sanctum.expiration'),
-                'session_timeout_enforced' => false,
+                // The dashboard signs staff out after this many idle minutes
+                // (GET /session-policy). Oct 2026.
+                'session_timeout_enforced' => true,
                 'max_login_attempts_enforced' => true,
                 'sms_settings_enforced' => false,
             ],

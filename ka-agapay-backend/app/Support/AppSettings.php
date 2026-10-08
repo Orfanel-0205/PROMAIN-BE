@@ -240,6 +240,26 @@ final class AppSettings
         );
     }
 
+    /**
+     * Minutes without activity before the dashboard signs a staff member
+     * out (Settings → Security Rules), or null for no limit. Read by the
+     * dashboard through GET /session-policy.
+     */
+    public static function sessionTimeoutMinutes(): ?int
+    {
+        try {
+            $value = self::section(AppSetting::GROUP_SECURITY)['session_timeout_minutes'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (!is_int($value) || $value <= 0) {
+            return null;
+        }
+
+        return max(self::SESSION_TIMEOUT_MIN, min(self::SESSION_TIMEOUT_MAX, $value));
+    }
+
     public static function forgetCache(): void
     {
         try {

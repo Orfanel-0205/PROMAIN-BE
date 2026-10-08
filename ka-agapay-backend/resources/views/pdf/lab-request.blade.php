@@ -122,8 +122,13 @@
 
     <div class="header">
         <div>Municipal Health Office</div>
-        <div>Rural Health Unit</div>
-        <div>Malasiqui, Pangasinan</div>
+        <div>{{ $rhuName ?? 'Rural Health Unit' }}</div>
+        <div>{{ !empty($rhuAddress) ? $rhuAddress : ($municipality ?? 'Malasiqui, Pangasinan') }}</div>
+        @if (!empty($rhuContact) || !empty($rhuHours))
+            <div style="font-size: 10px; font-weight: normal;">
+                {{ collect([!empty($rhuContact) ? 'Tel. ' . $rhuContact : null, !empty($rhuHours) ? 'Open ' . $rhuHours : null])->filter()->implode(' · ') }}
+            </div>
+        @endif
     </div>
 
     <div class="row">

@@ -958,8 +958,8 @@ class PrescriptionController extends Controller
                 ?: 'Follow the prescribed dosage. Return to RHU if symptoms persist or worsen.',
             'dispensingNotes' => $row->dispensing_notes ?? null,
             'status' => $row->status ?? 'active',
-            'rhuName' => 'RHU Malasiqui',
-            'municipality' => 'Malasiqui, Pangasinan',
+            // The issuing RHU's own name, address, contact and hours.
+            ...\App\Support\FacilityHeader::for((int) ($row->rhu_id ?? 0)),
         ];
 
         return Pdf::loadView('pdf.prescription-modern', $data)
@@ -972,6 +972,7 @@ class PrescriptionController extends Controller
         $labTests = $this->normalizeLabTests($this->decodeJsonArray($row->lab_tests ?? null));
 
         $data = [
+            ...\App\Support\FacilityHeader::for((int) ($row->rhu_id ?? 0)),
             'requestNo' => $row->prescription_number ?? ('LAB-' . $row->id),
             'date' => $this->formatLongDate($row->prescription_date ?? now()->toDateString()),
             'patientName' => $this->patientName((int) $row->resident_profile_id),

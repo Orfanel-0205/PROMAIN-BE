@@ -201,6 +201,12 @@ Route::prefix('v1')->group(function () {
         // AUTH
         // =====================================================================
 
+        // Settings → Security Rules → Session timeout, for the dashboard's
+        // idle sign-out. Only the number; nothing else from Settings.
+        Route::get('/session-policy',   fn () => response()->json([
+            'session_timeout_minutes' => \App\Support\AppSettings::sessionTimeoutMinutes(),
+        ]));
+
         Route::get('/user',             [AuthController::class, 'me']);
         Route::get('/me',               [AuthController::class, 'me']);
         Route::post('/logout',          [AuthController::class, 'logout']);
@@ -523,7 +529,9 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('prescriptions', PrescriptionController::class);
         Route::post('/consultations/{id}/prescriptions', [PrescriptionController::class, 'fromConsultation']);
 
-        Route::apiResource('referrals', ReferralController::class);
+        // List, create and view only: the controller has no update or delete,
+        // and those two routes crashed with a server error.
+        Route::apiResource('referrals', ReferralController::class)->only(['index', 'store', 'show']);
 
         Route::get('/medicines/search',              [InventoryController::class, 'searchMedicines']);
         Route::get('/inventory/alerts',              [InventoryController::class, 'alerts']);

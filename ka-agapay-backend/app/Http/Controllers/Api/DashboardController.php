@@ -59,6 +59,14 @@ class DashboardController extends Controller
 
     public function admin(Request $request): JsonResponse
     {
+        // The dashboard's figures are for staff. Residents have their own
+        // dashboard (index); they could read these totals until Oct 2026.
+        abort_unless(
+            $request->user()?->isStaffAccount(),
+            403,
+            'Only RHU staff can view the dashboard figures.'
+        );
+
         [$from, $to] = $this->dateRange($request);
 
         $cards = [

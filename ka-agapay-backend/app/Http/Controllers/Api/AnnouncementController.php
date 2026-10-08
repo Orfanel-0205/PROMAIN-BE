@@ -105,8 +105,13 @@ class AnnouncementController extends Controller
     {
         abort_unless(Schema::hasTable($this->table), 404, 'Announcements table not found.');
 
+        // Only what residents can see in the list: published. A draft or an
+        // unpublished announcement could be opened by its number until
+        // Oct 2026. Staff read drafts through the CMS (adminIndex).
         $row = $this->baseQuery()
             ->where('id', $id)
+            ->when(Schema::hasColumn($this->table, 'status'), fn (Builder $q) => $q->where('status', 'published'))
+            ->when(Schema::hasColumn($this->table, 'published_at'), fn (Builder $q) => $q->whereNotNull('published_at'))
             ->first();
 
         abort_unless($row, 404, 'Announcement not found.');

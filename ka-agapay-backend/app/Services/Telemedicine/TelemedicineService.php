@@ -54,7 +54,7 @@ class TelemedicineService
                 'is_bhw_assisted' => $request->is_bhw_assisted,
             ]);
 
-            $this->audit->info(AuditActions::TELE_REQUEST_SUBMITTED, 'telemedicine', [
+            $this->audit->info('telemedicine', AuditActions::TELE_REQUEST_SUBMITTED, [
                 'subject'       => $request,
                 'subject_label' => "Telemedicine Request #{$request->id}",
                 'new_values'    => ['status' => 'pending'],
@@ -90,7 +90,7 @@ class TelemedicineService
 
             $this->writeLog($request, 'pending', 'screening', 'screening_started', []);
 
-            $this->audit->info(AuditActions::TELE_REQUEST_SCREENED, 'telemedicine', [
+            $this->audit->info('telemedicine', AuditActions::TELE_REQUEST_SCREENED, [
                 'subject'       => $request,
                 'subject_label' => "Telemedicine Request #{$request->id}",
                 'old_values'    => ['status' => 'pending'],
@@ -137,7 +137,7 @@ class TelemedicineService
                 'endorsement_notes' => $data['endorsement_notes'] ?? null,
             ]);
 
-            $this->audit->info(AuditActions::TELE_REQUEST_SCREENED, 'telemedicine', [
+            $this->audit->info('telemedicine', AuditActions::TELE_REQUEST_SCREENED, [
                 'subject'       => $request,
                 'subject_label' => "Telemedicine Request #{$request->id}",
                 'old_values'    => ['status' => $fromStatus],
@@ -255,7 +255,7 @@ class TelemedicineService
                 ? AuditActions::TELE_REQUEST_SCREENED
                 : AuditActions::TELE_REQUEST_REJECTED;
 
-            $this->audit->info($action, 'telemedicine', [
+            $this->audit->info('telemedicine', $action, [
                 'subject'       => $request,
                 'subject_label' => "Telemedicine Request #{$request->id}",
                 'old_values'    => ['status' => $fromStatus],
@@ -324,7 +324,7 @@ class TelemedicineService
                 'assigned_doctor_id' => $session->assigned_doctor_id,
             ]);
 
-            $this->audit->info(AuditActions::TELE_SESSION_CREATED, 'telemedicine', [
+            $this->audit->info('telemedicine', AuditActions::TELE_SESSION_CREATED, [
                 'subject'       => $session,
                 'subject_label' => "Telemedicine Session #{$session->id}",
                 'new_values'    => ['status' => 'scheduled'],
@@ -468,7 +468,7 @@ class TelemedicineService
 
             $action = $actionMap[$newStatus] ?? 'telemedicine_session.updated';
 
-            $this->audit->info($action, 'telemedicine', [
+            $this->audit->info('telemedicine', $action, [
                 'subject'       => $session,
                 'subject_label' => "Telemedicine Session #{$session->id}",
                 'old_values'    => ['status' => $fromStatus],
@@ -577,7 +577,7 @@ class TelemedicineService
             );
 
             if ($isFinalized) {
-                $this->audit->info(AuditActions::TELE_NOTES_FINALIZED, 'telemedicine', [
+                $this->audit->info('telemedicine', AuditActions::TELE_NOTES_FINALIZED, [
                     'subject'       => $notes,
                     'subject_label' => "Session Notes #{$notes->id}",
                     'new_values'    => ['is_finalized' => true],
@@ -816,7 +816,7 @@ class TelemedicineService
                 'is_urgent'     => $referral->is_urgent,
             ]);
 
-            $this->audit->info(AuditActions::TELE_REFERRAL_ISSUED, 'telemedicine', [
+            $this->audit->info('telemedicine', AuditActions::TELE_REFERRAL_ISSUED, [
                 'subject'       => $referral,
                 'subject_label' => "Referral #{$referral->id}",
                 'new_values'    => ['status' => 'pending'],

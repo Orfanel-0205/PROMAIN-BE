@@ -247,6 +247,40 @@ class ResidentAccessTest extends TestCase
         $this->actingAs($this->nurse)->postJson('/api/v1/ai/summarize-events', $body)->assertOk();
     }
 
+    // ------------------------------------------- smaller findings (Oct 2026)
+
+    public function test_the_admin_dashboard_figures_are_staff_only(): void
+    {
+        $this->actingAs($this->otherResident)->getJson('/api/v1/dashboard/admin')->assertForbidden();
+        $this->actingAs($this->nurse)->getJson('/api/v1/dashboard/admin')->assertOk();
+    }
+
+    public function test_a_resident_cannot_open_an_unpublished_announcement_by_its_number(): void
+    {
+        $row = fn (string $status, $publishedAt) => DB::table('announcements')->insertGetId([
+            'created_by' => $this->mho->user_id,
+            'title' => "A {$status} announcement",
+            'body' => 'Text',
+            'status' => $status,
+            'published_at' => $publishedAt,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $draft = $row('draft', null);
+        $published = $row('published', now());
+
+        $this->actingAs($this->otherResident)->getJson("/api/v1/announcements/{$draft}")->assertNotFound();
+        $this->actingAs($this->otherResident)->getJson("/api/v1/announcements/{$published}")->assertOk();
+    }
+
+    public function test_referral_edit_and_delete_are_not_routes_any_more(): void
+    {
+        // They pointed at controller methods that do not exist: a server error.
+        $this->actingAs($this->mho)->putJson('/api/v1/referrals/1', [])->assertStatus(405);
+        $this->actingAs($this->mho)->deleteJson('/api/v1/referrals/1')->assertStatus(405);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private function role(string $name): UserRole

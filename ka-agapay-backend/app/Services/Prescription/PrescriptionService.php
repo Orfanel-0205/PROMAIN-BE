@@ -52,7 +52,7 @@ class PrescriptionService
                 'status'                    => Prescription::STATUS_ACTIVE,
             ]);
 
-            $this->audit->info(AuditActions::PRESCRIPTION_ISSUED, 'prescription', [
+            $this->audit->info('prescription', AuditActions::PRESCRIPTION_ISSUED, [
                 'subject'       => $prescription,
                 'subject_label' => $prescription->getAuditLabel(),
                 'new_values'    => [
@@ -180,7 +180,7 @@ class PrescriptionService
         // changed go in; no copy of the prescription's medical content.
         $prescription = $outcome['locked'];
 
-        $this->audit->info(AuditActions::PRESCRIPTION_DISPENSED, 'prescription', [
+        $this->audit->info('prescription', AuditActions::PRESCRIPTION_DISPENSED, [
             'subject_type'  => 'prescription',
             'subject_id'    => $prescription->id,
             'subject_label' => $prescription->getAuditLabel(),
@@ -285,7 +285,7 @@ class PrescriptionService
             'released_by' => Auth::id(),
         ]);
 
-        $this->audit->info(AuditActions::PRESCRIPTION_RELEASED, 'prescription', [
+        $this->audit->info('prescription', AuditActions::PRESCRIPTION_RELEASED, [
             'subject_type'  => 'prescription',
             'subject_id'    => $prescription->id,
             'subject_label' => $prescription->getAuditLabel(),
@@ -320,7 +320,7 @@ class PrescriptionService
                 'void_reason' => $reason,
             ]);
 
-            $this->audit->critical(AuditActions::PRESCRIPTION_VOIDED, 'prescription', [
+            $this->audit->critical('prescription', AuditActions::PRESCRIPTION_VOIDED, [
                 'subject'       => $prescription,
                 'subject_label' => $prescription->getAuditLabel(),
                 'old_values'    => ['status' => $oldStatus],
