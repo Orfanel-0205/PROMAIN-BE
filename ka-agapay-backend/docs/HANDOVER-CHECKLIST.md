@@ -191,16 +191,16 @@ reported; they are things to plan around.
   to the next version before then — see `OPERATIONS.md` §9 for scope.
 - **The mobile app's dependencies are behind** and need a major update before the
   app stores stop accepting new builds.
-- **A newly opened RHU does not become any barangay's home facility (open
-  decision, Oct 2026).** Administration → RHU Facilities can add barangays to a
-  new RHU's *coverage*, but every barangay already has a home RHU (the column
-  cannot be empty) and nothing in the system changes it. So residents of those
-  barangays are still routed to RHU 1/2 by default, and posts restricted to the
-  new RHU reach none of them. Coverage currently shows only in the RHU
-  Facilities page and analytics. Before a third RHU goes live, decide how a
-  barangay's home should move (for example, an explicit "make this the home
-  RHU" action) and build it. Two skipped tests (`RhuFacilityTest`,
-  `EventVisibilityTest`) are waiting on that decision.
+- **A barangay's "home RHU" is only a default, and on production it is RHU 2
+  for all 73 (Oct 2026).** Every RHU serves the whole of Malasiqui: residents
+  choose the facility when they book, and posts reach every resident (the RHU
+  is shown as "Hosted by"). The home RHU still decides a few defaults where
+  nothing else says which RHU -- for example which RHU a follow-up is filed
+  under, and which RHU's staff see it. Nothing in the system changes a home
+  (Administration → RHU Facilities only adds *coverage*), and a newly opened
+  RHU never becomes one. If those defaults should follow the real catchment
+  areas, set the homes once with the RHU and build a "make this the home RHU"
+  action. One skipped test (`RhuFacilityTest`) waits on that decision.
 
 ---
 

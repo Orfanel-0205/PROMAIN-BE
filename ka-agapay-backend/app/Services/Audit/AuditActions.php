@@ -40,6 +40,8 @@ class AuditActions
     public const EVENT_RESTORED = 'event.restored';
     public const EVENT_ATTENDANCE_MARKED = 'event.attendance_marked';
     public const EVENT_REPORT_GENERATED = 'event.report_generated';
+    public const EVENT_WALK_IN_ADDED = 'event.walk_in_added';
+    public const EVENT_WALK_IN_REMOVED = 'event.walk_in_removed';
 
     // Queue
     public const QUEUE_TICKET_ISSUED = 'queue_ticket.issued';

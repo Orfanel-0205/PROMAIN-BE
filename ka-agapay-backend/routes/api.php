@@ -1006,6 +1006,9 @@ Route::prefix('v1')->group(function () {
             ->group(function () {
                 Route::get('/events/{id}/registrants', [EventController::class, 'registrants']);
                 Route::patch('/events/{id}/registrants/{registrationId}/attendance', [EventController::class, 'markAttendance']);
+                // Came without registering (a patient account, or a name and barangay).
+                Route::post('/events/{id}/walk-ins', [EventController::class, 'addWalkIn']);
+                Route::delete('/events/{id}/walk-ins/{registrationId}', [EventController::class, 'removeWalkIn']);
                 Route::get('/events/{id}/report', [EventController::class, 'report']);
             });
 

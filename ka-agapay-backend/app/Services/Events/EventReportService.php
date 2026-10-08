@@ -23,27 +23,36 @@ class EventReportService
     /**
      * The headline numbers (also sent in the "report ready" alert).
      *
-     * @return array{registered: int, attended: int, no_show: int, not_marked: int, cancelled: int, items_dispensed: int}
+     * "registered" and "attended" are the people who registered in the app;
+     * walk-ins are counted on their own, and "present" is everyone who came.
+     *
+     * @return array{registered: int, attended: int, walk_ins: int, present: int, no_show: int, not_marked: int, cancelled: int, items_dispensed: int}
      */
     public function summary(Event $event): array
     {
-        $statuses = EventRegistration::query()
+        $rows = EventRegistration::query()
             ->where('event_id', $event->id)
-            ->selectRaw('status, COUNT(*) as total')
-            ->groupBy('status')
-            ->pluck('total', 'status');
+            ->selectRaw('status, is_walk_in, COUNT(*) as total')
+            ->groupBy('status', 'is_walk_in')
+            ->get();
 
-        $attended = (int) ($statuses[EventRegistration::STATUS_ATTENDED] ?? 0);
-        $noShow = (int) ($statuses[EventRegistration::STATUS_NO_SHOW] ?? 0);
-        $notMarked = (int) ($statuses[EventRegistration::STATUS_REGISTERED] ?? 0);
+        $count = fn (string $status, bool $walkIn) => (int) $rows
+            ->first(fn ($row) => $row->status === $status && (bool) $row->is_walk_in === $walkIn)?->total;
+
+        $attended = $count(EventRegistration::STATUS_ATTENDED, false);
+        $walkIns = $count(EventRegistration::STATUS_ATTENDED, true);
+        $noShow = $count(EventRegistration::STATUS_NO_SHOW, false);
+        $notMarked = $count(EventRegistration::STATUS_REGISTERED, false);
 
         return [
-            // Everyone who registered and did not cancel.
+            // Everyone who registered in the app and did not cancel.
             'registered' => $attended + $noShow + $notMarked,
             'attended' => $attended,
+            'walk_ins' => $walkIns,
+            'present' => $attended + $walkIns,
             'no_show' => $noShow,
             'not_marked' => $notMarked,
-            'cancelled' => (int) ($statuses[EventRegistration::STATUS_CANCELLED] ?? 0),
+            'cancelled' => $count(EventRegistration::STATUS_CANCELLED, false),
             'items_dispensed' => (int) $this->dispensedQuery($event)->sum(DB::raw('ABS(t.quantity_changed)')),
         ];
     }
@@ -67,7 +76,10 @@ class EventReportService
             ->get(['user_id', 'first_name', 'last_name'])
             ->keyBy('user_id');
 
-        $barangays = $this->barangayNames($attendees->pluck('user_id')->unique()->all());
+        $barangays = $this->barangayNames($attendees->pluck('user_id')->filter()->unique()->all());
+        $walkInBarangays = DB::table('barangays')
+            ->whereIn('barangay_id', $attendees->pluck('walk_in_barangay_id')->filter()->unique())
+            ->pluck('name', 'barangay_id');
 
         $dispensed = $this->dispensedQuery($event)
             ->leftJoin('users as u', 'u.user_id', '=', 't.performed_by')
@@ -108,9 +120,13 @@ class EventReportService
                 'id' => $row->id,
                 'name' => $row->user
                     ? trim($row->user->first_name . ' ' . $row->user->last_name)
-                    : 'Unknown resident',
-                'barangay' => $barangays[$row->user_id] ?? null,
+                    : ($row->walk_in_name ?: 'Unknown resident'),
+                'barangay' => $row->user_id !== null
+                    ? ($barangays[$row->user_id] ?? null)
+                    : (isset($walkInBarangays[$row->walk_in_barangay_id]) ? trim((string) $walkInBarangays[$row->walk_in_barangay_id]) : null),
                 'status' => $row->status,
+                'walk_in' => (bool) $row->is_walk_in,
+                'patient_account' => $row->user_id !== null,
                 'registered_at' => optional($row->registered_at)->toISOString(),
                 'marked_by' => ($marker = $markers[$row->attendance_marked_by] ?? null)
                     ? trim($marker->first_name . ' ' . $marker->last_name)

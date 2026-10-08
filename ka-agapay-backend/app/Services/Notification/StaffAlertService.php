@@ -95,9 +95,11 @@ class StaffAlertService
         }
 
         $message = sprintf(
-            '%d attended of %d registered (%d no-show, %d not marked). %d item(s) dispensed.',
+            '%d came: %d of %d registered, plus %d walk-in(s) (%d no-show, %d not marked). %d item(s) handed out.',
+            $summary['present'],
             $summary['attended'],
             $summary['registered'],
+            $summary['walk_ins'],
             $summary['no_show'],
             $summary['not_marked'],
             $summary['items_dispensed']

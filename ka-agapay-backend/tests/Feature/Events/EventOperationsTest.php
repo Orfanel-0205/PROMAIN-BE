@@ -66,7 +66,7 @@ class EventOperationsTest extends TestCase
         $buto = $this->barangay('Buto');
         $this->event('Free check-up in Buto', ['barangay_target' => 'Buto']);
         $this->event('For the whole town', ['barangay_target' => 'all']);
-        $this->event('RHU 2 only', ['barangay_target' => 'all', 'visibility' => 'rhu2']);
+        $this->event('Hosted by RHU 2', ['barangay_target' => 'all', 'host_rhu_id' => 2]);
 
         $events = collect($this->actingAs($this->superAdmin)->getJson('/api/v1/admin/events?per_page=50')
             ->assertOk()->json('data'))->keyBy('title');
@@ -77,7 +77,8 @@ class EventOperationsTest extends TestCase
         $this->assertEqualsWithDelta((float) $buto->longitude, $pin['longitude'], 0.00001);
 
         $this->assertSame([], $events['For the whole town']['pins']);
-        $this->assertSame(2, $events['RHU 2 only']['host_rhu_id']);
+        $this->assertSame(2, $events['Hosted by RHU 2']['host_rhu_id']);
+        $this->assertSame('RHU 2', $events['Hosted by RHU 2']['host_rhu_label']);
     }
 
     public function test_an_event_posted_by_rhu_staff_is_hosted_by_their_rhu(): void
@@ -169,7 +170,10 @@ class EventOperationsTest extends TestCase
         $report = $this->actingAs($this->nurse)->getJson("/api/v1/admin/events/{$event->id}/report")
             ->assertOk()->json('data');
 
-        $this->assertSame(['registered' => 3, 'attended' => 1, 'no_show' => 1, 'not_marked' => 1, 'cancelled' => 1, 'items_dispensed' => 15], $report['summary']);
+        $this->assertSame(
+            ['registered' => 3, 'attended' => 1, 'walk_ins' => 0, 'present' => 1, 'no_show' => 1, 'not_marked' => 1, 'cancelled' => 1, 'items_dispensed' => 15],
+            $report['summary']
+        );
         $this->assertSame([['item' => 'Albendazole', 'unit' => 'tablet', 'quantity' => 15]], $report['dispensed_totals']);
         $this->assertCount(2, $report['dispensed']);
         $this->assertSame('Nurse Staff1', $report['dispensed'][0]['recorded_by']);
@@ -177,6 +181,63 @@ class EventOperationsTest extends TestCase
         $this->assertSame('Buto', collect($report['attendees'])->firstWhere('status', 'attended')['barangay']);
 
         $this->actingAs($this->resident)->getJson("/api/v1/admin/events/{$event->id}/report")->assertForbidden();
+    }
+
+    // -------------------------------------------------------------- walk-ins
+
+    public function test_walk_ins_are_recorded_and_counted_on_their_own(): void
+    {
+        $event = $this->event('Deworming day', ['starts_at' => $this->manila('today 08:00'), 'max_slots' => 20, 'slots_available' => 19]);
+        $later = $this->event('Next week', ['starts_at' => $this->manila('+7 days 08:00')]);
+        $url = "/api/v1/admin/events/{$event->id}/walk-ins";
+
+        // A resident who had registered is simply marked as came.
+        $this->registration($event, $this->resident);
+        $this->actingAs($this->nurse)->postJson($url, ['user_id' => $this->resident->user_id])
+            ->assertCreated()
+            ->assertJsonPath('data.is_walk_in', false)
+            ->assertJsonPath('data.status', 'attended');
+
+        // A patient who never registered: a walk-in with an account.
+        $patient = $this->user('resident');
+        $this->actingAs($this->nurse)->postJson($url, ['user_id' => $patient->user_id])
+            ->assertCreated()
+            ->assertJsonPath('data.is_walk_in', true)
+            ->assertJsonPath('data.has_account', true);
+
+        // No account: a name and barangay.
+        $buto = $this->barangay('Buto');
+        $nameOnly = $this->actingAs($this->nurse)->postJson($url, ['name' => 'Juan dela Cruz', 'barangay_id' => $buto->barangay_id])
+            ->assertCreated()
+            ->assertJsonPath('data.name', 'Juan dela Cruz')
+            ->assertJsonPath('data.has_account', false)
+            ->json('data');
+
+        // Not a staff account; not before the day; not by a resident.
+        $this->actingAs($this->nurse)->postJson($url, ['user_id' => $this->nurseRhu2->user_id])->assertStatus(422);
+        $this->actingAs($this->nurse)->postJson("/api/v1/admin/events/{$later->id}/walk-ins", ['name' => 'Too early'])->assertStatus(422);
+        $this->actingAs($this->resident)->postJson($url, ['name' => 'Someone'])->assertForbidden();
+
+        // Walk-ins do not use up registration slots.
+        $this->assertSame(19, (int) $event->fresh()->slots_available);
+
+        $report = $this->actingAs($this->nurse)->getJson("/api/v1/admin/events/{$event->id}/report")->json('data');
+        $this->assertSame(1, $report['summary']['registered']);
+        $this->assertSame(1, $report['summary']['attended']);
+        $this->assertSame(2, $report['summary']['walk_ins']);
+        $this->assertSame(3, $report['summary']['present']);
+
+        $row = collect($report['attendees'])->firstWhere('name', 'Juan dela Cruz');
+        $this->assertTrue($row['walk_in']);
+        $this->assertFalse($row['patient_account']);
+        $this->assertSame('Buto', $row['barangay']);
+
+        // A walk-in added by mistake can be removed; a registration cannot.
+        $registered = EventRegistration::where('event_id', $event->id)->where('user_id', $this->resident->user_id)->first();
+        $this->actingAs($this->nurse)->deleteJson("{$url}/{$registered->id}")->assertNotFound();
+        $this->actingAs($this->nurse)->deleteJson("{$url}/{$nameOnly['id']}")->assertOk();
+        $this->assertSame(1, $this->actingAs($this->nurse)->getJson("/api/v1/admin/events/{$event->id}/report")->json('data.summary.walk_ins'));
+        $this->assertTrue(DB::table('audit_logs')->where('action', 'event.walk_in_removed')->exists());
     }
 
     // --------------------------------------------------------- queue alerts
@@ -208,7 +269,7 @@ class EventOperationsTest extends TestCase
             'starts_at' => $this->manila('+2 days 08:00'),
             'max_slots' => 10,
             'slots_available' => 2,
-            'visibility' => 'rhu1',
+            'host_rhu_id' => 1,
         ]);
 
         foreach (range(1, 8) as $i) {

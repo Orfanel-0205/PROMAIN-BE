@@ -48,8 +48,6 @@ class EventController extends Controller
         // dashboard keeps ended events under Past / History.
         $query->where(fn ($q) => $q->where('event_type', 'announcement')->orWhere(fn ($e) => $e->notEnded()));
 
-        $this->restrictToResidentsFacility($query, $user);
-
         if ($request->filled('search')) {
             $search = $request->query('search');
 
@@ -220,6 +218,10 @@ class EventController extends Controller
                 'registrations as total_registered' => function ($query) {
                     $query->where('status', EventRegistration::STATUS_REGISTERED);
                 },
+                // Came so far, walk-ins included: the heatmap's turnout.
+                'registrations as total_attended' => function ($query) {
+                    $query->where('status', EventRegistration::STATUS_ATTENDED);
+                },
             ])
             ->latest();
 
@@ -300,28 +302,9 @@ class EventController extends Controller
                 'slots_available' => $event->slots_available,
                 'total_registered' => $event->total_registered,
             ],
-            'data' => $registrants->getCollection()->map(function (EventRegistration $registration) {
-                $user = $registration->user;
-
-                return [
-                    'id' => $registration->id,
-                    'event_id' => $registration->event_id,
-                    'user_id' => $registration->user_id,
-
-                    'name' => $user
-                        ? trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''))
-                        : 'Unknown resident',
-
-                    'email' => $user?->email,
-                    'mobile_number' => $user?->mobile_number,
-
-                    'status' => $registration->status,
-                    'queue_number' => $registration->queue_number,
-                    'registered_at' => optional($registration->registered_at)->toISOString(),
-                    'cancelled_at' => optional($registration->cancelled_at)->toISOString(),
-                    'created_at' => optional($registration->created_at)->toISOString(),
-                ];
-            })->values(),
+            'data' => $registrants->getCollection()
+                ->map(fn (EventRegistration $registration) => $this->formatRegistrant($registration))
+                ->values(),
             'meta' => [
                 'current_page' => $registrants->currentPage(),
                 'last_page' => $registrants->lastPage(),
@@ -378,7 +361,9 @@ class EventController extends Controller
             'sms_summary' => $validated['sms_summary'] ?? null,
 
             'priority' => $validated['priority'] ?? 'normal',
-            'visibility' => $validated['visibility'] ?? 'public',
+            // Seen by every resident; the RHU is the host (hostFrom()).
+            'visibility' => 'public',
+            'host_rhu_id' => $this->hostFrom($validated),
 
             'is_published' => $publish,
             'published_at' => $publish ? now() : null,
@@ -451,6 +436,11 @@ class EventController extends Controller
 
         if (array_key_exists('max_slots', $validated) && !array_key_exists('slots_available', $validated)) {
             $validated['slots_available'] = $validated['max_slots'];
+        }
+
+        if (array_key_exists('visibility', $validated) || array_key_exists('host_rhu_id', $validated)) {
+            $validated['host_rhu_id'] = $this->hostFrom($validated);
+            $validated['visibility'] = 'public';
         }
 
         $wasPublished = (bool) $event->is_published;
@@ -742,44 +732,16 @@ class EventController extends Controller
             'sms_summary' => ['nullable', 'string', 'max:160'],
 
             'priority' => ['nullable', Rule::in(['normal', 'high', 'urgent'])],
-            // public, or one value per facility (rhu1, rhu2, rhu3…), so a newly
-            // opened RHU can restrict posts the day it exists.
+            // Which RHU is running it, shown as "Hosted by RHU 1"; empty for
+            // every RHU. It no longer limits who sees the post: every RHU
+            // serves the whole town, so posts reach every resident and are
+            // targeted by barangay. "visibility" (rhu1, rhu2, ...) is still
+            // accepted from older screens and read as the host.
+            'host_rhu_id' => ['nullable', 'integer', Rule::in(Rhu::ids())],
             'visibility' => ['nullable', Rule::in(Rhu::visibilityValues())],
 
             'is_published' => ['nullable', 'boolean'],
         ]);
-    }
-
-    /**
-     * Keep a post marked for one RHU away from the other RHUs' residents.
-     *
-     * Until 2026-09-20 the visibility field was stored, shown in the form and
-     * never used in a single query: "RHU 1 residents only" appeared on every
-     * resident's phone regardless. With a third facility possible, that label
-     * has to mean something.
-     *
-     * Staff are not filtered here — they answer for posts across facilities,
-     * and the staff listing has its own RHU scoping.
-     */
-    private function restrictToResidentsFacility($query, ?User $user): void
-    {
-        if (!$user || !$user->hasAnyRole(['resident', 'patient'])) {
-            return;
-        }
-
-        $rhuId = Rhu::resolveRhuIdFromUser($user);
-
-        $query->where(function ($builder) use ($rhuId) {
-            // Anything without a visibility value predates the field and stays
-            // public, which is how it has behaved all along.
-            $builder->whereNull('visibility')
-                ->orWhere('visibility', '')
-                ->orWhere('visibility', 'public');
-
-            if ($rhuId !== null) {
-                $builder->orWhere('visibility', Rhu::visibilityTag($rhuId));
-            }
-        });
     }
 
     /**
@@ -811,11 +773,15 @@ class EventController extends Controller
             ], 422);
         }
 
-        $start = $event->starts_at ?? $event->event_date;
-
-        if ($start && Carbon::parse($start)->setTimezone(LocalTime::zone())->toDateString() > LocalTime::today()->toDateString()) {
+        if (!$this->eventDayReached($event)) {
             return response()->json([
                 'message' => 'Attendance can be marked from the day of the event.',
+            ], 422);
+        }
+
+        if ($registration->is_walk_in && $validated['status'] === EventRegistration::STATUS_REGISTERED) {
+            return response()->json([
+                'message' => 'A walk-in did not register. Remove the walk-in instead.',
             ], 422);
         }
 
@@ -843,8 +809,169 @@ class EventController extends Controller
                 EventRegistration::STATUS_NO_SHOW => 'Marked as no-show.',
                 default => 'Attendance mark removed.',
             },
-            'data' => $this->formatRegistration($registration->fresh()),
+            'data' => $this->formatRegistrant($registration->fresh()),
         ]);
+    }
+
+    /**
+     * POST /api/v1/admin/events/{id}/walk-ins
+     *
+     * Someone who came without registering in the app. Either a patient
+     * account (user_id, found with the patient search or just created the way
+     * the Queue's walk-in form creates one), or -- with no account -- a name
+     * and barangay. A patient who had in fact registered is simply marked as
+     * came. Walk-ins count toward the event's turnout and crowding but do not
+     * use up its registration slots. Audited.
+     */
+    public function addWalkIn(Request $request, int $id, AuditService $audit): JsonResponse
+    {
+        $validated = $request->validate([
+            'user_id' => ['nullable', 'integer', 'exists:users,user_id', 'required_without:name'],
+            'name' => ['nullable', 'string', 'min:2', 'max:150', 'required_without:user_id'],
+            'barangay_id' => ['nullable', 'integer', 'exists:barangays,barangay_id'],
+        ]);
+
+        $event = Event::query()->findOrFail($id);
+
+        if ($event->event_type === 'announcement') {
+            return response()->json(['message' => 'Announcements have no attendance.'], 422);
+        }
+
+        if (!$this->eventDayReached($event)) {
+            return response()->json(['message' => 'Walk-ins can be added from the day of the event.'], 422);
+        }
+
+        $marks = [
+            'status' => EventRegistration::STATUS_ATTENDED,
+            'attendance_marked_by' => $request->user()?->user_id,
+            'attendance_marked_at' => now(),
+        ];
+
+        if (!empty($validated['user_id'])) {
+            $person = User::query()->with('role')->findOrFail($validated['user_id']);
+
+            if ($person->isStaffAccount()) {
+                return response()->json([
+                    'message' => "Choose the person's patient (resident) account, not a staff account.",
+                ], 422);
+            }
+
+            $registration = EventRegistration::query()
+                ->where('event_id', $event->id)
+                ->where('user_id', $person->user_id)
+                ->first();
+
+            if ($registration) {
+                $registration->update($marks);
+            } else {
+                $registration = EventRegistration::create($marks + [
+                    'event_id' => $event->id,
+                    'user_id' => $person->user_id,
+                    'is_walk_in' => true,
+                    'queue_number' => $this->generateQueueNumber($event->id),
+                    'registered_at' => now(),
+                ]);
+            }
+        } else {
+            $registration = EventRegistration::create($marks + [
+                'event_id' => $event->id,
+                'user_id' => null,
+                'is_walk_in' => true,
+                'walk_in_name' => trim($validated['name']),
+                'walk_in_barangay_id' => $validated['barangay_id'] ?? null,
+                'queue_number' => $this->generateQueueNumber($event->id),
+                'registered_at' => now(),
+            ]);
+        }
+
+        $audit->log(
+            request: $request,
+            action: AuditActions::EVENT_WALK_IN_ADDED,
+            module: 'events',
+            subject: $event,
+            newValues: [
+                'registration_id' => $registration->id,
+                'walk_in' => (bool) $registration->is_walk_in,
+                'patient_account' => $registration->user_id !== null,
+            ],
+        );
+
+        return response()->json([
+            'message' => $registration->is_walk_in
+                ? 'Walk-in added as came.'
+                : 'They had registered: marked as came.',
+            'data' => $this->formatRegistrant($registration->fresh()),
+        ], 201);
+    }
+
+    /**
+     * DELETE /api/v1/admin/events/{id}/walk-ins/{registrationId}
+     *
+     * Take back a walk-in added by mistake. Only walk-ins: a resident's own
+     * registration is never deleted by staff. Audited.
+     */
+    public function removeWalkIn(Request $request, int $id, int $registrationId, AuditService $audit): JsonResponse
+    {
+        $event = Event::query()->findOrFail($id);
+        $registration = EventRegistration::query()
+            ->where('event_id', $event->id)
+            ->where('is_walk_in', true)
+            ->findOrFail($registrationId);
+
+        $registration->delete();
+
+        $audit->log(
+            request: $request,
+            action: AuditActions::EVENT_WALK_IN_REMOVED,
+            module: 'events',
+            subject: $event,
+            oldValues: ['registration_id' => $registrationId, 'patient_account' => $registration->user_id !== null],
+        );
+
+        return response()->json(['message' => 'Walk-in removed.']);
+    }
+
+    /** From the day the event starts (in the Philippines), attendance can be taken. */
+    private function eventDayReached(Event $event): bool
+    {
+        $start = $event->starts_at ?? $event->event_date;
+
+        return !$start
+            || Carbon::parse($start)->setTimezone(LocalTime::zone())->toDateString() <= LocalTime::today()->toDateString();
+    }
+
+    /** A host from the form: host_rhu_id, or an older screen's visibility (rhu1...). */
+    private function hostFrom(array $validated): ?int
+    {
+        if (array_key_exists('host_rhu_id', $validated)) {
+            return $validated['host_rhu_id'] ? (int) $validated['host_rhu_id'] : null;
+        }
+
+        return Rhu::visibilityRhuId($validated['visibility'] ?? null);
+    }
+
+    /** A row of the registrants list; a walk-in without an account by name. */
+    private function formatRegistrant(EventRegistration $registration): array
+    {
+        $user = $registration->user;
+
+        return [
+            'id' => $registration->id,
+            'event_id' => $registration->event_id,
+            'user_id' => $registration->user_id,
+            'name' => $user
+                ? trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''))
+                : ($registration->walk_in_name ?: 'Unknown resident'),
+            'email' => $user?->email,
+            'mobile_number' => $user?->mobile_number,
+            'status' => $registration->status,
+            'queue_number' => $registration->queue_number,
+            'registered_at' => optional($registration->registered_at)->toISOString(),
+            'cancelled_at' => optional($registration->cancelled_at)->toISOString(),
+            'created_at' => optional($registration->created_at)->toISOString(),
+            'is_walk_in' => (bool) $registration->is_walk_in,
+            'has_account' => $registration->user_id !== null,
+        ];
     }
 
     /**
@@ -901,7 +1028,11 @@ class EventController extends Controller
             // Where it is on the map (its target barangays) and whose it is
             // (EventFacility); whether it is over (Event::hasEnded).
             'pins' => EventFacility::pins($event),
-            'host_rhu_id' => EventFacility::hostRhuId($event),
+            'host_rhu_id' => $hostRhuId = EventFacility::hostRhuId($event),
+            // "Hosted by RHU 1"; null for every RHU.
+            'host_rhu_label' => $hostRhuId ? Rhu::rhuLabel($hostRhuId) : null,
+            // Who has come so far, walk-ins included (turnout on the day).
+            'total_attended' => (int) ($event->total_attended ?? 0),
             'has_ended' => $event->hasEnded(),
             'report_generated_at' => optional($event->report_generated_at)->toISOString(),
 

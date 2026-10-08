@@ -29,6 +29,8 @@ class Event extends Model
         'longitude',
 
         'barangay_target',
+        // The RHU running it ("Hosted by RHU 1"); empty for every RHU.
+        'host_rhu_id',
         'target_audience',
 
         'tags',

@@ -12,10 +12,11 @@
 // coordinates). An event for "all" barangays has no pins and stays at its
 // host RHU.
 //
-// hostRhuId(): whose event it is, for alerts and for the map's facility
-// pressure. In order: the RHU the post is restricted to; the RHU of the staff
-// member who posted it; the RHU nearest its first barangay; otherwise none,
-// meaning every RHU (an MHO or super admin posting for the whole town).
+// hostRhuId(): whose event it is -- "Hosted by RHU 1" in the app, and who is
+// alerted and whose pressure it adds to on the map. In order: the host chosen
+// on the event form (events.host_rhu_id); the RHU of the staff member who
+// posted it; the RHU nearest its first barangay; otherwise none, meaning
+// every RHU (an MHO or super admin posting for the whole town).
 
 namespace App\Support;
 
@@ -50,10 +51,10 @@ final class EventFacility
 
     public static function hostRhuId(Event $event): ?int
     {
-        $restricted = Rhu::visibilityRhuId($event->visibility);
+        $chosen = Rhu::normalizeRhuId($event->host_rhu_id !== null ? (int) $event->host_rhu_id : null);
 
-        if ($restricted) {
-            return $restricted;
+        if ($chosen) {
+            return $chosen;
         }
 
         $creator = $event->creator;

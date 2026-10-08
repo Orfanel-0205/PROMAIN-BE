@@ -1,14 +1,15 @@
 <?php
 // tests/Feature/Rhu/EventVisibilityTest.php
 //
-// "RHU 1 residents only" has to mean something.
+// Every resident sees every post; the RHU is its host.
 //
-// Until 2026-09-20 the visibility field was stored, shown in the CMS form and
-// validated — and never used in a single query. Every published post reached
-// every resident regardless of the facility it was marked for. With a third
-// RHU now possible, these tests hold the rule: residents see public posts and
-// their own facility's posts, staff see everything, and a facility opened
-// today can restrict posts the same way.
+// From 2026-09-20 a post could be restricted to one RHU's residents (rhu1,
+// rhu2): it reached only residents whose barangay was "home" to that RHU. But
+// every RHU serves the whole of Malasiqui, and on production every barangay's
+// home was RHU 2, so an "RHU 1 only" post would have reached nobody. Since
+// October 2026 posts reach every resident and are targeted by barangay; the
+// RHU is shown as "Hosted by RHU 1". An older screen's rhu1/rhu2 is read as
+// the host, and a facility opened today can host posts the same way.
 
 namespace Tests\Feature\Rhu;
 
@@ -28,6 +29,7 @@ class EventVisibilityTest extends TestCase
     private User $rhu1Resident;
     private User $rhu2Resident;
     private User $nurse;
+    private User $superAdmin;
     private int $phone = 0;
 
     protected function setUp(): void
@@ -36,7 +38,6 @@ class EventVisibilityTest extends TestCase
 
         $this->seed(\Database\Seeders\UserRoleSeeder::class);
         $this->seed(\Database\Seeders\BarangaySeeder::class);
-
         Rhu::flushCache();
 
         [$rhu1Barangay, $rhu2Barangay] = Barangay::orderBy('barangay_id')
@@ -50,53 +51,65 @@ class EventVisibilityTest extends TestCase
         $this->rhu1Resident = $this->makeResident($rhu1Barangay);
         $this->rhu2Resident = $this->makeResident($rhu2Barangay);
         $this->nurse = $this->makeUser('nurse');
+        $this->superAdmin = $this->makeUser('super_admin');
     }
 
-    public function test_a_resident_sees_public_posts_and_their_own_rhus_posts_only(): void
+    public function test_every_resident_sees_every_post_whichever_rhu_hosts_it(): void
     {
-        $public = $this->makeEvent('Free check-up for everyone', 'public');
-        $rhu1Only = $this->makeEvent('RHU 1 immunization day', 'rhu1');
-        $rhu2Only = $this->makeEvent('RHU 2 dental mission', 'rhu2');
+        $public = $this->publish('Free check-up for everyone');
+        $rhu1 = $this->publish('RHU 1 immunization day', ['host_rhu_id' => 1]);
+        $rhu2 = $this->publish('RHU 2 dental mission', ['host_rhu_id' => 2]);
 
-        $titles = $this->titlesFor($this->rhu1Resident);
+        foreach ([$this->rhu1Resident, $this->rhu2Resident] as $resident) {
+            $events = $this->eventsFor($resident);
 
-        $this->assertContains($public, $titles);
-        $this->assertContains($rhu1Only, $titles);
-        $this->assertNotContains($rhu2Only, $titles, 'An RHU 2 post must not reach an RHU 1 resident.');
+            $this->assertArrayHasKey($public, $events);
+            $this->assertArrayHasKey($rhu1, $events);
+            $this->assertArrayHasKey($rhu2, $events, 'Every RHU serves the whole town.');
+        }
 
-        $titles = $this->titlesFor($this->rhu2Resident);
+        $events = $this->eventsFor($this->rhu1Resident);
+        $this->assertSame('RHU 2', $events[$rhu2]['host_rhu_label']);
+        $this->assertSame(2, $events[$rhu2]['host_rhu_id']);
+    }
 
-        $this->assertContains($public, $titles);
-        $this->assertContains($rhu2Only, $titles);
-        $this->assertNotContains($rhu1Only, $titles);
+    public function test_an_older_screens_rhu_only_choice_becomes_the_host_and_the_post_reaches_everyone(): void
+    {
+        $title = $this->publish('Sent as RHU 2 only', ['visibility' => 'rhu2']);
+
+        $this->assertDatabaseHas('events', ['title' => $title, 'host_rhu_id' => 2, 'visibility' => 'public']);
+        $this->assertArrayHasKey($title, $this->eventsFor($this->rhu1Resident));
     }
 
     public function test_posts_written_before_the_field_existed_stay_public(): void
     {
-        $legacy = $this->makeEvent('Old post with no visibility set', null);
+        DB::table('events')->insert([
+            'title' => 'Old post with no visibility set',
+            'created_by' => $this->nurse->user_id,
+            'is_published' => true,
+            'published_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
-        $this->assertContains($legacy, $this->titlesFor($this->rhu1Resident));
-        $this->assertContains($legacy, $this->titlesFor($this->rhu2Resident));
+        $this->assertArrayHasKey('Old post with no visibility set', $this->eventsFor($this->rhu1Resident));
+        $this->assertArrayHasKey('Old post with no visibility set', $this->eventsFor($this->rhu2Resident));
     }
 
-    public function test_staff_still_see_every_facilitys_posts(): void
+    public function test_staff_still_see_every_post(): void
     {
-        $rhu1Only = $this->makeEvent('RHU 1 immunization day', 'rhu1');
-        $rhu2Only = $this->makeEvent('RHU 2 dental mission', 'rhu2');
+        $rhu1 = $this->publish('RHU 1 immunization day', ['host_rhu_id' => 1]);
+        $rhu2 = $this->publish('RHU 2 dental mission', ['host_rhu_id' => 2]);
 
-        $titles = $this->titlesFor($this->nurse);
+        $events = $this->eventsFor($this->nurse);
 
-        $this->assertContains($rhu1Only, $titles);
-        $this->assertContains($rhu2Only, $titles);
+        $this->assertArrayHasKey($rhu1, $events);
+        $this->assertArrayHasKey($rhu2, $events);
     }
 
-    public function test_a_newly_opened_rhu_can_restrict_posts_the_same_way(): void
+    public function test_a_newly_opened_rhu_can_host_posts_the_same_way(): void
     {
-        $this->markTestSkipped('Open decision (Oct 2026): a new RHU never becomes the home RHU of any barangay. barangays.rhu_id is NOT NULL, so the take-it-as-home branch in assignBarangays never runs, and nothing else changes a home. Its residents keep routing to RHU 1/2 and its RHU-only posts reach no residents. See docs/HANDOVER-CHECKLIST.md.');
-
-        $superAdmin = $this->makeUser('super_admin');
-
-        $newId = (int) $this->actingAs($superAdmin)
+        $newId = (int) $this->actingAs($this->superAdmin)
             ->postJson('/api/v1/rhus', [
                 'code' => 'RHU3',
                 'name' => 'RHU 3 Malasiqui',
@@ -107,54 +120,42 @@ class EventVisibilityTest extends TestCase
             ->assertCreated()
             ->json('data.id');
 
-        // A barangay no facility served yet, so RHU 3 becomes its home (a
-        // barangay that has one keeps it: coverage, not ownership).
-        $barangay = Barangay::orderBy('barangay_id')->skip(5)->first();
-        DB::table('barangays')->where('barangay_id', $barangay->barangay_id)->update(['rhu_id' => null]);
+        $title = $this->publish('RHU 3 opening day', ['host_rhu_id' => $newId]);
 
-        $this->actingAs($superAdmin)
-            ->putJson("/api/v1/rhus/{$newId}/barangays", ['barangay_ids' => [$barangay->barangay_id]])
-            ->assertOk();
-
-        $resident = $this->makeResident($barangay->barangay_id);
-        $rhu3Only = $this->makeEvent('RHU 3 opening day', "rhu{$newId}");
-
-        // Accepted by the CMS form's validation…
-        $this->assertContains("rhu{$newId}", Rhu::visibilityValues());
-
-        // …and it reaches that facility's residents and nobody else's.
-        $this->assertContains($rhu3Only, $this->titlesFor($resident));
-        $this->assertNotContains($rhu3Only, $this->titlesFor($this->rhu1Resident));
+        // Seen by residents of any barangay, hosted by the new facility.
+        $events = $this->eventsFor($this->rhu1Resident);
+        $this->assertArrayHasKey($title, $events);
+        $this->assertSame('RHU 3', $events[$title]['host_rhu_label']);
     }
 
     // ---------------------------------------------------------------- helpers
 
-    /** @return string[] */
-    private function titlesFor(User $user): array
+    /** Post through the dashboard's form, published. */
+    private function publish(string $title, array $fields = []): string
     {
-        $response = $this->actingAs($user)->getJson('/api/v1/programs')->assertOk();
+        $this->actingAs($this->superAdmin)
+            ->postJson('/api/v1/admin/events', [
+                'title' => $title,
+                'description' => $title,
+                'event_type' => 'event',
+                'event_date' => now()->addDays(3)->toDateString(),
+                'is_published' => true,
+            ] + $fields)
+            ->assertSuccessful();
+
+        return $title;
+    }
+
+    /** @return array<string, array<string, mixed>> title => event */
+    private function eventsFor(User $user): array
+    {
+        $response = $this->actingAs($user)->getJson('/api/v1/programs?per_page=100')->assertOk();
         $payload = $response->json('data') ?? $response->json();
 
         return collect(is_array($payload) ? $payload : [])
-            ->pluck('title')
-            ->filter()
-            ->values()
+            ->filter(fn ($event) => !empty($event['title']))
+            ->keyBy('title')
             ->all();
-    }
-
-    private function makeEvent(string $title, ?string $visibility): string
-    {
-        DB::table('events')->insert(array_filter([
-            'title' => $title,
-            'created_by' => $this->nurse->user_id,
-            'visibility' => $visibility,
-            'is_published' => true,
-            'published_at' => now(),
-            'created_at' => now(),
-            'updated_at' => now(),
-        ], fn ($value) => $value !== null));
-
-        return $title;
     }
 
     private function makeResident(int $barangayId): User
@@ -178,7 +179,7 @@ class EventVisibilityTest extends TestCase
             'role_id' => $roleRow->role_id,
             'first_name' => ucfirst($role),
             'last_name' => 'Tester' . ($this->phone + 1),
-            'mobile_number' => sprintf('0917500%04d', ++$this->phone),
+            'mobile_number' => sprintf('0917300%04d', ++$this->phone),
             'password' => bcrypt('password'),
             'account_status' => 'active',
         ]);
