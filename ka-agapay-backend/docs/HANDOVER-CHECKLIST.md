@@ -112,27 +112,38 @@ against real invoices before budgeting** — usage-based costs move.
 Work through this with whoever has server access. Nothing here can be done from
 the source code alone.
 
+Ticked items were checked on the production server on **8 October 2026**, with
+the evidence beside each. Re-check them on the day of handover; the unticked
+ones need people, not code.
+
 ### Must be true before handover is real
 
-- [ ] **Nightly database backups are installed and running.** Confirm the web
+- [x] **Nightly database backups are installed and running.** *(8 Oct 2026: cron
+      02:00 as www-data; backup run #59 the same day.)* Confirm the web
       admin's *Settings → Backup* panel shows **"Database is protected"**. If it
       says *"No backups recorded yet"*, the job is not installed.
-- [ ] **At least one restore has been tested.** A backup nobody has restored is a
+- [x] **At least one restore has been tested.** *(Monthly drill, 1st of the
+      month 03:30; 1 Oct 2026: "PASS — this backup is restorable". See the log below.)* A backup nobody has restored is a
       guess. Record it in the restore drill log below.
-- [ ] **Backups are stored somewhere other than the server.** A copy that lives
+- [x] **Backups are stored somewhere other than the server.** *(8 Oct 2026: each
+      run uploads to S3 bucket `kaagapay-backups` — "Upload OK", run #59.)* A copy that lives
       only on the server does not survive that server failing. If the panel says
       *"Backup has not left the server"*, this is not done.
-- [ ] **The scheduled-jobs entry is confirmed present on the server.** Without it,
+- [x] **The scheduled-jobs entry is confirmed present on the server.** *(8 Oct
+      2026: `* * * * * … php artisan schedule:run` in www-data's crontab.)* Without it,
       appointment reminders, follow-ups, event SMS and stock alerts silently never
       send. This is the single most commonly missed item.
-- [ ] **The HTTPS certificate renews automatically**, and renewal has been tested
+- [x] **The HTTPS certificate renews automatically**, and renewal has been tested
+      *(8 Oct 2026: certbot.timer active; `certbot renew --dry-run` — "all simulated
+      renewals succeeded"; current certificate valid to 16 Nov 2026)*
       — not just assumed. Certificates expire every 90 days and take down the
       website and mobile app together.
 - [ ] **Video calling has been tested on real devices** — a patient on a phone
       and a doctor on a computer, in the same call.
-- [ ] **Error alerts reach a real person.** A messaging webhook is configured so a
+- [x] **Error alerts reach a real person.** A messaging webhook is configured so a
       failed SMS batch or a failed backup notifies someone the same day.
-      Alerts go to: `__________`
+      Alerts go to: `the Slack webhook in LOG_SLACK_WEBHOOK_URL (alerts were received
+      by the development team in Sept 2026) — move it to the LGU's own channel`
 - [ ] **At least two people can access every account in §1.**
 - [ ] **At least one RHU staff member has walked through `docs/OPERATIONS.md`**
       with the outgoing team, on the actual server.
@@ -146,7 +157,7 @@ the backups are unproven again.**
 
 | Date performed | Dump file restored | By whom | Row counts looked right? |
 |---|---|---|---|
-| `__________` | `__________` | `__________` | `__________` |
+| 1 Oct 2026 | `kaagapay_db_2026-10-01_020002.sql.gz` | monthly drill (`kaagapay-restore-drill.sh`) | Yes — every table matched; "PASS" |
 | `__________` | `__________` | `__________` | `__________` |
 | `__________` | `__________` | `__________` | `__________` |
 
@@ -154,7 +165,8 @@ the backups are unproven again.**
 
 - [ ] Domain renewal reminder set (60 days ahead)
 - [ ] Semaphore balance check added to someone's weekly routine
-- [ ] Quarterly certificate + restore drill added to a calendar
+- [ ] Quarterly certificate + restore drill added to a calendar *(the restore drill
+      already runs itself monthly; someone still needs to read its result)*
 
 ---
 

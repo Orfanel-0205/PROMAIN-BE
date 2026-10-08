@@ -1,66 +1,137 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Ka-Agapay — backend (API)
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+The server behind the Ka-Agapay system of the Malasiqui Rural Health Units:
+the **web admin** used by RHU staff (`Rhu-admin-main-1`) and the **mobile app**
+used by residents (`KaAgapay-mobile`) both talk to this API at `/api/v1`.
 
-## About Laravel
+It handles accounts and sign-in, patient records, the queue, appointments,
+SOAP consultations, e-prescriptions and lab requests, telemedicine, follow-ups,
+inventory, events and announcements, SMS and push notifications, analytics and
+the audit trail.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+> **Running production?** Read [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (deploys,
+> backups, certificates, the scheduler, what to do when something breaks) and
+> [`docs/HANDOVER-CHECKLIST.md`](docs/HANDOVER-CHECKLIST.md) (accounts, costs,
+> known limitations). This README is for setting the project up and working on it.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Stack
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+| | |
+|---|---|
+| Framework | Laravel 12 (PHP 8.3) |
+| Database | PostgreSQL (the migrations use PostgreSQL features; SQLite will not work) |
+| Cache / locks | Redis on the server, file or array locally |
+| Sign-in | Laravel Sanctum tokens (7 days), roles via `RoleMiddleware`, policies in `app/Policies` |
+| PDFs | dompdf (`resources/views/pdf`) |
+| Outside services | Semaphore (SMS), Expo push, OCR.space (ID and paper-SOAP scans), Google Gemini (assistant), Jitsi / JaaS (video), SMTP (email) |
 
-## Learning Laravel
+Keys for the outside services are set by a super admin under **Settings → API keys**
+in the web admin (stored encrypted), with `.env` as the fallback. They are never
+committed.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+## Repository layout
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+The Git repository root is `PROMAIN-BE`; the application is in
+`ka-agapay-backend/`. On the server that is `/var/www/ka-agapay-backend/ka-agapay-backend`.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+```
+app/Http/Controllers/Api   one controller per area (Queue/, Telemedicine/, Ai/, …)
+app/Policies               who may see or change what (telemedicine, queue tickets)
+app/Services               the work itself (Notification/, Queue/, Events/, Inventory/, …)
+app/Support                small shared rules (Rhu, LocalTime, QueuePressure, EventFacility, …)
+app/Console/Commands       scheduled jobs (reminders, alerts, event reports, …)
+routes/api.php             every endpoint, with the roles allowed on each group
+database/migrations        additive by policy — never drop a column
+tests/Feature, tests/Unit  PHPUnit
+docs/                      OPERATIONS.md, HANDOVER-CHECKLIST.md, deploy scripts
+```
 
-## Laravel Sponsors
+## Setting it up on your computer
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+Requirements: PHP 8.3 with `pdo_pgsql`, Composer, PostgreSQL 14+.
 
-### Premium Partners
+```bash
+cd ka-agapay-backend
+composer install
+cp .env.example .env          # then set DB_* to your local PostgreSQL
+php artisan key:generate
+php artisan migrate
+php artisan db:seed           # roles, the 73 Malasiqui barangays, demo users
+php artisan db:seed --class=BarangayCoordinatesSeeder   # map points for the heatmap
+php artisan serve             # http://127.0.0.1:8000/api/v1/health → {"status":"ok"}
+```
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[WebReinvent](https://webreinvent.com/)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Jump24](https://jump24.co.uk)**
-- **[Redberry](https://redberry.international/laravel/)**
-- **[Active Logic](https://activelogic.com)**
-- **[byte5](https://byte5.de)**
-- **[OP.GG](https://op.gg)**
+The web admin in development mode calls `http://127.0.0.1:8000/api/v1` by default,
+so the two run together without extra configuration.
 
-## Contributing
+Every environment variable is listed and explained in `.env.example` and in
+[`docs/OPERATIONS.md` §2](docs/OPERATIONS.md). Production must keep `APP_DEBUG=false`.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Tests
 
-## Code of Conduct
+The tests rebuild their database from the migrations on every run, so give them
+**their own database** — never point them at your working one:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+createdb kaagapay_test                     # once
+DB_DATABASE=kaagapay_test php vendor/bin/phpunit
+```
 
-## Security Vulnerabilities
+If your PHP has `pdo_pgsql` installed but not enabled (as on a default Laragon),
+add `-d extension=pdo_pgsql` after `php`.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+As of October 2026: **307 tests, 0 failures, 1 skipped** (the "home RHU" default,
+an open decision recorded in the handover checklist). The security tests in
+`tests/Feature/Security` each prove a specific hole stays closed; run them after
+any change to routes, policies or controllers.
 
-## License
+## Scheduled jobs
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+The server's cron runs `php artisan schedule:run` every minute as `www-data`
+(see [`docs/OPERATIONS.md` §5](docs/OPERATIONS.md) — if it stops, nothing below happens):
+
+| Job | When (Philippine time) | What it does |
+|---|---|---|
+| `appointments:send-reminders` | day before and on the day | SMS and app reminders |
+| `followups:send-reminders` | 8:00 AM | 3 days before, day before, on the day |
+| `events:send-reminders` | 8:15 AM | text 3 days before to the target barangays |
+| `queue:pressure-alerts` | every minute | alert an RHU's staff when its queue is heavy (26+) or over capacity (51+), or an event is nearly full |
+| `events:close-ended` | every 15 minutes | when an event ends, send its staff the event report |
+| `queue:close-stale`, prescription expiry, inventory alerts, `outbreak:detect`, `push:check-receipts`, `sanctum:prune-expired` | daily / hourly | housekeeping and alerts |
+
+`php artisan schedule:list` shows the full list with next run times. Each job
+reports failures to the Slack webhook (`LOG_SLACK_WEBHOOK_URL`).
+
+## Deploying
+
+Short version (full steps and the reasons in [`docs/OPERATIONS.md` §3](docs/OPERATIONS.md)):
+
+```bash
+ssh <server>
+/usr/local/bin/kaagapay-backup.sh               # snapshot first if there is a migration
+cd /var/www/ka-agapay-backend && git pull origin main
+cd ka-agapay-backend
+sudo -u www-data php artisan migrate --force
+sudo -u www-data php artisan optimize:clear
+sudo -u www-data php artisan config:cache && sudo -u www-data php artisan route:cache
+systemctl reload php8.3-fpm
+curl -s https://<domain>/api/v1/health
+```
+
+Run artisan as `www-data`, never as root: files root creates in `storage/` break
+the app for the web server.
+
+## Conventions worth knowing
+
+- **Roles** are checked twice: on the route group (`role:...` in `routes/api.php`)
+  and in the controller or policy for anything tied to a person or an RHU.
+  Residents (`resident`, `patient`) are everyone else's opposite — `User::isStaffAccount()`.
+- **RHU scoping**: staff see their own RHU; the MHO and super admin see every RHU
+  (`App\Support\Rhu`). Every RHU serves the whole of Malasiqui; residents pick the
+  facility when they book.
+- **Time**: stored in UTC; anything a person sees or a reminder is scheduled by uses
+  Philippine time (`App\Support\LocalTime`).
+- **Audit**: `AuditService::info($module, $action, …)` — module first. Use named
+  arguments (`$audit->log(request:, action:, module:, …)`) where you can.
+- **Comments explain why.** Most non-obvious code says what went wrong before it
+  existed. Keep that up.
