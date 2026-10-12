@@ -218,6 +218,9 @@ class ChatController extends Controller
 
         return response()->json([
             'message' => $this->formatMessage($assistantMessage),
+            // The saved question, so the app can file the photo it keeps on
+            // the phone under this id and show it when the chat is reopened.
+            'user_message' => $this->formatMessage($userMessage),
             'session_id' => $session->session_token,
             'audience' => $audience,
             'intent' => $intent,
@@ -334,6 +337,12 @@ class ChatController extends Controller
             Log::warning('[ChatController] Could not read the uploaded attachment.');
 
             return [];
+        }
+
+        // A full-size camera photo made Gemini time out (ChatImage). Voice
+        // notes and anything GD cannot read pass through unchanged.
+        if (str_starts_with($mime, 'image/')) {
+            ['bytes' => $contents, 'mime' => $mime] = \App\Support\ChatImage::shrink($contents, $mime);
         }
 
         return [[

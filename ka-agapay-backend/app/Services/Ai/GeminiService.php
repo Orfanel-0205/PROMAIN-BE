@@ -27,6 +27,9 @@ class GeminiService
     private const RETRY_OUTPUT_TOKENS = 4000;
 
     private string $apiKey;
+
+    /** This turn carries a photo (set in chat()). */
+    private bool $photoInTurn = false;
     private string $model;
     private string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -67,6 +70,11 @@ class GeminiService
         array $attachments = []
     ): string {
         $message = trim($message);
+
+        // Whether this turn carries a photo, for an honest reply if the model
+        // cannot be reached (fallbackResponse).
+        $this->photoInTurn = collect($attachments)
+            ->contains(fn ($attachment) => str_starts_with((string) ($attachment['mime'] ?? ''), 'image/'));
 
         if ($message === '' && $attachments === []) {
             return $this->fallbackResponse($message, $audience);
@@ -197,9 +205,14 @@ class GeminiService
 
         $lastReply = null;
 
+        // A photo takes the model longer to start on. One longer wait rather
+        // than two 25-second ones: a timed-out photo used to cost the resident
+        // 51 seconds and then the generic answer (9 Oct 2026).
+        $withMedia = $attachments !== [];
+
         foreach ($attempts as [$maxOutputTokens, $thinkingBudget]) {
-            $response = Http::timeout($longForm ? 45 : 25)
-                ->retry(2, 700)
+            $response = Http::timeout($longForm || $withMedia ? 45 : 25)
+                ->retry($withMedia ? 1 : 2, 700)
                 ->withHeaders([
                     'Content-Type' => 'application/json',
                 ])
@@ -1219,6 +1232,15 @@ class GeminiService
      */
     private function fallbackResponse(string $message, string $audience): string
     {
+        // A resident who sent a photo and got "Nandito ako para tumulong…"
+        // reads it as the assistant ignoring the picture. Say what happened.
+        if ($this->photoInTurn) {
+            return $audience === 'staff'
+                ? 'Pasensya na, hindi ko nabasa ang larawan ngayon — abala o mabagal ang serbisyo. Pakisubukang ipadala ulit.'
+                : 'Pasensya po, hindi ko po nabasa ang larawan ngayon — maaaring mabagal ang koneksyon o abala ang serbisyo. '
+                    . 'Pakisubukan pong ipadala ulit. Kung emergency po, pumunta agad sa pinakamalapit na RHU o ER.';
+        }
+
         if ($audience === 'staff') {
             $entry = $this->answers->find($message);
 
