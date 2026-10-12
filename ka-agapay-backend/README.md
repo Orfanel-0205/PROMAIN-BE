@@ -80,7 +80,7 @@ DB_DATABASE=kaagapay_test php vendor/bin/phpunit
 If your PHP has `pdo_pgsql` installed but not enabled (as on a default Laragon),
 add `-d extension=pdo_pgsql` after `php`.
 
-As of October 2026: **315 tests, 0 failures, 0 skipped**. The security tests in
+As of October 2026: **317 tests, 0 failures, 0 skipped**. The security tests in
 `tests/Feature/Security` each prove a specific hole stays closed; run them after
 any change to routes, policies or controllers.
 
