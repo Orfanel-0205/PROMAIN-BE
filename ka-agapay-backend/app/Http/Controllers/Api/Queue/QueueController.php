@@ -283,6 +283,26 @@ class QueueController extends Controller
     {
         $data = $request->validated();
 
+        // A resident may take a number only for themselves. Any profile id
+        // used to be accepted, and the reply carries that person's name,
+        // mobile number and barangay (found Oct 2026).
+        if (!$request->user()->isStaffAccount()) {
+            $ownProfileId = (int) ResidentProfile::where('user_id', $request->user()->user_id)->value('id');
+            $appointmentOwner = isset($data['appointment_id'])
+                ? (int) DB::table('appointments')->where('id', $data['appointment_id'])->value('user_id')
+                : (int) $request->user()->user_id;
+
+            if (
+                $ownProfileId === 0
+                || (int) $data['resident_profile_id'] !== $ownProfileId
+                || $appointmentOwner !== (int) $request->user()->user_id
+            ) {
+                return response()->json([
+                    'message' => 'You can only take a queue number for yourself.',
+                ], 403);
+            }
+        }
+
         // SECURITY: force the RHU through the scoped resolver so non-global staff
         // can never issue a ticket to another RHU by changing the payload.
         $data['rhu_id'] = $this->scopedRhuId(
@@ -511,6 +531,10 @@ class QueueController extends Controller
 
     public function live(Request $request): JsonResponse
     {
+        // Every ticket on the board carries the patient's name and mobile
+        // number, so staff only; residents see their own via /my-ticket.
+        abort_unless($request->user()?->isStaffAccount(), 403, 'The live queue is for RHU staff.');
+
         $validated = $request->validate([
             'rhu_id' => [
                 'nullable',

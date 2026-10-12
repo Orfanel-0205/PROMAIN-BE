@@ -9,6 +9,8 @@
 //   3. other residents' requests in the telemedicine LIST
 //   4. the patient search, which returns names, numbers and emails
 //   5. follow-ups: list, summary, create (which can send a billed SMS), edit
+//   6. a queue number for someone else, and the live queue board, both of
+//      which return patients' names and mobile numbers (found Oct 2026)
 //
 // plus who may CANCEL a telemedicine request: nurses, midwives, the MHO and
 // the super admin, at the request's RHU (the RHU's rule; residents ask the
@@ -19,6 +21,7 @@
 namespace Tests\Feature\Security;
 
 use App\Models\FollowUpReminder;
+use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use App\Models\TelemedicineRequest;
 use App\Models\TelemedicineSession;
@@ -282,6 +285,65 @@ class ResidentAccessTest extends TestCase
     }
 
     // ---------------------------------------------------------------- helpers
+
+    // ------------------------------------------------------ queue numbers
+
+    public function test_a_resident_can_take_a_queue_number_only_for_themselves(): void
+    {
+        Http::fake();
+
+        $someoneElse = [
+            'resident_profile_id' => $this->otherResident->residentProfile->id,
+            'service_type' => 'opd_consultation',
+            'rhu_id' => 1,
+        ];
+
+        $this->actingAs($this->patient)
+            ->postJson('/api/v1/queue/issue', $someoneElse)
+            ->assertForbidden()
+            ->assertJsonMissing(['patient_mobile' => '09170000002']);
+
+        $this->assertSame(0, QueueTicket::count());
+
+        // Nor by borrowing someone else's appointment.
+        $theirAppointment = (int) DB::table('appointments')->insertGetId([
+            'user_id' => $this->otherResident->user_id,
+            'rhu_id' => 1,
+            'appointment_date' => now()->toDateString(),
+            'appointment_time' => '09:00',
+            'status' => 'approved',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($this->patient)
+            ->postJson('/api/v1/queue/issue', [
+                'resident_profile_id' => $this->patient->residentProfile->id,
+                'appointment_id' => $theirAppointment,
+                'service_type' => 'opd_consultation',
+                'rhu_id' => 1,
+            ])
+            ->assertForbidden();
+
+        // Their own: allowed. Staff: for anyone.
+        $this->actingAs($this->patient)
+            ->postJson('/api/v1/queue/issue', [
+                'resident_profile_id' => $this->patient->residentProfile->id,
+                'service_type' => 'opd_consultation',
+                'rhu_id' => 1,
+            ])
+            ->assertCreated();
+
+        $this->actingAs($this->staffAdmin)
+            ->postJson('/api/v1/queue/issue', $someoneElse)
+            ->assertCreated();
+    }
+
+    public function test_the_live_queue_board_is_for_staff(): void
+    {
+        $this->actingAs($this->patient)->getJson('/api/v1/queue/live?rhu_id=1')->assertForbidden();
+        $this->actingAs($this->nurse)->getJson('/api/v1/queue/live?rhu_id=1')->assertOk();
+    }
 
     private function role(string $name): UserRole
     {
