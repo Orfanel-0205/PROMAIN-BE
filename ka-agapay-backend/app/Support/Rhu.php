@@ -16,9 +16,12 @@ use Illuminate\Support\Facades\Schema;
  * table: Malasiqui runs RHU 1 and RHU 2 today, and a super admin can open a
  * third without a developer (Administration → RHU Facilities).
  *
- * The barangay a resident belongs to determines their RHU via the
- * `barangays.rhu_id` mapping column. Appointments and queue tickets store the
- * facility rhu_id, never a barangay id.
+ * A resident has no RHU of their own (Oct 2026). Every RHU serves the whole
+ * of Malasiqui and a resident goes to whichever they choose, so records are
+ * filed under the RHU where the visit happened, and "their RHU" means the one
+ * they last went to (lastVisitedRhuId). `barangays.rhu_id` is now only the
+ * map's suggestion of the nearest RHU, never a rule. Appointments and queue
+ * tickets store the facility rhu_id, never a barangay id.
  *
  * Everything here is Schema-guarded so it degrades safely if a table or column
  * has not been migrated yet (it falls back to the two original facilities).
@@ -212,14 +215,21 @@ final class Rhu
     }
 
     /**
-     * Resolve the facility RHU id (1/2) for a user.
-     *  - Staff: explicit assigned_rhu_id when it is already a facility id, else
-     *    derived from their barangay.
-     *  - Resident: derived from their resident_profile barangay (or user barangay).
+     * Resolve the facility RHU id for a STAFF account: its assigned_rhu_id
+     * when that is a facility id, else derived from the account's barangay.
+     *
+     * A resident account gets null. Residents used to be given the RHU of
+     * their barangay (RHU 2 for every barangay), which hid them from RHU 1's
+     * patient registry and overrode the RHU they picked for a queue ticket.
+     * For the RHU a resident uses, see lastVisitedRhuId().
      */
     public static function resolveRhuIdFromUser(?User $user): ?int
     {
         if (!$user) {
+            return null;
+        }
+
+        if (in_array(strtolower(trim((string) $user->role?->name)), User::RESIDENT_ROLES, true)) {
             return null;
         }
 
@@ -251,6 +261,56 @@ final class Rhu
         }
 
         return self::deriveRhuIdFromBarangayName($user->barangay ?? null);
+    }
+
+    /**
+     * The RHU a resident last went to: their newest consultation, queue
+     * ticket or appointment, whichever is latest. Null when they have none.
+     */
+    public static function lastVisitedRhuId(int $userId): ?int
+    {
+        if ($userId <= 0) {
+            return null;
+        }
+
+        $sources = [];
+
+        if (Schema::hasColumn('consultations', 'rhu_id')) {
+            $sources[] = DB::table('consultations')
+                ->where('user_id', $userId)
+                ->select('rhu_id', 'created_at');
+        }
+
+        if (Schema::hasColumn('appointments', 'rhu_id')) {
+            $sources[] = DB::table('appointments')
+                ->where('user_id', $userId)
+                ->select('rhu_id', 'created_at');
+        }
+
+        if (Schema::hasTable('queue_tickets') && Schema::hasTable('resident_profiles')) {
+            $sources[] = DB::table('queue_tickets as q')
+                ->join('resident_profiles as rp', 'rp.id', '=', 'q.resident_profile_id')
+                ->where('rp.user_id', $userId)
+                ->select('q.rhu_id', 'q.created_at');
+        }
+
+        if ($sources === []) {
+            return null;
+        }
+
+        $visits = array_shift($sources);
+
+        foreach ($sources as $source) {
+            $visits->unionAll($source);
+        }
+
+        $rhuId = DB::query()
+            ->fromSub($visits, 'visits')
+            ->whereIn('rhu_id', self::ids())
+            ->orderByDesc('created_at')
+            ->value('rhu_id');
+
+        return $rhuId ? (int) $rhuId : null;
     }
 
     public static function isGlobalScope(?User $user): bool

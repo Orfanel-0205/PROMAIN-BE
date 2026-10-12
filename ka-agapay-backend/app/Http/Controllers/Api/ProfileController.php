@@ -330,6 +330,10 @@ class ProfileController extends Controller
         $fullName = trim((string) $user->first_name . ' ' . (string) $user->last_name);
         $avatarPath = $user->profile_picture ?: $user->avatar;
 
+        $rhuId = $user->isStaffAccount()
+            ? Rhu::resolveRhuIdFromUser($user)
+            : Rhu::lastVisitedRhuId((int) $user->user_id);
+
         return [
             'id' => $user->user_id,
             'user_id' => $user->user_id,
@@ -347,12 +351,12 @@ class ProfileController extends Controller
             'birthday' => optional($user->birthday)->toDateString(),
             'sex' => $user->sex,
 
-            // RHU facility (1 = RHU 1, 2 = RHU 2 / Don Pedro), derived from the
-            // resident's barangay so the mobile app shows the correct RHU in
-            // appointment booking. The backend remains authoritative when storing.
+            // Staff: the RHU they work at. Residents: the RHU they last went
+            // to, or null -- they have no RHU of their own, and booking
+            // starts on this one only as a convenience.
             'barangay_id' => $profile?->barangay_id,
-            'rhu_id' => Rhu::resolveRhuIdFromUser($user),
-            'rhu_label' => Rhu::rhuLabel(Rhu::resolveRhuIdFromUser($user)),
+            'rhu_id' => $rhuId,
+            'rhu_label' => Rhu::rhuLabel($rhuId),
 
             'role' => $this->normalizeRoleName($this->resolveRoleName($user)),
             'role_name' => $this->normalizeRoleName($this->resolveRoleName($user)),

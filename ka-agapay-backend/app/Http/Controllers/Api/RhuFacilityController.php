@@ -199,13 +199,10 @@ class RhuFacilityController extends Controller
             }
 
             /*
-             * Keep a home facility for routing.
-             *
-             * barangays.rhu_id still decides which RHU a resident is sent
-             * to by default. A barangay that has just gained its first
-             * coverage takes this facility as home; one that already has a
-             * home keeps it, so re-ticking a list does not quietly
-             * reroute residents.
+             * barangays.rhu_id: the map's suggestion of the nearest RHU.
+             * It routes nobody (Oct 2026): residents choose their RHU and
+             * records follow the visit. A barangay with none takes this
+             * facility; one that has one keeps it.
              */
             if ($ids !== [] && Schema::hasColumn('barangays', 'rhu_id')) {
                 DB::table('barangays')

@@ -166,9 +166,6 @@ class PatientController extends Controller
         $search = trim((string) $request->query('search', ''));
         $perPage = min(100, max(10, (int) $request->query('per_page', 20)));
 
-        // null = global scope (super_admin/mho sees all); else locked to 1/2.
-        $effectiveRhu = Rhu::filterRhuId($viewer, null);
-
         $completed = "LOWER(COALESCE(c.status,'')) = 'completed'";
 
         $query = DB::table('users as u')
@@ -178,19 +175,11 @@ class PatientController extends Controller
             ->where('u.account_status', 'active')
             ->whereRaw("LOWER(COALESCE(ur.name,'')) IN ('resident','patient')");
 
-        // RHU scoping by the patient's barangay facility (RHU 1 also owns
-        // legacy/unmapped barangays), matching every other module's discipline.
-        if ($effectiveRhu !== null) {
-            if ($effectiveRhu === Rhu::defaultId()) {
-                $query->where(function ($w) {
-                    $w->where('b.rhu_id', Rhu::defaultId())
-                        ->orWhereNull('b.rhu_id')
-                        ->orWhereNotIn('b.rhu_id', Rhu::ids());
-                });
-            } else {
-                $query->where('b.rhu_id', $effectiveRhu);
-            }
-        }
+        // Every resident, whichever RHU is looking (Oct 2026). All RHUs serve
+        // the whole of Malasiqui, so a resident may walk into any of them;
+        // this used to show only residents of barangays mapped to the
+        // viewer's RHU, and every barangay was mapped to RHU 2, so RHU 1 saw
+        // nobody. Visit records stay with the RHU that made them.
 
         if ($search !== '') {
             $like = '%' . $search . '%';
@@ -210,7 +199,6 @@ class PatientController extends Controller
             rp.sex as sex,
             rp.birth_date as birth_date,
             b.name as barangay,
-            b.rhu_id as rhu_id,
             (SELECT COUNT(*) FROM consultations c WHERE c.user_id = u.user_id AND {$completed}) as total_visits,
             (SELECT MAX(COALESCE(c.consultation_date, c.created_at)) FROM consultations c WHERE c.user_id = u.user_id AND {$completed}) as last_visit,
             (SELECT c.diagnosis FROM consultations c WHERE c.user_id = u.user_id AND {$completed} AND c.diagnosis IS NOT NULL AND TRIM(c.diagnosis) <> '' ORDER BY COALESCE(c.consultation_date, c.created_at) DESC, c.id DESC LIMIT 1) as recent_diagnosis,
@@ -223,11 +211,15 @@ class PatientController extends Controller
 
         $rows->getCollection()->transform(function ($r) {
             $name = trim(($r->first_name ?? '') . ' ' . ($r->last_name ?? ''));
+            $lastRhu = Rhu::lastVisitedRhuId((int) $r->user_id);
+
             return [
                 'user_id' => (int) $r->user_id,
                 'name' => $name !== '' ? $name : ('Patient #' . $r->user_id),
                 'barangay' => $r->barangay,
-                'rhu_id' => $r->rhu_id !== null ? (int) $r->rhu_id : null,
+                // The RHU they last went to, not one they belong to.
+                'rhu_id' => $lastRhu,
+                'rhu_label' => Rhu::rhuLabel($lastRhu),
                 'sex' => $r->sex,
                 'age' => $this->ageFromBirthdate($r->birth_date),
                 'mobile_number' => $r->mobile_number,
@@ -274,13 +266,9 @@ class PatientController extends Controller
             return response()->json(['message' => 'Patient not found.'], 404);
         }
 
-        $patientRhu = \App\Support\Rhu::resolveRhuIdFromUser(\App\Models\User::find($userId));
-
-        // If there is no history the viewer may see AND the patient is outside the
-        // viewer's RHU, do not reveal them at all.
-        if ($rows->isEmpty() && !\App\Support\Rhu::canAccessRhu($viewer, $patientRhu)) {
-            return response()->json(['message' => 'This patient is not in your RHU.'], 403);
-        }
+        // Any RHU's staff may open any resident (see registry()); the visit
+        // rows above are still only the viewer's RHU's own.
+        $patientRhu = Rhu::lastVisitedRhuId($userId);
 
         $mostRecent = $rows->first();
 
@@ -298,6 +286,7 @@ class PatientController extends Controller
             'mobile_number' => $mostRecent['mobile_number'] ?? ($user->mobile_number ?? null),
             'philhealth_id' => $mostRecent['philhealth_id'] ?? null,
             'rhu_id' => $patientRhu,
+            'rhu_label' => Rhu::rhuLabel($patientRhu),
         ];
 
         return response()->json([

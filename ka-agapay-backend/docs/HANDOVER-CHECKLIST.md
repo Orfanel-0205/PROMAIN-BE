@@ -203,16 +203,15 @@ reported; they are things to plan around.
   to the next version before then — see `OPERATIONS.md` §9 for scope.
 - **The mobile app's dependencies are behind** and need a major update before the
   app stores stop accepting new builds.
-- **A barangay's "home RHU" is only a default, and on production it is RHU 2
-  for all 73 (Oct 2026).** Every RHU serves the whole of Malasiqui: residents
-  choose the facility when they book, and posts reach every resident (the RHU
-  is shown as "Hosted by"). The home RHU still decides a few defaults where
-  nothing else says which RHU -- for example which RHU a follow-up is filed
-  under, and which RHU's staff see it. Nothing in the system changes a home
-  (Administration → RHU Facilities only adds *coverage*), and a newly opened
-  RHU never becomes one. If those defaults should follow the real catchment
-  areas, set the homes once with the RHU and build a "make this the home RHU"
-  action. One skipped test (`RhuFacilityTest`) waits on that decision.
+- **Residents have no "home RHU" (decided Oct 2026).** Every RHU serves the
+  whole of Malasiqui. Staff at any RHU can find and open any resident in the
+  Patient Registry; residents choose the RHU when they book or take a queue
+  number; a record (consultation, follow-up, feedback) is filed under the RHU
+  where the visit happened; and where a resident's RHU is shown, it is the one
+  they last went to. A barangay's `rhu_id` is only the map's suggestion of the
+  nearest RHU. Visit history inside a patient's profile still shows only the
+  viewing RHU's own visits -- widen it only if the RHUs agree to share records.
+  Tests: `tests/Feature/Rhu/NoHomeRhuTest.php`.
 
 ---
 

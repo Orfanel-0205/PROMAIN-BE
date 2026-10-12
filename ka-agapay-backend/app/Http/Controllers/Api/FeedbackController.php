@@ -12,6 +12,7 @@ use App\Models\ServiceFeedback;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Support\Rhu;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
@@ -132,14 +133,14 @@ class FeedbackController extends Controller
             $rhuId = Appointment::where('id', $appointmentId)->value('rhu_id');
         }
 
-        // Fallbacks for RHU: queue ticket, then resident's barangay.
+        // Fallbacks for RHU: queue ticket, then the RHU they last went to.
+        // (This used to be the resident's BARANGAY id, which is not an RHU.)
         if (!$rhuId && !empty($validated['queue_ticket_id'])) {
             $rhuId = QueueTicket::where('id', $validated['queue_ticket_id'])->value('rhu_id');
         }
 
-        if (!$rhuId && Schema::hasTable('resident_profiles')) {
-            $rhuId = ResidentProfile::where('user_id', $userId)->value('barangay_id');
-        }
+        $rhuId = Rhu::normalizeRhuId((int) ($rhuId ?? 0) ?: null)
+            ?? Rhu::lastVisitedRhuId((int) $userId);
 
         // Prevent duplicate feedback for the same consultation + service type.
         if ($consultationId) {

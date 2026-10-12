@@ -56,8 +56,8 @@ class QueueController extends Controller
     }
 
     /**
-     * The FACILITY RHU id (1 or 2) for the current request. Never returns a
-     * barangay id — residents are mapped to their facility via barangays.rhu_id.
+     * The FACILITY RHU id for the current request. Never returns a barangay
+     * id. A resident has no RHU of their own, so theirs is the one requested.
      */
     private function defaultRhuId(Request $request): int
     {

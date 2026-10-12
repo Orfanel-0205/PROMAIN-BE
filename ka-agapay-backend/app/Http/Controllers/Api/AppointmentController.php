@@ -242,13 +242,11 @@ class AppointmentController extends Controller
         // appointment stores the facility rhu_id (1 or 2) — never a barangay id.
         $barangayId = $this->resolveResidentBarangayId($user);
 
-        // The resident CHOOSES the RHU/health center they want to book (RHU 2 may
-        // be nearer than the barangay default). The requested rhu_id is honored
-        // FIRST (already validated to be 1 or 2 above); the barangay-derived RHU
-        // is only the fallback recommendation when none is sent.
+        // The resident CHOOSES the RHU they want to book. When an older app
+        // sends none, the one they last went to, else the first RHU; their
+        // barangay decides nothing (Oct 2026).
         $rhuId = Rhu::normalizeRhuId($validated['rhu_id'] ?? null)
-            ?? Rhu::deriveRhuIdFromBarangayId($barangayId)
-            ?? Rhu::resolveRhuIdFromUser($user)
+            ?? Rhu::lastVisitedRhuId((int) $user->user_id)
             ?? Rhu::defaultId();
 
         // Block a duplicate only for the SAME date + SAME consultation type while it
@@ -1064,9 +1062,11 @@ class AppointmentController extends Controller
                     abort(422, 'Resident profile could not be found for this appointment.');
                 }
 
+                // Their real barangay. This used to pass the RHU id, which
+                // put the resident in barangay #1 or #2.
                 $residentProfile = $this->ensureResidentProfile(
                     $residentUser,
-                    (int) ($appointment->rhu_id ?: $this->resolveRhuIdFromUser($residentUser) ?: 1)
+                    (int) ($this->resolveResidentBarangayId($residentUser) ?? 0)
                 );
             }
 
@@ -1108,7 +1108,6 @@ class AppointmentController extends Controller
                     'queue_ticket_id' => $queueTicketId,
                     'appointment_id' => $appointment->id,
                     'rhu_id' => Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0))
-                        ?? Rhu::deriveRhuIdFromBarangayId((int) ($residentProfile->barangay_id ?? 0))
                         ?? Rhu::defaultId(),
 
                     'endorsed_by_bhw' => null,
@@ -1147,7 +1146,6 @@ class AppointmentController extends Controller
                         'queue_ticket_id' => $telemedicineRequest->queue_ticket_id ?: $queueTicketId,
                         'rhu_id' => $telemedicineRequest->rhu_id
                             ?: (Rhu::normalizeRhuId((int) ($appointment->rhu_id ?? 0))
-                                ?? Rhu::deriveRhuIdFromBarangayId((int) ($residentProfile->barangay_id ?? 0))
                                 ?? Rhu::defaultId()),
                         'screened_by' => $telemedicineRequest->screened_by ?: $staffId,
                         'screening_notes' => $telemedicineRequest->screening_notes ?: 'Opened directly from approved online appointment.',

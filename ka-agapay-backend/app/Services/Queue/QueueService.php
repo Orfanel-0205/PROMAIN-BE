@@ -320,14 +320,10 @@ class QueueService
             }
         }
 
-        // Otherwise derive the facility RHU from the resident's barangay.
-        $derived = \App\Support\Rhu::deriveRhuIdFromBarangayId((int) ($resident->barangay_id ?? 0));
-
-        if ($derived) {
-            return $derived;
-        }
-
-        return \App\Support\Rhu::defaultId();
+        // Otherwise the RHU the resident last went to; never one taken from
+        // their barangay (Oct 2026).
+        return \App\Support\Rhu::lastVisitedRhuId((int) $resident->user_id)
+            ?? \App\Support\Rhu::defaultId();
     }
 
     private function resolveAppointmentServiceType(Appointment $appointment): string

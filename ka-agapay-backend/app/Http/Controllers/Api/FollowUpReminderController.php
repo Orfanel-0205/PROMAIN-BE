@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\Audit\AuditService;
 use App\Services\Notification\SmsService;
 use App\Support\LocalTime;
+use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -251,7 +252,11 @@ class FollowUpReminderController extends Controller
             $profile?->emergency_contact_number,
         ]);
 
-        $rhuId = ($consultation?->appointment?->rhu_id ?? null) ?: ($profile?->barangay_id ?? null);
+        // The RHU where the visit happened. This used to fall back to the
+        // resident's BARANGAY id, which filed a follow-up under "RHU 21".
+        $rhuId = Rhu::normalizeRhuId((int) ($consultation?->rhu_id ?? 0) ?: null)
+            ?? Rhu::normalizeRhuId((int) ($consultation?->appointment?->rhu_id ?? 0) ?: null)
+            ?? Rhu::scopeRhuId($request->user(), null);
         $appointmentId = $validated['appointment_id'] ?? $consultation?->appointment_id;
 
         // "Follow-up needed = No" → cancel any existing reminder, do not create.
