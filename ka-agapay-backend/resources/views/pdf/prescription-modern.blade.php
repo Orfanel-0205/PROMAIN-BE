@@ -241,7 +241,7 @@
             position: absolute;
             left: 22px;
             right: 22px;
-            bottom: 16px;
+            bottom: 40px;
             border-top: 1px solid #cbd5e1;
             padding-top: 8px;
             font-size: 9px;
