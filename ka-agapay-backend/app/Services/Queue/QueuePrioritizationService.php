@@ -8,6 +8,7 @@ use App\Models\Consultation;
 use App\Models\QueuePriorityRule;
 use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -105,8 +106,11 @@ class QueuePrioritizationService
 
         // ── 3. Demographic Weighting (capped to prevent queue jumping) ───
         $demographicWeight = 0;
+        // ->age, not now()->diffInYears(): Carbon 3 returns a signed
+        // difference, so that gave every senior a negative age and the senior
+        // weight never applied (found Oct 2026).
         $age = $profile->birth_date
-            ? now()->diffInYears($profile->birth_date)
+            ? Carbon::parse($profile->birth_date)->age
             : null;
 
         if ($age !== null && $age >= 60) {
@@ -209,7 +213,10 @@ class QueuePrioritizationService
             ->get();
 
         foreach ($tickets as $ticket) {
-            $minutesWaiting = now()->diffInMinutes($ticket->issued_at);
+            // Earlier to later: Carbon 3's difference is signed, and the old
+            // now()->diffInMinutes(issued_at) was negative, so no one ever
+            // got the long-wait bonus.
+            $minutesWaiting = max(0, (int) Carbon::parse($ticket->issued_at)->diffInMinutes(now()));
 
             if ($minutesWaiting > self::ANTI_STARVATION_THRESHOLD) {
                 $overMinutes = $minutesWaiting - self::ANTI_STARVATION_THRESHOLD;
@@ -245,7 +252,7 @@ class QueuePrioritizationService
 
         $totalWaiting   = $waiting->count();
         $avgWaitMinutes = $totalWaiting > 0
-            ? round($waiting->avg(fn($t) => now()->diffInMinutes($t->issued_at)), 1)
+            ? round($waiting->avg(fn($t) => max(0, Carbon::parse($t->issued_at)->diffInMinutes(now()))), 1)
             : 0;
 
         return [

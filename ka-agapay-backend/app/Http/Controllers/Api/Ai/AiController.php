@@ -99,7 +99,8 @@ class AiController extends Controller
 
         if (!isset($validated['age']) && !empty($validated['birthdate'])) {
             try {
-                $validated['age'] = now()->diffInYears($validated['birthdate']);
+                // ->age: Carbon 3's now()->diffInYears(past) is negative.
+                $validated['age'] = \Illuminate\Support\Carbon::parse($validated['birthdate'])->age;
             } catch (\Throwable) {
                 unset($validated['age']);
             }

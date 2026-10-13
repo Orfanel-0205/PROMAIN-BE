@@ -149,8 +149,9 @@ class AiTriageService
             // Resident profile doesn't store all risk flags (e.g., pregnancy/PWD).
             // Queue tickets contain those eligibility flags, so we pull them from there
             // when available.
+            // ->age: Carbon 3's now()->diffInYears(past) is negative.
             $ageYears = $profile?->birth_date
-                ? now()->diffInYears($profile->birth_date)
+                ? \Illuminate\Support\Carbon::parse($profile->birth_date)->age
                 : null;
 
             $inputPayload = [
