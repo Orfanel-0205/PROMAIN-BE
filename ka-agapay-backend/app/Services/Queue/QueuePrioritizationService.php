@@ -6,6 +6,7 @@ namespace App\Services\Queue;
 use App\Models\Barangay;
 use App\Models\Consultation;
 use App\Models\QueuePriorityRule;
+use App\Models\QueuePriorityScore;
 use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use Illuminate\Support\Carbon;
@@ -212,7 +213,20 @@ class QueuePrioritizationService
             ->whereDate('issued_at', today())
             ->get();
 
+        // The score each ticket was issued with (queue_priority_scores). The
+        // bonus is added to THAT, never to the current score: the live queue
+        // runs this every few seconds, and adding to the current score
+        // compounded the bonus until everyone waiting over 30 minutes sat at
+        // 95 and showed as urgent. A ticket with no recorded score is left
+        // as it is.
+        $bases = QueuePriorityScore::whereIn('queue_ticket_id', $tickets->pluck('id'))
+            ->pluck('priority_score', 'queue_ticket_id');
+
         foreach ($tickets as $ticket) {
+            if (!$bases->has($ticket->id) || (int) $ticket->priority_score >= 95) {
+                continue;
+            }
+
             // Earlier to later: Carbon 3's difference is signed, and the old
             // now()->diffInMinutes(issued_at) was negative, so no one ever
             // got the long-wait bonus.
@@ -221,7 +235,7 @@ class QueuePrioritizationService
             if ($minutesWaiting > self::ANTI_STARVATION_THRESHOLD) {
                 $overMinutes = $minutesWaiting - self::ANTI_STARVATION_THRESHOLD;
                 $bonus       = (int) ($overMinutes * self::ANTI_STARVATION_RATE);
-                $newScore    = min(95, $ticket->priority_score + $bonus); // Cap at 95 to never exceed true emergencies
+                $newScore    = min(95, (int) $bases[$ticket->id] + $bonus); // Cap at 95 to never exceed true emergencies
 
                 if ($newScore > $ticket->priority_score) {
                     $ticket->update(['priority_score' => $newScore]);

@@ -55,6 +55,25 @@ class QueuePriorityAgeTest extends TestCase
         $this->assertSame(10, (int) $short->fresh()->priority_score);
     }
 
+    public function test_the_long_wait_bonus_follows_the_wait_and_does_not_stack(): void
+    {
+        $ticket = $this->ticket(now()->subMinutes(70)); // 40 over the limit: +20
+        $service = app(QueuePrioritizationService::class);
+
+        // The live queue runs this every few seconds.
+        foreach (range(1, 5) as $_) {
+            $service->applyAntiStarvation(1);
+        }
+        $this->assertSame(30, (int) $ticket->fresh()->priority_score);
+
+        // Ten minutes later: +5 more, from the issued score.
+        \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(10));
+        $service->applyAntiStarvation(1);
+        $service->applyAntiStarvation(1);
+        $this->assertSame(35, (int) $ticket->fresh()->priority_score);
+        \Illuminate\Support\Carbon::setTestNow();
+    }
+
     public function test_the_average_wait_is_a_positive_number_of_minutes(): void
     {
         $this->ticket(now()->subMinutes(40));
@@ -92,7 +111,7 @@ class QueuePriorityAgeTest extends TestCase
     {
         static $n = 0;
 
-        return QueueTicket::create([
+        $ticket = QueueTicket::create([
             'ticket_number' => sprintf('OPD-%03d', ++$n),
             'resident_profile_id' => $this->resident('1990-01-01')->id,
             'rhu_id' => 1,
@@ -102,6 +121,17 @@ class QueuePriorityAgeTest extends TestCase
             'status' => 'waiting',
             'issued_at' => $issuedAt,
         ]);
+
+        // The score it was issued with, as QueueService records it.
+        \App\Models\QueuePriorityScore::create([
+            'queue_ticket_id' => $ticket->id,
+            'resident_profile_id' => $ticket->resident_profile_id,
+            'priority_score' => 10,
+            'priority_category' => 'Low',
+            'queue_type' => 'walk_in',
+        ]);
+
+        return $ticket;
     }
 
     private function resident(string $birthDate): ResidentProfile
