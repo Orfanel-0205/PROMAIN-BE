@@ -286,6 +286,17 @@ class ResidentAccessTest extends TestCase
 
     // ---------------------------------------------------------------- helpers
 
+    public function test_the_rhus_staff_see_the_patients_age_on_a_request(): void
+    {
+        $this->patient->residentProfile->update(['sex' => 'female']);
+
+        $rows = $this->actingAs($this->nurse)->getJson('/api/v1/telemedicine/requests')->assertOk()->json('data');
+        $row = collect($rows)->firstWhere('id', $this->request->id);
+
+        $this->assertSame(\Illuminate\Support\Carbon::parse('1990-01-01')->age, $row['resident']['age']);
+        $this->assertSame('female', $row['resident']['sex']);
+    }
+
     // ------------------------------------------------------ queue numbers
 
     public function test_a_resident_can_take_a_queue_number_only_for_themselves(): void

@@ -74,6 +74,10 @@ class TelemedicineRequestResource extends JsonResource
                 'user_id'  => $residentProfile->user_id,
                 'name'     => $residentName,
                 'barangay' => $residentProfile->barangay?->name,
+                // The request card shows age and sex for screening; it read
+                // "Age / sex not available" because neither was sent.
+                'age'      => $this->residentAge($residentProfile),
+                'sex'      => $residentProfile->sex ?: ($residentProfile->user?->sex ?? null),
             ] : null,
 
             'rhu' => $rhu ? [
@@ -151,5 +155,20 @@ class TelemedicineRequestResource extends JsonResource
             'created_at' => optional($this->created_at)->toIso8601String(),
             'updated_at' => optional($this->updated_at)->toIso8601String(),
         ];
+    }
+
+    private function residentAge($profile): ?int
+    {
+        $birth = $profile?->birth_date ?? $profile?->birthday ?? $profile?->user?->birthday;
+
+        if (!$birth) {
+            return null;
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse($birth)->age;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }
