@@ -195,7 +195,11 @@ Route::prefix('v1')->group(function () {
         Route::get('/team-chat/calls/{call}/signals', [TeamChatController::class, 'getCallSignals']);
     });
 
-    Route::middleware(['auth:sanctum', 'check.status', 'throttle:60,1'])->group(function () {
+    // No throttle of its own: the `api` group already limits each signed-in
+    // person to 300 a minute (RouteServiceProvider). A `throttle:60,1` here
+    // sat on top of that and was the limit that applied; staff browsing the
+    // admin were refused 561 times on 5 Oct 2026 (Too Many Attempts).
+    Route::middleware(['auth:sanctum', 'check.status'])->group(function () {
 
         // =====================================================================
         // AUTH
