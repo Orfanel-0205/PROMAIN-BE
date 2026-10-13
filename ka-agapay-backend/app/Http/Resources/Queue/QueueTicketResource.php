@@ -33,6 +33,9 @@ class QueueTicketResource extends JsonResource
                 ?? $resident?->barangay?->name
                 ?? null,
             'barangay_id' => $resident?->barangay_id ?? null,
+            // The queue card shows the patient's age; it read "Age not
+            // available" for everyone because nothing here carried it.
+            'patient_age' => $this->residentAge($resident),
 
             'rhu_id' => $this->rhu_id,
             'rhu_name' => $rhu?->name ?? $rhu?->barangay_name ?? null,
@@ -145,6 +148,23 @@ class QueueTicketResource extends JsonResource
         }
 
         return null;
+    }
+
+    private function residentAge($resident): ?int
+    {
+        $birth = $resident?->birth_date
+            ?? $resident?->birthday
+            ?? ($resident?->relationLoaded('user') ? $resident->user?->birthday : null);
+
+        if (!$birth) {
+            return null;
+        }
+
+        try {
+            return \Illuminate\Support\Carbon::parse($birth)->age;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function residentMobile($resident): ?string

@@ -7,7 +7,8 @@
 // now()->diffInYears(a birth date) is negative. The priority service measured
 // that way, so every senior had a negative age and never got the senior
 // weight, and every waiting ticket had negative minutes and never got the
-// long-wait (anti-starvation) bonus.
+// long-wait (anti-starvation) bonus. The queue card also never showed an
+// age: the ticket the admin reads did not carry one.
 
 namespace Tests\Feature\Queue;
 
@@ -62,6 +63,27 @@ class QueuePriorityAgeTest extends TestCase
         $stats = app(QueuePrioritizationService::class)->getQueueCongestion(1);
 
         $this->assertEqualsWithDelta(30, $stats['avg_wait_minutes'], 1);
+    }
+
+    public function test_the_queue_card_gets_the_patients_age(): void
+    {
+        $ticket = $this->ticket(now()->subMinutes(5));
+        $ticket->residentProfile->update(['birth_date' => now()->subYears(72)->subDays(3)->toDateString()]);
+
+        $nurse = User::create([
+            'role_id' => UserRole::where('name', 'nurse')->value('role_id'),
+            'first_name' => 'Queue',
+            'last_name' => 'Nurse',
+            'mobile_number' => '09181009999',
+            'password' => bcrypt('password'),
+            'account_status' => 'active',
+            'assigned_rhu_id' => 1,
+        ]);
+
+        $this->actingAs($nurse)
+            ->getJson("/api/v1/queue/{$ticket->id}")
+            ->assertOk()
+            ->assertJsonPath('data.patient_age', 72);
     }
 
     private function ticket($issuedAt): QueueTicket
