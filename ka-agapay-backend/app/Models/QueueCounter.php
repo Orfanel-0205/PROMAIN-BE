@@ -24,6 +24,9 @@ class QueueCounter extends Model
 
     public function rhu(): BelongsTo
     {
-        return $this->belongsTo(Barangay::class, 'rhu_id');
+        // rhu_id is a facility (rhus.id). This pointed at BARANGAYS, from
+        // before facilities had a table, so RHU 1 was named "Abonagan"
+        // (barangay #1) on queue screens and notifications (Oct 2026).
+        return $this->belongsTo(RhuFacility::class, 'rhu_id', 'id');
     }
 }

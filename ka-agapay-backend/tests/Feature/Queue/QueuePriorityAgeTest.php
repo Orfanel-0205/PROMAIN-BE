@@ -83,7 +83,9 @@ class QueuePriorityAgeTest extends TestCase
         $this->actingAs($nurse)
             ->getJson("/api/v1/queue/{$ticket->id}")
             ->assertOk()
-            ->assertJsonPath('data.patient_age', 72);
+            ->assertJsonPath('data.patient_age', 72)
+            // The facility's name, not barangay #1's ("Abonagan").
+            ->assertJsonPath('data.rhu_name', \App\Models\RhuFacility::find(1)->name);
     }
 
     private function ticket($issuedAt): QueueTicket
