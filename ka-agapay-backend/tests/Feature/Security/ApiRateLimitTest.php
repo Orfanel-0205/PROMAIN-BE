@@ -20,6 +20,30 @@ class ApiRateLimitTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * Bots post fields as lists (`mobile_number[]=x`). The sign-in limiters
+     * cast them to text and threw: a 500 on production, 17 Oct 2026. Any
+     * such request must be refused normally, never crash.
+     */
+    public function test_a_malformed_sign_in_request_is_refused_not_crashed(): void
+    {
+        \Illuminate\Support\Facades\Http::fake();
+        $this->seed(\Database\Seeders\UserRoleSeeder::class);
+
+        $requests = [
+            ['/api/v1/login', ['mobile_number' => ['09170000000'], 'password' => 'x']],
+            ['/api/v1/admin/login', ['email' => ['a@b.c'], 'password' => 'x']],
+            ['/api/v1/forgot-password', ['login' => ['09170000000']]],
+            ['/api/v1/login/verify-code', ['challenge' => ['abc'], 'code' => '123456']],
+            ['/api/v1/admin/register?token[]=abc', ['first_name' => 'x']],
+        ];
+
+        foreach ($requests as [$uri, $body]) {
+            $status = $this->postJson($uri, $body)->status();
+            $this->assertLessThan(500, $status, "{$uri} answered {$status}");
+        }
+    }
+
     public function test_a_busy_minute_on_the_admin_is_not_refused_but_a_flood_is(): void
     {
         $this->seed(\Database\Seeders\UserRoleSeeder::class);

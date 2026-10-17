@@ -79,14 +79,24 @@ class RouteServiceProvider extends ServiceProvider
             'message' => 'Too many attempts. Please wait a moment before trying again.',
         ], 429, $headers);
 
+        // The first of these fields that holds plain text, else ''. Bots post
+        // `mobile_number[]=...`; casting that array to a string threw, so a
+        // scan got a 500 instead of an ordinary refusal (17 Oct 2026).
+        $text = function (Request $request, string ...$keys): string {
+            foreach ($keys as $key) {
+                $value = $request->input($key);
+
+                if (is_scalar($value) && (string) $value !== '') {
+                    return (string) $value;
+                }
+            }
+
+            return '';
+        };
+
         // Login (resident, admin, biometric).
-        RateLimiter::for('auth-login', function (Request $request) use ($tooMany) {
-            $identifier = Str::lower(trim((string) (
-                $request->input('mobile_number')
-                ?? $request->input('email')
-                ?? $request->input('phone')
-                ?? ''
-            )));
+        RateLimiter::for('auth-login', function (Request $request) use ($tooMany, $text) {
+            $identifier = Str::lower(trim($text($request, 'mobile_number', 'email', 'phone')));
 
             // Per-account attempts are configurable from the admin Settings
             // page (Security Rules). Before this, that panel offered a
@@ -113,13 +123,8 @@ class RouteServiceProvider extends ServiceProvider
         // Password reset REQUEST and OTP resend. Tighter than login because
         // each accepted request can send a real SMS — this bounds both account
         // enumeration and Semaphore spend.
-        RateLimiter::for('auth-recovery', function (Request $request) use ($tooMany) {
-            $identifier = Str::lower(trim((string) (
-                $request->input('login')
-                ?? $request->input('mobile_number')
-                ?? $request->input('email')
-                ?? ''
-            )));
+        RateLimiter::for('auth-recovery', function (Request $request) use ($tooMany, $text) {
+            $identifier = Str::lower(trim($text($request, 'login', 'mobile_number', 'email')));
 
             return [
                 Limit::perMinute(3)->by('recover:' . $identifier . '|' . $request->ip())->response($tooMany),
@@ -137,8 +142,8 @@ class RouteServiceProvider extends ServiceProvider
         // auth-login every code from one RHU's shared connection would have
         // shared a single per-account bucket. Each challenge also allows only
         // five wrong codes of its own (VerificationCodes::MAX_ATTEMPTS).
-        RateLimiter::for('auth-code', function (Request $request) use ($tooMany) {
-            $challenge = substr((string) $request->input('challenge', ''), 0, 64);
+        RateLimiter::for('auth-code', function (Request $request) use ($tooMany, $text) {
+            $challenge = substr($text($request, 'challenge'), 0, 64);
 
             return [
                 Limit::perMinute(10)->by('code:' . $challenge . '|' . $request->ip())->response($tooMany),
@@ -151,7 +156,7 @@ class RouteServiceProvider extends ServiceProvider
         // still bounding signature-guessing against the invite token.
         RateLimiter::for('auth-invite', function (Request $request) use ($tooMany) {
             return [
-                Limit::perMinute(10)->by('invite:' . (string) $request->query('token') . '|' . $request->ip())->response($tooMany),
+                Limit::perMinute(10)->by('invite:' . (is_scalar($request->query('token')) ? (string) $request->query('token') : '') . '|' . $request->ip())->response($tooMany),
                 Limit::perMinute(20)->by('invite-ip:' . $request->ip())->response($tooMany),
             ];
         });
