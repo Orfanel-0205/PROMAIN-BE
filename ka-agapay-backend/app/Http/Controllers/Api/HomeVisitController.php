@@ -32,7 +32,7 @@ class HomeVisitController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'scheduled_date'  => ['required', 'date', 'after:today'],
+            'scheduled_date'  => ['required', 'date', 'after:' . \App\Support\LocalTime::todayDate()],
             'address'         => ['required', 'string', 'max:500'],
             'chief_complaint' => ['required', 'string', 'max:1000'],
             'notes'           => ['nullable', 'string', 'max:500'],

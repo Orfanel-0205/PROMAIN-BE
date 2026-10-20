@@ -9,6 +9,7 @@ use App\Models\QueuePriorityRule;
 use App\Models\QueuePriorityScore;
 use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
+use App\Support\LocalTime;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -210,7 +211,7 @@ class QueuePrioritizationService
 
         $tickets = QueueTicket::where('rhu_id', $rhuId)
             ->where('status', 'waiting')
-            ->whereDate('issued_at', today())
+            ->forToday()
             ->get();
 
         // The score each ticket was issued with (queue_priority_scores). The
@@ -261,7 +262,7 @@ class QueuePrioritizationService
     {
         $waiting = QueueTicket::where('rhu_id', $rhuId)
             ->where('status', 'waiting')
-            ->whereDate('issued_at', today())
+            ->forToday()
             ->get();
 
         $totalWaiting   = $waiting->count();
@@ -327,7 +328,7 @@ class QueuePrioritizationService
 
         $latestRisk = DB::table('barangay_heatmaps')
             ->where('barangay_id', $barangayId)
-            ->where('log_date', today())
+            ->where('log_date', LocalTime::todayDate())
             ->orderByDesc('heatmap_intensity')
             ->value('risk_level');
 

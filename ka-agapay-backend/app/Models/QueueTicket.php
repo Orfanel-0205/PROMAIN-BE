@@ -104,9 +104,10 @@ class QueueTicket extends Model
         return $query->where('status', 'waiting');
     }
 
+    /** Tickets issued on today's Philippine date (issued_at is stored in UTC). */
     public function scopeForToday($query)
     {
-        return $query->whereDate('issued_at', today());
+        return \App\Support\LocalTime::whereOnDay($query, 'issued_at');
     }
 
     public function scopeForRhu($query, int $rhuId)

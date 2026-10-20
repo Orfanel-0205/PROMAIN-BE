@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\Queue\QueueService;
 use App\Services\Telemedicine\WebRtcService;
 use App\Support\BoardVisibility;
+use App\Support\LocalTime;
 use App\Support\Rhu;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -614,6 +615,10 @@ class AppointmentController extends Controller
             // calendar day (a doctor may reschedule them to any future date and
             // they run across a 24-hour window), so they stay visible in Active
             // regardless of their scheduled date. An explicit ?date= still wins.
+            //
+            // "Today" is the Philippine date. The UTC date is yesterday until
+            // 8:00 AM in Manila, which hid every booking for the day from
+            // midnight to 8:00 (Oct 2026).
             $query->where(function ($scope) {
                 $scope->where(function ($onsite) {
                     // Onsite = anything that is not online/telemedicine (null
@@ -621,7 +626,7 @@ class AppointmentController extends Controller
                     $onsite->where(function ($t) {
                         $t->whereNull('consultation_type')
                             ->orWhereNotIn('consultation_type', ['online', 'telemedicine']);
-                    })->whereDate('appointment_date', now()->toDateString());
+                    })->whereDate('appointment_date', LocalTime::todayDate());
                 })->orWhereIn('consultation_type', ['online', 'telemedicine']);
             });
         }
@@ -1190,8 +1195,8 @@ class AppointmentController extends Controller
                     'request_id' => $telemedicineRequest->id,
                     'assigned_doctor_id' => $staffId,
                     'bhw_companion_id' => null,
-                    'scheduled_date' => $appointment->appointment_date?->toDateString() ?: now()->toDateString(),
-                    'scheduled_time' => $this->normalizeAppointmentTime((string) $appointment->appointment_time) ?: now()->format('H:i'),
+                    'scheduled_date' => $appointment->appointment_date?->toDateString() ?: LocalTime::todayDate(),
+                    'scheduled_time' => $this->normalizeAppointmentTime((string) $appointment->appointment_time) ?: LocalTime::nowTime(),
                     'estimated_duration_minutes' => 30,
                     'session_mode' => 'in_app',
                     'session_link' => null,
@@ -1207,8 +1212,8 @@ class AppointmentController extends Controller
             } else {
                 $session->update([
                     'assigned_doctor_id' => $session->assigned_doctor_id ?: $staffId,
-                    'scheduled_date' => $session->scheduled_date ?: ($appointment->appointment_date?->toDateString() ?: now()->toDateString()),
-                    'scheduled_time' => $session->scheduled_time ?: ($this->normalizeAppointmentTime((string) $appointment->appointment_time) ?: now()->format('H:i')),
+                    'scheduled_date' => $session->scheduled_date ?: ($appointment->appointment_date?->toDateString() ?: LocalTime::todayDate()),
+                    'scheduled_time' => $session->scheduled_time ?: ($this->normalizeAppointmentTime((string) $appointment->appointment_time) ?: LocalTime::nowTime()),
                     'estimated_duration_minutes' => $session->estimated_duration_minutes ?: 30,
                     'session_mode' => $session->session_mode ?: 'in_app',
                     'session_token' => $session->session_token ?: Str::random(48),
@@ -1358,7 +1363,7 @@ class AppointmentController extends Controller
                 'appointment_id' => $appointment->id,
                 'user_id' => $appointment->user_id,
                 'attended_by' => $staffId,
-                'consultation_date' => now()->toDateString(),
+                'consultation_date' => LocalTime::todayDate(),
                 'chief_complaint' => $chiefComplaint,
                 'diagnosis' => null,
                 'treatment' => null,
@@ -1473,7 +1478,7 @@ class AppointmentController extends Controller
             return 'Invalid appointment date.';
         }
 
-        if (!$adminAction && $day->lt(today())) {
+        if (!$adminAction && $day->toDateString() < LocalTime::todayDate()) {
             return 'Appointment date cannot be in the past.';
         }
 
@@ -1546,7 +1551,7 @@ class AppointmentController extends Controller
         $ticketQuery = QueueTicket::query()
             ->where('rhu_id', $rhuId)
             ->where('service_type', $serviceType)
-            ->whereDate('issued_at', today());
+            ->forToday();
 
         if (Schema::hasColumn('queue_tickets', 'deleted_at')) {
             $ticketQuery->whereNull('deleted_at');

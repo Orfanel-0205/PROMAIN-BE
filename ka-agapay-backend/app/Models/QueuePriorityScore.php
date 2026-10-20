@@ -56,7 +56,7 @@ class QueuePriorityScore extends Model
 
     public function scopeForToday($query)
     {
-        return $query->whereDate('computed_at', today());
+        return \App\Support\LocalTime::whereOnDay($query, 'computed_at');
     }
 
     public function scopeByCategory($query, string $category)

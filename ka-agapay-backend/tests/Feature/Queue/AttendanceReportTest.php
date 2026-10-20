@@ -21,6 +21,7 @@ use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Support\LocalTime;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -71,12 +72,12 @@ class AttendanceReportTest extends TestCase
     {
         $patient = $this->makeResident();
 
-        $this->makeTicket($patient, 'completed', today());
-        $this->makeTicket($patient, 'completed', today());
+        $this->makeTicket($patient, 'completed', LocalTime::today());
+        $this->makeTicket($patient, 'completed', LocalTime::today());
 
         // Took a number and went home. Not attended to.
-        $this->makeTicket($this->makeResident(), 'no_show', today());
-        $this->makeTicket($this->makeResident(), 'waiting', today());
+        $this->makeTicket($this->makeResident(), 'no_show', LocalTime::today());
+        $this->makeTicket($this->makeResident(), 'waiting', LocalTime::today());
 
         $totals = $this->attendance()['totals'];
 
@@ -90,9 +91,9 @@ class AttendanceReportTest extends TestCase
     {
         $regular = $this->makeResident();
 
-        $this->makeTicket($regular, 'completed', today());
-        $this->makeTicket($regular, 'completed', today());
-        $this->makeTicket($this->makeResident(), 'completed', today());
+        $this->makeTicket($regular, 'completed', LocalTime::today());
+        $this->makeTicket($regular, 'completed', LocalTime::today());
+        $this->makeTicket($this->makeResident(), 'completed', LocalTime::today());
 
         $totals = $this->attendance()['totals'];
 
@@ -103,13 +104,13 @@ class AttendanceReportTest extends TestCase
 
     public function test_a_range_of_days_is_broken_down_by_day(): void
     {
-        $this->makeTicket($this->makeResident(), 'completed', today()->subDays(2));
-        $this->makeTicket($this->makeResident(), 'completed', today()->subDays(2));
-        $this->makeTicket($this->makeResident(), 'completed', today());
+        $this->makeTicket($this->makeResident(), 'completed', LocalTime::today()->subDays(2));
+        $this->makeTicket($this->makeResident(), 'completed', LocalTime::today()->subDays(2));
+        $this->makeTicket($this->makeResident(), 'completed', LocalTime::today());
 
         $report = $this->attendance([
-            'from' => today()->subDays(3)->toDateString(),
-            'to' => today()->toDateString(),
+            'from' => LocalTime::today()->subDays(3)->toDateString(),
+            'to' => LocalTime::today()->toDateString(),
         ]);
 
         $this->assertSame(3, $report['totals']['visits']);
@@ -117,15 +118,15 @@ class AttendanceReportTest extends TestCase
 
         $byDay = collect($report['by_day'])->pluck('visits', 'date');
 
-        $this->assertSame(2, $byDay[today()->subDays(2)->toDateString()]);
-        $this->assertSame(1, $byDay[today()->toDateString()]);
+        $this->assertSame(2, $byDay[LocalTime::today()->subDays(2)->toDateString()]);
+        $this->assertSame(1, $byDay[LocalTime::today()->toDateString()]);
     }
 
     public function test_yesterday_is_not_counted_as_today(): void
     {
         // The whole reason this report exists is that untidy queue data made
         // today's figures wrong; a date filter that leaks is the same bug.
-        $this->makeTicket($this->makeResident(), 'completed', today()->subDay());
+        $this->makeTicket($this->makeResident(), 'completed', LocalTime::today()->subDay());
 
         $this->assertSame(0, $this->attendance()['totals']['visits']);
     }
@@ -144,10 +145,10 @@ class AttendanceReportTest extends TestCase
         // People reach an RHU two ways. Counting only the queue answers "how
         // busy were we" and misses everyone who was expected, which is the
         // figure that says whether booking is working at all.
-        $this->makeAppointment('completed', today());
-        $this->makeAppointment('completed', today());
-        $this->makeAppointment('cancelled', today());
-        $this->makeAppointment('scheduled', today());
+        $this->makeAppointment('completed', LocalTime::today());
+        $this->makeAppointment('completed', LocalTime::today());
+        $this->makeAppointment('cancelled', LocalTime::today());
+        $this->makeAppointment('scheduled', LocalTime::today());
 
         $appointments = $this->attendance()['appointments'];
 
@@ -195,7 +196,7 @@ class AttendanceReportTest extends TestCase
             'ticket_number' => 'T' . str_pad((string) ++$this->tickets, 4, '0', STR_PAD_LEFT),
             'service_type' => 'opd_consultation',
             'status' => $status,
-            'issued_at' => $issuedAt->copy()->setTime(9, 0),
+            'issued_at' => LocalTime::toUtc($issuedAt->toDateString(), '09:00'), // 9:00 AM in Manila
             'created_at' => now(),
             'updated_at' => now(),
         ]);

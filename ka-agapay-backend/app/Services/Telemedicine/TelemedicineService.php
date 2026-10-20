@@ -828,10 +828,10 @@ class TelemedicineService
 
     public function getDailySummary(int $rhuId, ?string $date = null): array
     {
-        $date = $date ? Carbon::parse($date) : today();
+        // A Philippine day; created_at is stored in UTC.
+        $date = $date ? Carbon::parse($date)->toDateString() : \App\Support\LocalTime::todayDate();
 
-        $requests = TelemedicineRequest::forRhu($rhuId)
-            ->whereDate('created_at', $date)
+        $requests = \App\Support\LocalTime::whereOnDay(TelemedicineRequest::forRhu($rhuId), 'created_at', $date)
             ->get();
 
         $sessions = TelemedicineSession::whereHas(
@@ -842,7 +842,7 @@ class TelemedicineService
             ->get();
 
         return [
-            'date'                      => $date->toDateString(),
+            'date'                      => $date,
             'requests_total'            => $requests->count(),
             'requests_pending'          => $requests->where('status', 'pending')->count(),
             'requests_screened'         => $requests->where('status', 'screened')->count(),
@@ -888,7 +888,7 @@ class TelemedicineService
             'appointment_id'     => $telemedicineRequest->appointment_id,
             'user_id'            => $residentUserId,
             'attended_by'        => $session->assigned_doctor_id ?: $this->currentUserId(),
-            'consultation_date'  => now()->toDateString(),
+            'consultation_date'  => \App\Support\LocalTime::todayDate(),
             'chief_complaint'    => $telemedicineRequest->chief_complaint,
             'subjective'         => $telemedicineRequest->chief_complaint,
             'objective'          => null,

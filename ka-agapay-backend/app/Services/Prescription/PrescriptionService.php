@@ -38,8 +38,8 @@ class PrescriptionService
                 'telemedicine_session_id'   => $telemedicineSessionId,
                 'prescription_number'       => $number,
                 'rhu_id'                    => $data['rhu_id'],
-                'prescription_date'         => now()->toDateString(),
-                'valid_until'               => now()->addDays(7)->toDateString(),
+                'prescription_date'         => \App\Support\LocalTime::todayDate(),
+                'valid_until'               => \App\Support\LocalTime::today()->addDays(7)->toDateString(),
                 'diagnosis'                 => $data['diagnosis'] ?? null,
                 'diagnosis_code'            => $data['diagnosis_code'] ?? null,
                 'medications'               => $data['medications'],
@@ -340,7 +340,7 @@ class PrescriptionService
     public function expireStale(): int
     {
         return Prescription::where('status', Prescription::STATUS_ACTIVE)
-            ->where('valid_until', '<', today())
+            ->where('valid_until', '<', \App\Support\LocalTime::todayDate())
             ->update(['status' => Prescription::STATUS_EXPIRED]);
     }
 

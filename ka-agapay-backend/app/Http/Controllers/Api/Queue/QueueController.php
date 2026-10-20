@@ -11,6 +11,7 @@ use App\Http\Resources\Queue\QueueTicketResource;
 use App\Models\QueueTicket;
 use App\Models\ResidentProfile;
 use App\Services\Queue\QueueService;
+use App\Support\LocalTime;
 use App\Support\Rhu;
 use App\Support\QueueServices;
 use Illuminate\Http\JsonResponse;
@@ -267,7 +268,7 @@ class QueueController extends Controller
         }
 
         if ($request->filled('date')) {
-            $query->whereDate('issued_at', (string) $request->input('date'));
+            LocalTime::whereOnDay($query, 'issued_at', (string) $request->input('date'));
         } else {
             $query->forToday();
         }
@@ -623,16 +624,14 @@ class QueueController extends Controller
 
         $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
 
-        $from = isset($validated['from']) ? \Carbon\Carbon::parse($validated['from']) : today();
+        $from = isset($validated['from']) ? \Carbon\Carbon::parse($validated['from']) : \Carbon\Carbon::parse(LocalTime::todayDate());
         $to = isset($validated['to']) ? \Carbon\Carbon::parse($validated['to']) : $from->copy();
 
         if (!Schema::hasTable('queue_tickets')) {
             return response()->json(['data' => $this->emptyAttendance($from, $to)]);
         }
 
-        $base = DB::table('queue_tickets')
-            ->whereDate('issued_at', '>=', $from->toDateString())
-            ->whereDate('issued_at', '<=', $to->toDateString());
+        $base = LocalTime::whereBetweenDays(DB::table('queue_tickets'), 'issued_at', $from->toDateString(), $to->toDateString());
 
         if ($rhuId !== null && Schema::hasColumn('queue_tickets', 'rhu_id')) {
             $base->where('rhu_id', $rhuId);
@@ -658,9 +657,10 @@ class QueueController extends Controller
                 ->distinct()->count('resident_profile_id')
             : $totals['visits'];
 
+        // Grouped by Philippine date, the same days the range above selects.
         $byDay = (clone $base)
             ->whereIn('status', $attendedStatuses)
-            ->selectRaw('DATE(issued_at) as day, COUNT(*) as visits')
+            ->selectRaw(LocalTime::sqlDate('issued_at') . ' as day, COUNT(*) as visits')
             ->groupBy('day')
             ->orderBy('day')
             ->get()
@@ -724,7 +724,7 @@ class QueueController extends Controller
         ]);
 
         $rhuId = $this->scopedRhuId($request, $validated['rhu_id'] ?? null);
-        $from = isset($validated['from']) ? \Carbon\Carbon::parse($validated['from']) : today();
+        $from = isset($validated['from']) ? \Carbon\Carbon::parse($validated['from']) : \Carbon\Carbon::parse(LocalTime::todayDate());
         $to = isset($validated['to']) ? \Carbon\Carbon::parse($validated['to']) : $from->copy();
         $channel = $validated['channel'] ?? 'all';
 
@@ -772,9 +772,9 @@ class QueueController extends Controller
             ->leftJoin('users as u', 'u.user_id', '=', 'rp.user_id')
             ->leftJoin('barangays as b', 'b.barangay_id', '=', 'rp.barangay_id')
             ->leftJoin('users as sv', 'sv.user_id', '=', 'qt.served_by')
-            ->whereDate('qt.issued_at', '>=', $from->toDateString())
-            ->whereDate('qt.issued_at', '<=', $to->toDateString())
             ->where('qt.status', 'completed');
+
+        LocalTime::whereBetweenDays($query, 'qt.issued_at', $from->toDateString(), $to->toDateString());
 
         if ($rhuId !== null && Schema::hasColumn('queue_tickets', 'rhu_id')) {
             $query->where('qt.rhu_id', $rhuId);
@@ -986,7 +986,7 @@ class QueueController extends Controller
             $query = QueueTicket::query()
                 ->where('rhu_id', $ticket->rhu_id)
                 ->where('service_type', $ticket->service_type)
-                ->whereDate('issued_at', $ticket->issued_at)
+                ->tap(fn ($q) => LocalTime::whereOnDay($q, 'issued_at', $ticket->issued_at))
                 ->where('status', 'waiting')
                 ->where(function ($q) use ($ticket) {
                     // Higher priority is called first; equal priority falls
@@ -1034,7 +1034,7 @@ class QueueController extends Controller
         $rows = QueueTicket::query()
             ->where('rhu_id', $ticket->rhu_id)
             ->where('service_type', $ticket->service_type)
-            ->whereDate('issued_at', $ticket->issued_at)
+            ->tap(fn ($q) => LocalTime::whereOnDay($q, 'issued_at', $ticket->issued_at))
             ->where('status', 'completed')
             ->whereNotNull('called_at')
             ->whereNotNull('service_ended_at')

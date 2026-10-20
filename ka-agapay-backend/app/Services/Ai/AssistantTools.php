@@ -137,7 +137,7 @@ class AssistantTools
         }
 
         $rows = $this->scoped(DB::table('queue_tickets'), $rhuId)
-            ->whereDate('issued_at', today())
+            ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, 'issued_at'))
             ->groupBy('status')
             ->select('status', DB::raw('count(*) as total'))
             ->pluck('total', 'status');
@@ -161,9 +161,9 @@ class AssistantTools
         $query = $this->scoped(DB::table('appointments'), $rhuId);
 
         match ($scope) {
-            'upcoming' => $query->whereDate('appointment_date', '>', today()),
+            'upcoming' => $query->whereDate('appointment_date', '>', \App\Support\LocalTime::todayDate()),
             'all' => null,
-            default => $query->whereDate('appointment_date', today()),
+            default => $query->whereDate('appointment_date', \App\Support\LocalTime::todayDate()),
         };
 
         $rows = $query->groupBy('status')
@@ -236,15 +236,15 @@ class AssistantTools
         return [
             'overdue' => (clone $base())
                 ->whereIn('status', ['pending', 'scheduled'])
-                ->whereDate('follow_up_date', '<', today())
+                ->whereDate('follow_up_date', '<', \App\Support\LocalTime::todayDate())
                 ->count(),
             'due_today' => (clone $base())
                 ->whereIn('status', ['pending', 'scheduled'])
-                ->whereDate('follow_up_date', today())
+                ->whereDate('follow_up_date', \App\Support\LocalTime::todayDate())
                 ->count(),
             'upcoming' => (clone $base())
                 ->whereIn('status', ['pending', 'scheduled'])
-                ->whereDate('follow_up_date', '>', today())
+                ->whereDate('follow_up_date', '>', \App\Support\LocalTime::todayDate())
                 ->count(),
             'completed' => (clone $base())->where('status', 'completed')->count(),
         ];

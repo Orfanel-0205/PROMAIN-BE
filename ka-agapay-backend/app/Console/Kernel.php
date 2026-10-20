@@ -53,9 +53,13 @@ class Kernel extends ConsoleKernel
          *
          * Just after midnight, so the day being closed is finished and the
          * new one starts from zero.
+         *
+         * Midnight in Manila. On the UTC clock this ran at 8:10 AM and, with
+         * a UTC cutoff, closed that morning's early queue as no-shows.
          */
         $schedule->command('queue:close-stale')
             ->dailyAt('00:10')
+            ->timezone(LocalTime::zone())
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Close stale queue tickets'));
 
@@ -90,6 +94,7 @@ class Kernel extends ConsoleKernel
          */
         $schedule->command('outbreak:detect')
             ->dailyAt('06:45')
+            ->timezone(LocalTime::zone())
             ->withoutOverlapping()
             ->onFailure(fn () => $this->reportScheduleFailure('Outbreak detection'));
         $schedule->call(function () {
@@ -97,6 +102,7 @@ class Kernel extends ConsoleKernel
             logger()->info("Expired {$count} stale prescriptions.");
         })->name('Expire stale prescriptions')
             ->dailyAt('00:05')
+            ->timezone(LocalTime::zone())
             ->onFailure(fn () => $this->reportScheduleFailure('Expire stale prescriptions'));
 
         /*

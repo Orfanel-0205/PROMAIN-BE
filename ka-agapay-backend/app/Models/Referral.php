@@ -87,7 +87,7 @@ class Referral extends Model
 
     public function scopeDueToday($query)
     {
-        return $query->whereDate('follow_up_date', today());
+        return $query->whereDate('follow_up_date', \App\Support\LocalTime::todayDate());
     }
 
     public function scopeOpen($query)

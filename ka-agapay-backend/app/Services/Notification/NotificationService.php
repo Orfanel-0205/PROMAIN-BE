@@ -977,8 +977,8 @@ class NotificationService
             }
 
             $followUpDate = $reminder->follow_up_date?->toDateString()
-                ?? $reminder->follow_up_at?->toDateString()
-                ?? now()->toDateString();
+                ?? ($reminder->follow_up_at ? \App\Support\LocalTime::dateOf($reminder->follow_up_at) : null)
+                ?? \App\Support\LocalTime::todayDate();
             $stage = in_array($stage, ['day_of', 'day_before'], true) ? $stage : 'three_days_before';
             $dedupeKey = "followup_reminder:{$reminder->id}:{$stage}:{$followUpDate}";
 
@@ -1379,7 +1379,7 @@ class NotificationService
                     ? \Illuminate\Support\Carbon::instance($expiration)
                     : \Illuminate\Support\Carbon::parse((string) $expiration);
 
-                $days = now()->startOfDay()->diffInDays($expDate->startOfDay(), false);
+                $days = \Illuminate\Support\Carbon::parse(\App\Support\LocalTime::todayDate())->diffInDays($expDate->copy()->startOfDay(), false);
 
                 if ($days < 0) {
                     $this->dispatchInventoryAlert(
@@ -1411,7 +1411,7 @@ class NotificationService
         string $title,
         string $message
     ): void {
-        $dedupeKey = "inventory_alert:{$item->id}:{$kind}:" . now()->toDateString();
+        $dedupeKey = "inventory_alert:{$item->id}:{$kind}:" . \App\Support\LocalTime::todayDate();
 
         if ($this->inventoryAlertDedupeExists($dedupeKey)) {
             return;

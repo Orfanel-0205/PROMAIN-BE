@@ -34,7 +34,7 @@ class ScheduleSessionRequest extends FormRequest
             'scheduled_date' => [
                 'required',
                 'date',
-                'after_or_equal:today',
+                'after_or_equal:' . \App\Support\LocalTime::todayDate(),
             ],
 
             'scheduled_time' => [

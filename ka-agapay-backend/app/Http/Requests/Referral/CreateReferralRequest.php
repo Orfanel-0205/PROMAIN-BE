@@ -27,7 +27,7 @@ class CreateReferralRequest extends FormRequest
             'clinical_summary'        => ['nullable', 'string', 'max:2000'],
             'instructions'            => ['nullable', 'string', 'max:1000'],
             'urgency'                 => ['sometimes', 'string', 'in:' . implode(',', Referral::URGENCY)],
-            'follow_up_date'          => ['nullable', 'date', 'after_or_equal:today'],
+            'follow_up_date'          => ['nullable', 'date', 'after_or_equal:' . \App\Support\LocalTime::todayDate()],
             'follow_up_time'          => ['nullable', 'date_format:H:i'],
             'assigned_bhw_id'         => ['nullable', 'integer', 'exists:users,user_id'],
             'requires_bhw_monitoring' => ['sometimes', 'boolean'],

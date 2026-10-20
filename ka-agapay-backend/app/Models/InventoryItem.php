@@ -47,8 +47,8 @@ class InventoryItem extends Model
 
     public function scopeExpiringSoon($query, int $days = 30)
     {
-        return $query->where('expiration_date', '<=', now()->addDays($days))
-                     ->where('expiration_date', '>=', today());
+        return $query->where('expiration_date', '<=', \App\Support\LocalTime::today()->addDays($days)->toDateString())
+                     ->where('expiration_date', '>=', \App\Support\LocalTime::todayDate());
     }
 
     public function scopeForRhu($query, int $rhuId)
@@ -75,7 +75,8 @@ class InventoryItem extends Model
 
     public function isExpired(): bool
     {
-        return $this->expiration_date && $this->expiration_date->isPast();
+        // Usable through its expiration date, in the Philippines.
+        return $this->expiration_date && $this->expiration_date->toDateString() < \App\Support\LocalTime::todayDate();
     }
 
     public function getAuditLabel(): string

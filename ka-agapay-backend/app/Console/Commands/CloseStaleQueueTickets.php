@@ -21,6 +21,7 @@
 
 namespace App\Console\Commands;
 
+use App\Support\LocalTime;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -41,11 +42,13 @@ class CloseStaleQueueTickets extends Command
             return self::SUCCESS;
         }
 
-        $cutoff = today()->subDays(max(0, (int) $this->option('days')));
+        // A Philippine day. The UTC date lags Manila by eight hours, so this
+        // used to leave yesterday's 8:00 AM-midnight tickets open.
+        $cutoff = LocalTime::today()->subDays(max(0, (int) $this->option('days')));
 
         $query = DB::table('queue_tickets')
             ->whereIn('status', ['waiting', 'called', 'in_service'])
-            ->whereDate('issued_at', '<', $cutoff);
+            ->where('issued_at', '<', LocalTime::dayStartUtc($cutoff->toDateString()));
 
         $stale = (clone $query)->count();
 

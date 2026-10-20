@@ -146,7 +146,8 @@ class Prescription extends Model
 
     public function isExpired(): bool
     {
-        return $this->valid_until !== null && $this->valid_until->isPast();
+        // Valid through its last day, in the Philippines.
+        return $this->valid_until !== null && $this->valid_until->toDateString() < \App\Support\LocalTime::todayDate();
     }
 
     public function isTerminal(): bool

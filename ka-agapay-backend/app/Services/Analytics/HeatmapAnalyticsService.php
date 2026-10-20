@@ -415,7 +415,7 @@ class HeatmapAnalyticsService
                 ->join('resident_profiles as rp', 'rp.id', '=', 'qt.resident_profile_id')
                 ->selectRaw('rp.barangay_id, COUNT(qt.id) as total')
                 ->whereIn('qt.status', ['waiting', 'called', 'in_service'])
-                ->whereDate("qt.{$dateColumn}", today())
+                ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, "qt.{$dateColumn}"))
                 ->when($rhuId !== null, function ($query) use ($rhuId) {
                     if (Schema::hasColumn('queue_tickets', 'rhu_id')) {
                         $this->scopeFacilityRhuColumn($query, 'qt.rhu_id', $rhuId);
@@ -503,7 +503,7 @@ class HeatmapAnalyticsService
             [
                 'barangay_id' => $point['barangay_id'],
                 'disease_type' => $disease,
-                'log_date' => today()->toDateString(),
+                'log_date' => \App\Support\LocalTime::todayDate(),
             ],
             [
                 'active_cases' => $point['total_cases'],
@@ -541,7 +541,7 @@ class HeatmapAnalyticsService
             ->where('disease_type', $disease)
             ->where('alert_type', 'high_risk_zone')
             ->where('is_resolved', false)
-            ->whereDate('created_at', today())
+            ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, 'created_at'))
             ->exists();
 
         if ($exists) {

@@ -99,7 +99,7 @@ class AdminRegistrationController extends Controller
             // Barangay is a required dropdown validated against the live list — no
             // free text (BarangayList's own guidance: use Rule::exists, not the const).
             'barangay' => ['required', 'string', Rule::exists('barangays', 'name')],
-            'birthday' => ['nullable', 'date', 'before:today'],
+            'birthday' => ['nullable', 'date', 'before:' . \App\Support\LocalTime::todayDate()],
             // NOTE: no 'role' rule on purpose — the payload's role (if any) is
             // ignored. See DEFAULT_REGISTRATION_ROLE above.
             'password' => ['required', 'confirmed', PasswordPolicyService::standard()],

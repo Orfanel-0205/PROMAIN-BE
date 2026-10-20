@@ -54,7 +54,7 @@ class BarangayHeatmap extends Model
 
     public function scopeForToday($query)
     {
-        return $query->where('log_date', today());
+        return $query->where('log_date', \App\Support\LocalTime::todayDate());
     }
 
     public function scopeForDisease($query, string $disease)

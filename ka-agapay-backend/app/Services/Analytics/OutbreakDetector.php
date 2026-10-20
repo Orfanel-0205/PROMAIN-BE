@@ -56,7 +56,7 @@ class OutbreakDetector
             return [];
         }
 
-        $since = Carbon::today()->subDays(max(1, $windowDays));
+        $since = Carbon::parse(\App\Support\LocalTime::todayDate())->subDays(max(1, $windowDays));
 
         $rows = $this->recentCases($since);
 

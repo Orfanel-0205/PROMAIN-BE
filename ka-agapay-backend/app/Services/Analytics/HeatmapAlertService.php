@@ -133,7 +133,7 @@ class HeatmapAlertService
     {
         $waitingCount = QueueTicket::where('rhu_id', $rhuId)
             ->where('status', 'waiting')
-            ->whereDate('issued_at', today())
+            ->forToday()
             ->whereNull('deleted_at')
             ->count();
 
@@ -148,7 +148,7 @@ class HeatmapAlertService
         // Guard: don't duplicate congestion alerts within the same day
         $existing = HeatmapAlert::where('alert_type', 'congestion_alert')
             ->where('is_resolved', false)
-            ->whereDate('created_at', today())
+            ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, 'created_at'))
             ->whereHas('barangay') // any barangay-level congestion alert
             ->first();
 
@@ -283,8 +283,8 @@ class HeatmapAlertService
         $avg = DB::table('barangay_heatmaps')
             ->where('barangay_id', $barangayId)
             ->where('disease_type', $diseaseType)
-            ->where('log_date', '<', today())
-            ->where('log_date', '>=', now()->subDays(self::BASELINE_WINDOW_DAYS)->toDateString())
+            ->where('log_date', '<', \App\Support\LocalTime::todayDate())
+            ->where('log_date', '>=', \App\Support\LocalTime::today()->subDays(self::BASELINE_WINDOW_DAYS)->toDateString())
             ->avg('active_cases');
 
         return (float) ($avg ?? 0);
@@ -309,7 +309,7 @@ class HeatmapAlertService
             ->where('disease_type', $diseaseType)
             ->where('alert_type', $alertType)
             ->where('is_resolved', false)
-            ->whereDate('created_at', today())
+            ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, 'created_at'))
             ->exists();
 
         if ($duplicate) {

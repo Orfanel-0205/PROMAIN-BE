@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\LocalTime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -114,7 +115,7 @@ class DashboardController extends Controller
                 $q->whereIn('status', ['waiting', 'called', 'in_service']);
 
                 return Schema::hasColumn('queue_tickets', 'issued_at')
-                    ? $q->whereDate('issued_at', today())
+                    ? LocalTime::whereOnDay($q, 'issued_at')
                     : $q;
             }),
             'low_inventory' => $this->lowInventoryCount(),
@@ -259,9 +260,7 @@ class DashboardController extends Controller
             default => 'created_at',
         };
 
-        return (int) DB::table('appointments')
-            ->whereDate($dateColumn, today())
-            ->count();
+        return (int) $this->whereToday(DB::table('appointments'), $dateColumn)->count();
     }
 
     private function prescriptionsTodayCount(): int
@@ -274,9 +273,7 @@ class DashboardController extends Controller
             ? 'prescription_date'
             : 'created_at';
 
-        return (int) DB::table('prescriptions')
-            ->whereDate($dateColumn, today())
-            ->count();
+        return (int) $this->whereToday(DB::table('prescriptions'), $dateColumn)->count();
     }
 
     private function activePrescriptionsCount(): int
@@ -555,10 +552,7 @@ class DashboardController extends Controller
             ? 'completed_at'
             : (Schema::hasColumn('queue_tickets', 'service_ended_at') ? 'service_ended_at' : 'updated_at');
 
-        return (int) DB::table('queue_tickets')
-            ->where('status', 'completed')
-            ->whereDate($dateColumn, today())
-            ->count();
+        return (int) $this->whereToday(DB::table('queue_tickets')->where('status', 'completed'), $dateColumn)->count();
     }
 
     private function averageWaitMinutes(): int
@@ -567,8 +561,7 @@ class DashboardController extends Controller
             return 0;
         }
 
-        $avg = DB::table('queue_tickets')
-            ->whereDate('issued_at', today())
+        $avg = LocalTime::whereOnDay(DB::table('queue_tickets'), 'issued_at')
             ->whereNotNull('wait_time_minutes')
             ->avg('wait_time_minutes');
 
@@ -602,36 +595,40 @@ class DashboardController extends Controller
         }
 
         $active = ['pending', 'scheduled'];
-        $today = today();
-        $monthStart = now()->startOfMonth();
-        $missedCutoff = today()->subDays(7);
+        // Philippine dates, compared with the follow-up's own date the way
+        // FollowUpReminderController does; the UTC date of follow_up_at is
+        // the previous day for anything before 8:00 AM.
+        $today = LocalTime::todayDate();
+        $monthStart = LocalTime::today()->startOfMonth()->utc();
+        $missedCutoff = LocalTime::today()->subDays(7)->toDateString();
+        $day = 'COALESCE(follow_up_date, CAST(follow_up_at AS DATE))';
 
         return [
             'total' => (int) DB::table('follow_up_reminders')->count(),
             'overdue' => (int) DB::table('follow_up_reminders')
                 ->whereIn('status', $active)
                 ->whereNotNull('follow_up_at')
-                ->whereDate('follow_up_at', '<', $today)
+                ->whereRaw("{$day} < ?", [$today])
                 ->count(),
             'due_today' => (int) DB::table('follow_up_reminders')
                 ->whereIn('status', $active)
-                ->whereDate('follow_up_at', $today)
+                ->whereRaw("{$day} = ?", [$today])
                 ->count(),
             'upcoming' => (int) DB::table('follow_up_reminders')
                 ->whereIn('status', $active)
-                ->whereDate('follow_up_at', '>', $today)
+                ->whereRaw("{$day} > ?", [$today])
                 ->count(),
             'completed_this_month' => (int) DB::table('follow_up_reminders')
                 ->where('status', 'completed')
                 ->where('updated_at', '>=', $monthStart)
                 ->count(),
             'missed' => (int) DB::table('follow_up_reminders')
-                ->where(function ($q) use ($active, $missedCutoff) {
+                ->where(function ($q) use ($active, $missedCutoff, $day) {
                     $q->where('status', 'missed')
-                        ->orWhere(function ($q2) use ($active, $missedCutoff) {
+                        ->orWhere(function ($q2) use ($active, $missedCutoff, $day) {
                             $q2->whereIn('status', $active)
                                 ->whereNotNull('follow_up_at')
-                                ->whereDate('follow_up_at', '<', $missedCutoff);
+                                ->whereRaw("{$day} < ?", [$missedCutoff]);
                         });
                 })
                 ->count(),
@@ -680,10 +677,10 @@ class DashboardController extends Controller
 
             $endedColumn = Schema::hasColumn('telemedicine_sessions', 'ended_at') ? 'ended_at' : 'updated_at';
 
-            $worklist['completed_today'] = (int) DB::table('telemedicine_sessions')
-                ->where('status', 'ended')
-                ->whereDate($endedColumn, today())
-                ->count();
+            $worklist['completed_today'] = (int) $this->whereToday(
+                DB::table('telemedicine_sessions')->where('status', 'ended'),
+                $endedColumn
+            )->count();
         }
 
         return $worklist;
@@ -706,19 +703,18 @@ class DashboardController extends Controller
             return $snapshot;
         }
 
-        $today = today();
+        $todaysTickets = fn () => LocalTime::whereOnDay(DB::table('queue_tickets'), 'issued_at');
 
-        $snapshot['waiting'] = (int) DB::table('queue_tickets')->where('status', 'waiting')->whereDate('issued_at', $today)->count();
-        $snapshot['called'] = (int) DB::table('queue_tickets')->where('status', 'called')->whereDate('issued_at', $today)->count();
-        $snapshot['serving'] = (int) DB::table('queue_tickets')->whereIn('status', ['in_service', 'serving'])->whereDate('issued_at', $today)->count();
-        $snapshot['completed'] = (int) DB::table('queue_tickets')->where('status', 'completed')->whereDate('issued_at', $today)->count();
-        $snapshot['no_show'] = (int) DB::table('queue_tickets')->where('status', 'no_show')->whereDate('issued_at', $today)->count();
-        $snapshot['skipped'] = (int) DB::table('queue_tickets')->where('status', 'skipped')->whereDate('issued_at', $today)->count();
+        $snapshot['waiting'] = (int) $todaysTickets()->where('status', 'waiting')->count();
+        $snapshot['called'] = (int) $todaysTickets()->where('status', 'called')->count();
+        $snapshot['serving'] = (int) $todaysTickets()->whereIn('status', ['in_service', 'serving'])->count();
+        $snapshot['completed'] = (int) $todaysTickets()->where('status', 'completed')->count();
+        $snapshot['no_show'] = (int) $todaysTickets()->where('status', 'no_show')->count();
+        $snapshot['skipped'] = (int) $todaysTickets()->where('status', 'skipped')->count();
 
         if (Schema::hasColumn('queue_tickets', 'priority_score')) {
-            $snapshot['priority_waiting'] = (int) DB::table('queue_tickets')
+            $snapshot['priority_waiting'] = (int) $todaysTickets()
                 ->where('status', 'waiting')
-                ->whereDate('issued_at', $today)
                 ->where('priority_score', '>=', 35)
                 ->count();
         }
@@ -743,8 +739,9 @@ class DashboardController extends Controller
             ->selectRaw('a.id')
             ->selectRaw('a.status')
             ->selectRaw('a.appointment_time')
-            ->selectRaw("CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as patient_name")
-            ->whereDate("a.{$dateColumn}", today());
+            ->selectRaw("CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as patient_name");
+
+        $this->whereToday($query, "a.{$dateColumn}");
 
         if (Schema::hasColumn('appointments', 'consultation_type')) {
             $query->addSelect(DB::raw('a.consultation_type'));
@@ -929,5 +926,19 @@ class DashboardController extends Controller
             ->get()
             ->map(fn ($row) => (array) $row)
             ->all();
+    }
+
+    /**
+     * Rows on today's Philippine date. A date column holds that date; a
+     * timestamp column holds UTC, so it is matched against the day's UTC
+     * range. The UTC date is yesterday until 8:00 AM in Manila.
+     */
+    private function whereToday($query, string $column)
+    {
+        $name = str_contains($column, '.') ? substr((string) strrchr($column, '.'), 1) : $column;
+
+        return $name === 'date' || str_ends_with($name, '_date')
+            ? $query->whereDate($column, LocalTime::todayDate())
+            : LocalTime::whereOnDay($query, $column);
     }
 }

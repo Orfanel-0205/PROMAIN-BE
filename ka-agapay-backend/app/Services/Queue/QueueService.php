@@ -17,6 +17,7 @@ use App\Services\Notification\NotificationService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Support\LocalTime;
 use App\Support\QueueServices;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
@@ -77,14 +78,17 @@ class QueueService
              * never called because nobody was there to call. That is where
              * the phantom "10 waiting" on an empty desk came from.
              */
+            // Philippine dates throughout: the UTC date is still yesterday
+            // until 8:00 AM in Manila (see LocalTime).
             $serviceDate = !empty($data['service_date'])
-                ? \Illuminate\Support\Carbon::parse($data['service_date'])->startOfDay()
-                : today();
+                ? \Illuminate\Support\Carbon::parse($data['service_date'])->toDateString()
+                : LocalTime::todayDate();
+            $serviceIsToday = $serviceDate === LocalTime::todayDate();
 
             $existing = QueueTicket::query()
                 ->forRhu($rhuId)
                 ->byServiceType($serviceType)
-                ->whereDate('issued_at', $serviceDate->toDateString())
+                ->tap(fn ($q) => LocalTime::whereOnDay($q, 'issued_at', $serviceDate))
                 ->where('resident_profile_id', $residentProfile->id)
                 ->whereIn('status', self::ACTIVE_STATUSES)
                 ->lockForUpdate()
@@ -137,9 +141,9 @@ class QueueService
                 // Dated for the visit, not for the moment the paperwork was
                 // approved, so the queue board for that day is the one it
                 // appears on.
-                'issued_at' => $serviceDate->isToday()
+                'issued_at' => $serviceIsToday
                     ? now()
-                    : $serviceDate->copy()->setTime(8, 0),
+                    : LocalTime::toUtc($serviceDate, '08:00'),
                 'notes' => $data['notes'] ?? null,
             ];
 
@@ -248,7 +252,7 @@ class QueueService
                 ? \Illuminate\Support\Carbon::parse($appointment->appointment_date)->startOfDay()
                 : null;
 
-            if ($visitDate === null || $visitDate->lt(today())) {
+            if ($visitDate === null || $visitDate->toDateString() < LocalTime::todayDate()) {
                 return $existing->fresh(['residentProfile.barangay', 'rhu', 'issuedBy', 'servedBy']);
             }
         }
@@ -411,7 +415,7 @@ class QueueService
 
         return Consultation::query()
             ->where('user_id', $userId)
-            ->whereDate('consultation_date', today())
+            ->whereDate('consultation_date', LocalTime::todayDate())
             ->latest('id')
             ->first();
     }
@@ -631,7 +635,7 @@ class QueueService
 
         $sameDayOpen = Consultation::query()
             ->where('user_id', $userId)
-            ->whereDate('consultation_date', today())
+            ->whereDate('consultation_date', LocalTime::todayDate())
             ->whereNotIn('status', ['completed', 'cancelled'])
             ->latest('id')
             ->first();
@@ -646,7 +650,7 @@ class QueueService
             'appointment_id' => $ticket->appointment_id,
             'user_id' => $userId,
             'attended_by' => Auth::id(),
-            'consultation_date' => today()->toDateString(),
+            'consultation_date' => LocalTime::todayDate(),
             'chief_complaint' => $complaint,
             'subjective' => $complaint,
             'status' => 'ongoing',
@@ -867,11 +871,9 @@ class QueueService
      */
     public function getDailySummary(int $rhuId, ?string $date = null): array
     {
-        $targetDate = $date ? Carbon::parse($date)->toDateString() : today()->toDateString();
+        $targetDate = $date ? Carbon::parse($date)->toDateString() : LocalTime::todayDate();
 
-        $tickets = QueueTicket::query()
-            ->forRhu($rhuId)
-            ->whereDate('issued_at', $targetDate)
+        $tickets = LocalTime::whereOnDay(QueueTicket::query()->forRhu($rhuId), 'issued_at', $targetDate)
             ->get();
 
         $waiting = $tickets->where('status', 'waiting');
@@ -1192,7 +1194,7 @@ class QueueService
         $counter = QueueCounter::query()
             ->where('rhu_id', $rhuId)
             ->where('service_type', $serviceType)
-            ->whereDate('queue_date', today())
+            ->whereDate('queue_date', LocalTime::todayDate())
             ->lockForUpdate()
             ->first();
 
@@ -1200,7 +1202,7 @@ class QueueService
             $counter = QueueCounter::create([
                 'rhu_id' => $rhuId,
                 'service_type' => $serviceType,
-                'queue_date' => today(),
+                'queue_date' => LocalTime::todayDate(),
                 'last_issued_number' => 0,
                 'current_serving_number' => null,
                 'is_active' => true,
@@ -1283,7 +1285,7 @@ class QueueService
             QueueCounter::query()
                 ->where('rhu_id', $ticket->rhu_id)
                 ->where('service_type', $ticket->service_type)
-                ->whereDate('queue_date', today())
+                ->whereDate('queue_date', LocalTime::todayDate())
                 ->update([
                     'current_serving_number' => $number,
                     'updated_at' => now(),

@@ -150,11 +150,11 @@ class FollowUpReminderController extends Controller
         }
 
         if ($request->filled('date_from')) {
-            $query->whereDate('follow_up_at', '>=', $request->query('date_from'));
+            $this->whereFollowUpDay($query, '>=', (string) $request->query('date_from'));
         }
 
         if ($request->filled('date_to')) {
-            $query->whereDate('follow_up_at', '<=', $request->query('date_to'));
+            $this->whereFollowUpDay($query, '<=', (string) $request->query('date_to'));
         }
 
         $this->applyStatusFilter($query, strtolower((string) $request->query('status', 'all')));

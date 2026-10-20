@@ -211,7 +211,7 @@ class ConsultationController extends Controller
         $payload = $this->filterConsultationPayload([
             ...$validated,
             'attended_by' => $this->currentUserId($request),
-            'consultation_date' => $validated['consultation_date'] ?? now()->toDateString(),
+            'consultation_date' => $validated['consultation_date'] ?? \App\Support\LocalTime::todayDate(),
             'status' => $validated['status'] ?? 'open',
             'started_at' => now(),
         ]);

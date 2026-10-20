@@ -473,7 +473,7 @@ class AnalyticsController extends Controller
 
         $rows = DB::table('queue_tickets')
             ->selectRaw("COALESCE(service_type, 'unspecified') as service_type, status, COUNT(*) as total")
-            ->whereDate($dateColumn, today())
+            ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, $dateColumn))
             ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->groupByRaw("COALESCE(service_type, 'unspecified'), status")
             ->orderByDesc('total')
@@ -1878,7 +1878,7 @@ class AnalyticsController extends Controller
                 ->selectRaw("COALESCE(b.name, 'Unspecified') as barangay")
                 ->selectRaw("COUNT(*) as total")
                 ->whereIn('q.status', ['waiting', 'called', 'in_service'])
-                ->whereDate("q.{$dateColumn}", today())
+                ->tap(fn ($q) => \App\Support\LocalTime::whereOnDay($q, "q.{$dateColumn}"))
                 ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'q.rhu_id'))
                 ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), function ($q) {
                     $q->whereNull('q.deleted_at');

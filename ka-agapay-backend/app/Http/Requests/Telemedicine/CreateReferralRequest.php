@@ -19,7 +19,7 @@ class CreateReferralRequest extends FormRequest
             'referred_to'    => ['nullable', 'string', 'max:255'],
             'reason'         => ['required', 'string', 'max:1000'],
             'instructions'   => ['nullable', 'string', 'max:1000'],
-            'follow_up_date' => ['nullable', 'date', 'after_or_equal:today'],
+            'follow_up_date' => ['nullable', 'date', 'after_or_equal:' . \App\Support\LocalTime::todayDate()],
             'is_urgent'      => ['sometimes', 'boolean'],
         ];
     }
