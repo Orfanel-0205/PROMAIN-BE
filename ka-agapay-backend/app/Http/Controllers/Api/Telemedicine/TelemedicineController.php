@@ -301,14 +301,17 @@ class TelemedicineController extends Controller
      */
     public function endorseToDoctor(Request $request, TelemedicineRequest $telemedicineRequest): JsonResponse
     {
-        $request->validate([
+        // validate() returns the fields; a plain Request has no validated().
+        // That call was never reached while the route could not find the
+        // request, and threw as soon as it could (Oct 2026).
+        $validated = $request->validate([
             'endorsed_to'       => ['required', 'integer', 'exists:users,user_id'],
             'endorsement_notes' => ['nullable', 'string', 'max:500'],
         ]);
 
         $result = $this->service->endorseToDoctor(
             $telemedicineRequest,
-            $request->validated(),
+            $validated,
             $request->user()
         );
 

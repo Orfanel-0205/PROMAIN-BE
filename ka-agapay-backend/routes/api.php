@@ -801,9 +801,13 @@ Route::prefix('v1')->group(function () {
             // Level 1 (screening staff) — nurse/midwife/head_nurse/staff/rhu_staff/rhu_admin
             Route::patch('/requests/{request}/screen', [TelemedicineController::class, 'screen'])
                 ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,super_admin');
-            Route::patch('/requests/{request}/start-screening', [TelemedicineController::class, 'startScreening'])
+            // {telemedicineRequest}, the controllers' argument name. As
+            // {request} the model was never looked up: Laravel injected an
+            // empty one, so "Start screening" and "Endorse to doctor" always
+            // failed ("Current status: []", Oct 2026). Same URLs.
+            Route::patch('/requests/{telemedicineRequest}/start-screening', [TelemedicineController::class, 'startScreening'])
                 ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,super_admin');
-            Route::post('/requests/{request}/endorse-to-doctor', [TelemedicineController::class, 'endorseToDoctor'])
+            Route::post('/requests/{telemedicineRequest}/endorse-to-doctor', [TelemedicineController::class, 'endorseToDoctor'])
                 ->middleware('role:nurse,midwife,head_nurse,staff,rhu_staff,rhu_admin,super_admin');
 
             // Level 2 (clinical) — doctor/mho/super_admin

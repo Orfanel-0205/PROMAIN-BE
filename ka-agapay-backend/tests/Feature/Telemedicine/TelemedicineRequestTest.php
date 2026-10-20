@@ -138,6 +138,37 @@ class TelemedicineRequestTest extends TestCase
         ]);
     }
 
+    /**
+     * Both routes named their parameter {request} while the controller asked
+     * for $telemedicineRequest, so Laravel passed an empty model and both
+     * buttons always failed ("Current status: []", Oct 2026).
+     */
+    public function test_nurse_can_start_screening_and_endorse_to_a_doctor(): void
+    {
+        $teleRequest = TelemedicineRequest::create([
+            'resident_profile_id' => $this->residentProfile->id,
+            'requested_by'        => $this->residentUser->user_id,
+            'rhu_id'              => $this->barangay->barangay_id,
+            'chief_complaint'     => 'Cough for a week',
+            'urgency_level'       => 'routine',
+            'symptoms'            => ['Cough'],
+            'status'              => 'pending',
+        ]);
+
+        $this->actingAs($this->screeningUser)
+            ->patchJson("/api/v1/telemedicine/requests/{$teleRequest->id}/start-screening")
+            ->assertOk();
+
+        $this->assertSame('screening', $teleRequest->fresh()->status);
+
+        $this->actingAs($this->screeningUser)
+            ->postJson("/api/v1/telemedicine/requests/{$teleRequest->id}/endorse-to-doctor", [
+                'endorsed_to' => $this->mhoUser->user_id,
+                'endorsement_notes' => 'For the MHO.',
+            ])
+            ->assertSuccessful();
+    }
+
     public function test_mho_cannot_screen_telemedicine_request(): void
     {
         $teleRequest = TelemedicineRequest::create([
