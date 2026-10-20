@@ -1015,10 +1015,15 @@ class TeamChatController extends Controller
         return in_array(strtolower((string) $user->role_name), self::RESIDENT_ROLES, true);
     }
 
-    /** Within-RHU rule: global-scope users span both; everyone else same facility. */
+    /**
+     * Within-RHU rule: global-scope users (Super Admin, MHO) span every RHU,
+     * and every RHU's staff can reach them. Only the first half used to be
+     * true: the MHO could start a chat with a nurse, but no nurse could start
+     * one with the MHO, or even find the MHO in Contacts (Oct 2026).
+     */
     private function canMessage(User $me, User $target): bool
     {
-        if (Rhu::isGlobalScope($me)) {
+        if (Rhu::isGlobalScope($me) || Rhu::isGlobalScope($target)) {
             return true;
         }
 

@@ -10,19 +10,15 @@ use Illuminate\Validation\Rule;
 
 class IssueQueueTicketRequest extends FormRequest
 {
+    /**
+     * The queue policy's rule: any staff role, or a resident for themselves
+     * (QueueController::issue checks the "themselves"). This kept its own
+     * list without doctor, nurse or midwife, so a nurse adding a walk-in
+     * from the Queue page was told "This action is unauthorized" (Oct 2026).
+     */
     public function authorize(): bool
     {
-        // Staff, BHW, Admin, MHO, Super Admin, or Resident self-service
-        return $this->user()?->hasAnyRole([
-            'admin',
-            'staff',
-            'staff_admin',
-            'rhu_admin',
-            'bhw',
-            'mho',
-            'super_admin',
-            'resident',
-        ]) ?? false;
+        return $this->user()?->can('create', \App\Models\QueueTicket::class) ?? false;
     }
 
     public function rules(): array
