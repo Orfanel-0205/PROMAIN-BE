@@ -105,11 +105,11 @@ class AdminSmsController extends Controller
 
         if (Schema::hasColumn('sms_logs', 'created_at')) {
             if ($request->filled('date_from')) {
-                $query->whereDate('created_at', '>=', $request->date('date_from'));
+                $query->where('created_at', '>=', \App\Support\LocalTime::dayStartUtc((string) $request->input('date_from')));
             }
 
             if ($request->filled('date_to')) {
-                $query->whereDate('created_at', '<=', $request->date('date_to'));
+                $query->where('created_at', '<', \App\Support\LocalTime::dayRange((string) $request->input('date_to'))[1]);
             }
         }
 

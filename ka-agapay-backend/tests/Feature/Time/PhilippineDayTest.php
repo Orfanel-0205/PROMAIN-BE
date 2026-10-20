@@ -97,6 +97,7 @@ class PhilippineDayTest extends TestCase
 
         $counter = QueueCounter::query()->where('rhu_id', 1)->where('service_type', 'opd_consultation')->first();
         $this->assertSame('2026-10-21', Carbon::parse($counter->queue_date)->toDateString(), "the ticket went on yesterday's counter");
+        $this->assertStringContainsString('-261021-', $ticket->ticket_number, "the ticket number carries yesterday's date");
 
         // 9:00 AM: the clinic is open and the patient is still waiting.
         Carbon::setTestNow('2026-10-21 01:00:00');
@@ -150,14 +151,22 @@ class PhilippineDayTest extends TestCase
     {
         $offenders = [];
 
+        // UTC on purpose: a backup file's name, and a generated code nobody
+        // reads as a date.
+        $utcAllowed = ['RunDatabaseBackup.php', 'QueueServiceCatalogController.php'];
+
         $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(app_path()));
         foreach ($files as $file) {
             if ($file->getExtension() !== 'php' || str_ends_with($file->getPathname(), 'LocalTime.php')) {
                 continue;
             }
 
+            $pattern = in_array($file->getFilename(), $utcAllowed, true)
+                ? '/(?<![:>\w])today\(\)|Carbon::today\(\)|now\(\)->toDateString\(\)/'
+                : '/(?<![:>\w])today\(\)|Carbon::today\(\)|now\(\)->toDateString\(\)|(?<![:\w])now\(\)->format\(|[\'"](after|before)(_or_equal)?:today[\'"]/';
+
             foreach (file($file->getPathname()) as $n => $line) {
-                if (preg_match('/(?<![:>\w])today\(\)|Carbon::today\(\)|now\(\)->toDateString\(\)|[\'"](after|before)(_or_equal)?:today[\'"]/', $line)) {
+                if (preg_match($pattern, $line)) {
                     $offenders[] = str_replace(app_path() . DIRECTORY_SEPARATOR, '', $file->getPathname()) . ':' . ($n + 1);
                 }
             }

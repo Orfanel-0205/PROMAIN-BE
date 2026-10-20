@@ -264,7 +264,7 @@ class ReportController extends Controller
 
         $filename = 'itr_soap_diagnosis_consultation_report_'
             . ($detail ? 'full_' : 'core_')
-            . now()->format('Y-m-d_His') . '.csv';
+            . \App\Support\LocalTime::now()->format('Y-m-d_His') . '.csv';
 
         if ($masked) {
             $columns = $this->maskIdentifyingColumns($columns);

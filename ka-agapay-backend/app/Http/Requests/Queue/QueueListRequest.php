@@ -8,17 +8,14 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class QueueListRequest extends FormRequest
 {
+    /**
+     * The queue policy's rule, the same one /queue/live and /queue/summary
+     * use. This kept its own shorter list, without doctor, nurse or midwife,
+     * so the Queue report on the Reports page refused them (Oct 2026).
+     */
     public function authorize(): bool
     {
-        return $this->user()?->hasAnyRole([
-            'admin',
-            'staff',
-            'staff_admin',
-            'rhu_admin',
-            'mho',
-            'super_admin',
-            'bhw',
-        ]) ?? false;
+        return $this->user()?->can('viewAny', \App\Models\QueueTicket::class) ?? false;
     }
 
     public function rules(): array

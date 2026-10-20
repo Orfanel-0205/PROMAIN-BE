@@ -1225,7 +1225,7 @@ class QueueService
             . '-'
             . $code
             . '-'
-            . now()->format('ymd')
+            . LocalTime::now()->format('ymd')
             . '-'
             . str_pad((string) $number, 4, '0', STR_PAD_LEFT);
     }

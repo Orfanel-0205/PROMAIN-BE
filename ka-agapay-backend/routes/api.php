@@ -897,19 +897,19 @@ Route::prefix('v1')->group(function () {
         // CLINICAL STAFF
         // =====================================================================
 
-        // Patient Registry (browsable roster) + per-patient health profile.
-        // Declared BEFORE the apiResource so these specific paths win, and open
-        // to the same staff who can view Reports/Consultations.
+        // Patient Registry (browsable roster) + per-patient health profile,
+        // open to the same staff who can view Reports/Consultations.
+        //
+        // An apiResource('patients') used to sit here. PatientController has
+        // no index, store, show or destroy, so four of its routes answered
+        // 500, and its PUT reached update() -- the resident's own
+        // /patient/me -- under a staff URL. Nothing called any of them
+        // (Oct 2026).
         Route::get('/patients/registry', [PatientController::class, 'registry'])
             ->middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife');
 
         Route::get('/patients/{userId}/profile', [PatientController::class, 'profile'])
             ->middleware('role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife');
-
-        Route::middleware('role:doctor,nurse,midwife,rhu_admin,super_admin')
-            ->group(function () {
-                Route::apiResource('patients', PatientController::class);
-            });
 
         // =====================================================================
         // ANALYTICS
@@ -1104,13 +1104,13 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:super_admin,mho_admin,it_staff')
             ->prefix('approvals')
             ->group(function () {
+                // No show() or requestInfo() exists on ApprovalController;
+                // their routes answered 500 and were removed (Oct 2026).
                 Route::get('/',        [ApprovalController::class, 'index']);
                 Route::get('/pending', [ApprovalController::class, 'pending']);
-                Route::get('/{id}',    [ApprovalController::class, 'show']);
 
                 Route::patch('/{id}/approve',      [ApprovalController::class, 'approve']);
                 Route::patch('/{id}/reject',       [ApprovalController::class, 'reject']);
-                Route::patch('/{id}/request-info', [ApprovalController::class, 'requestInfo']);
             });
     });
 });

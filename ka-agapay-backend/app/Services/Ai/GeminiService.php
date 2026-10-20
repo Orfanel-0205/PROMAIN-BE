@@ -774,7 +774,7 @@ class GeminiService
 
         // The model has no clock. Without this it drafts events dated in the
         // past, and the Event form refuses to publish a past schedule.
-        $today = now()->format('l, F j, Y');
+        $today = \App\Support\LocalTime::now()->format('l, F j, Y');
         $dateText = "\n\nToday's date is {$today}. Any date you propose for an event, "
             . 'program, or deadline MUST be on or after this date.';
 

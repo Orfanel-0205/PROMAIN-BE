@@ -92,7 +92,7 @@ class AccountSmsService
 
         $message = implode(' ', [
             "Hi {$first}, your Ka-Agapay password was changed by an administrator on "
-                . now()->format('d M Y, g:i A') . '.',
+                . \App\Support\LocalTime::now()->format('d M Y, g:i A') . '.',
             'If you did not expect this, contact your RHU administrator immediately.',
         ]);
 

@@ -125,7 +125,7 @@ class AssistantTools
             default => ['error' => 'Unknown tool.'],
         };
 
-        return $result + ['scope' => $scopeLabel, 'as_of' => now()->format('Y-m-d H:i')];
+        return $result + ['scope' => $scopeLabel, 'as_of' => \App\Support\LocalTime::now()->format('Y-m-d H:i')];
     }
 
     // ── the lookups ──────────────────────────────────────────────────────────

@@ -1562,7 +1562,7 @@ class AppointmentController extends Controller
 
         $ticketNumber = 'R' . $rhuId
             . '-OPD-'
-            . now()->format('ymd')
+            . LocalTime::now()->format('ymd')
             . '-'
             . str_pad((string) $nextNumber, 4, '0', STR_PAD_LEFT);
 

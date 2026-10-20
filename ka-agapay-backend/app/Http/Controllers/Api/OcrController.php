@@ -1308,7 +1308,7 @@ class OcrController extends Controller
 
     private function nextPrescriptionNumber(int $rhuId): string
     {
-        $prefix = 'RHU' . $rhuId . '-RX-' . now()->format('Y');
+        $prefix = 'RHU' . $rhuId . '-RX-' . \App\Support\LocalTime::now()->format('Y');
 
         $count = DB::table('prescriptions')
             ->where('prescription_number', 'like', $prefix . '%')

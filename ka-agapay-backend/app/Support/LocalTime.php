@@ -55,6 +55,12 @@ final class LocalTime
         return self::today()->toDateString();
     }
 
+    /** Now, on the Philippine clock -- for any date or time a person reads. */
+    public static function now(): CarbonImmutable
+    {
+        return CarbonImmutable::now(self::zone());
+    }
+
     /** The Philippine wall-clock time now, "H:i". */
     public static function nowTime(): string
     {

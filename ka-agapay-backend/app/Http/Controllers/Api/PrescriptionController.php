@@ -767,7 +767,7 @@ class PrescriptionController extends Controller
 
     private function nextPrescriptionNumber(int $rhuId): string
     {
-        $prefix = 'RHU' . $rhuId . '-RX-' . now()->format('Y');
+        $prefix = 'RHU' . $rhuId . '-RX-' . \App\Support\LocalTime::now()->format('Y');
         $count = DB::table('prescriptions')
             ->where('prescription_number', 'like', $prefix . '%')
             ->count() + 1;
@@ -1127,7 +1127,7 @@ class PrescriptionController extends Controller
     private function formatLongDate(?string $value): string
     {
         if (!$value) {
-            return now()->format('F d, Y');
+            return \App\Support\LocalTime::now()->format('F d, Y');
         }
 
         try {
