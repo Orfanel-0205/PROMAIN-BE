@@ -224,7 +224,7 @@ class PatientController extends Controller
                 'age' => $this->ageFromBirthdate($r->birth_date),
                 'mobile_number' => $r->mobile_number,
                 'total_visits' => (int) ($r->total_visits ?? 0),
-                'last_visit' => $r->last_visit,
+                'last_visit' => \App\Support\LocalTime::iso($r->last_visit),
                 'recent_diagnosis' => $r->recent_diagnosis,
                 'follow_ups' => (int) ($r->follow_ups ?? 0),
             ];

@@ -197,6 +197,32 @@ final class LocalTime
     }
 
     /**
+     * A stored timestamp as ISO 8601 UTC ("2026-10-20T23:30:00.000000Z"), the
+     * way Eloquent sends dates. Raw query rows carry "2026-10-20 23:30:00"
+     * with no zone, which a browser or phone reads as LOCAL time -- a 7:30 AM
+     * visit shown as 11:30 PM the day before. Dates without a time, values
+     * that already carry a zone, and nulls pass through unchanged.
+     */
+    public static function iso(DateTimeInterface|string|null $value): ?string
+    {
+        if ($value instanceof DateTimeInterface) {
+            return CarbonImmutable::instance($value)->utc()->toJSON();
+        }
+
+        if ($value === null || trim($value) === '') {
+            return $value;
+        }
+
+        $value = trim($value);
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/', $value)) {
+            return $value; // a plain date, or already zoned
+        }
+
+        return CarbonImmutable::parse($value, 'UTC')->toJSON();
+    }
+
+    /**
      * SQL for the Philippine date of a timestamp column, for grouping by day.
      * The column holds UTC without a zone, so it is read as UTC first.
      */

@@ -794,7 +794,7 @@ class QueueController extends Controller
                 'patient' => $this->personName($row->first_name ?? null, $row->last_name ?? null),
                 'channel' => $row->appointment_id ? 'booked' : 'walk_in',
                 'service' => (string) ($row->service_type ?? 'unspecified'),
-                'seen_at' => (string) $row->issued_at,
+                'seen_at' => LocalTime::iso((string) $row->issued_at),
 
                 // The detail view answers "what happened to this person",
                 // which is a question about timings and who saw them.

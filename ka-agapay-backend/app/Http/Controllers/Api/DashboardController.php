@@ -512,7 +512,8 @@ class DashboardController extends Controller
             ->latest('c.created_at')
             ->limit(8)
             ->get()
-            ->map(fn ($row) => (array) $row)
+            // ISO with a zone, or the browser reads UTC as local time.
+            ->map(fn ($row) => ['created_at' => LocalTime::iso($row->created_at)] + (array) $row)
             ->all();
     }
 

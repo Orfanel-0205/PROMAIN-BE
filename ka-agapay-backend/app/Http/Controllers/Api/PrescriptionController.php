@@ -736,6 +736,14 @@ class PrescriptionController extends Controller
         $data['pdf_url'] = null;
         $data['pdf_endpoint'] = url('/api/v1/prescriptions/' . $row->id . '/pdf');
 
+        // Raw rows carry UTC with no zone, which the browser and the phone
+        // read as local time; send ISO with a zone like Eloquent does.
+        foreach (['created_at', 'updated_at', 'dispensed_at', 'released_at', 'cancelled_at', 'deleted_at'] as $column) {
+            if (array_key_exists($column, $data)) {
+                $data[$column] = \App\Support\LocalTime::iso($data[$column]);
+            }
+        }
+
         return $data;
     }
 

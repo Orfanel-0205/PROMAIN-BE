@@ -442,12 +442,14 @@ class AnnouncementController extends Controller
             'banner_path' => $bannerPath,
             'banner_url' => $bannerPath ? Storage::disk('public')->url($bannerPath) : null,
             'image_url' => $bannerPath ? Storage::disk('public')->url($bannerPath) : null,
-            'published_at' => $row->published_at ?? null,
-            'archived_at' => $row->archived_at ?? null,
+            // ISO with a zone: a raw "Y-m-d H:i:s" reads as local time on a
+            // browser or phone, eight hours early.
+            'published_at' => \App\Support\LocalTime::iso($row->published_at ?? null),
+            'archived_at' => \App\Support\LocalTime::iso($row->archived_at ?? null),
             'archived_by' => $row->archived_by ?? null,
             'created_by' => $row->created_by ?? null,
-            'created_at' => $row->created_at ?? null,
-            'updated_at' => $row->updated_at ?? null,
+            'created_at' => \App\Support\LocalTime::iso($row->created_at ?? null),
+            'updated_at' => \App\Support\LocalTime::iso($row->updated_at ?? null),
         ];
     }
 

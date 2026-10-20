@@ -70,6 +70,16 @@ class AnalyticsLocalTimeTest extends TestCase
         $this->assertSame(3, $overview['total_queue_tickets'], "the 21st's tickets, 7:30 AM included and past midnight excluded");
     }
 
+    public function test_raw_timestamps_are_sent_with_a_zone(): void
+    {
+        // A browser reads "2026-10-20 23:30:00" as local time: 11:30 PM on the
+        // 20th instead of 7:30 AM on the 21st.
+        $this->assertSame('2026-10-20T23:30:00.000000Z', LocalTime::iso('2026-10-20 23:30:00'));
+        $this->assertSame('2026-10-21', LocalTime::iso('2026-10-21'));
+        $this->assertSame('2026-10-20T23:30:00.000000Z', LocalTime::iso('2026-10-20T23:30:00.000000Z'));
+        $this->assertNull(LocalTime::iso(null));
+    }
+
     public function test_a_stored_value_reads_on_the_philippine_clock(): void
     {
         $this->assertSame('2026-10-21 09:00', LocalTime::fromStored('2026-10-21 01:00:00')->format('Y-m-d H:i'));
