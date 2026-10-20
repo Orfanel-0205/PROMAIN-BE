@@ -34,7 +34,9 @@ skipped=0
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; failed=$((failed + 1)); }
 skip() { printf '  \033[33mSKIP\033[0m  %s\n' "$1"; skipped=$((skipped + 1)); }
-head() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+# A section heading. Not called head(): that name hid the real head command
+# from the pipes below, and the backup check read a heading as a file name.
+section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 # HTTP status of a URL, with a short timeout so a hung server fails fast.
 status_of() {
@@ -57,7 +59,7 @@ expect_status() {
 # Mode 1: from outside. What a resident's phone and a staff browser can reach.
 # ─────────────────────────────────────────────────────────────────────────────
 remote_checks() {
-  head "Reachability"
+  section "Reachability"
 
   local health
   health="$(curl -s --max-time 15 "$API/health")"
@@ -79,7 +81,7 @@ remote_checks() {
     fail "Plain HTTP should redirect to HTTPS — got $redirect"
   fi
 
-  head "Doors that must stay shut"
+  section "Doors that must stay shut"
 
   # Patient data behind a login. 401 is the only right answer here.
   expect_status "Prescriptions need a login" 401 -H 'Accept: application/json' "$API/prescriptions"
@@ -98,7 +100,7 @@ remote_checks() {
     && pass "Settings file is not downloadable ($env_status)" \
     || fail ".env answered $env_status — expected 403 or 404"
 
-  head "Certificate"
+  section "Certificate"
 
   local expiry
   expiry="$(echo | openssl s_client -connect "${BASE_URL#https://}:443" -servername "${BASE_URL#https://}" 2>/dev/null \
@@ -117,7 +119,7 @@ remote_checks() {
     skip "Certificate expiry (openssl not available)"
   fi
 
-  head "Signed in as staff"
+  section "Signed in as staff"
 
   if [ -z "${SMOKE_MOBILE:-}" ] || [ -z "${SMOKE_PASSWORD:-}" ]; then
     skip "Sign-in checks — set SMOKE_MOBILE and SMOKE_PASSWORD to include them"
@@ -164,7 +166,7 @@ remote_checks() {
 # Mode 2: on the droplet. The things only the server can answer.
 # ─────────────────────────────────────────────────────────────────────────────
 server_checks() {
-  head "Services"
+  section "Services"
 
   for unit in nginx php8.3-fpm postgresql cron; do
     if systemctl is-active --quiet "$unit"; then
@@ -174,7 +176,7 @@ server_checks() {
     fi
   done
 
-  head "Database and scheduler"
+  section "Database and scheduler"
 
   if [ -d "$APP_DIR" ]; then
     cd "$APP_DIR" || return
@@ -194,7 +196,7 @@ server_checks() {
     skip "Application checks — $APP_DIR not found (set APP_DIR)"
   fi
 
-  head "Backups"
+  section "Backups"
 
   local last
   last="$(ls -t /var/backups/kaagapay/*.gz 2>/dev/null | head -1)"
@@ -212,7 +214,7 @@ server_checks() {
     skip "Backups (no files in /var/backups/kaagapay)"
   fi
 
-  head "Disk and storage"
+  section "Disk and storage"
 
   local used
   used="$(df --output=pcent / | tail -1 | tr -dc '0-9')"
@@ -241,7 +243,7 @@ else
   remote_checks
 fi
 
-head "Result"
+section "Result"
 printf '  %d passed, %d failed, %d skipped\n\n' "$passed" "$failed" "$skipped"
 
 [ "$failed" -eq 0 ] || exit 1
