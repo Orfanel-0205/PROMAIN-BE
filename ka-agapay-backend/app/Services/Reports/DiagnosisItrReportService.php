@@ -33,11 +33,12 @@ class DiagnosisItrReportService
 
         $query
             ->whereRaw("LOWER(COALESCE(c.status, '')) = 'completed'")
+            // Philippine days, whether the column is a date or a UTC timestamp.
             ->when($filters['date_from'] ?? $filters['from'] ?? null, function ($q, $from) use ($dateColumn) {
-                $q->where("c.{$dateColumn}", '>=', Carbon::parse($from)->startOfDay());
+                \App\Support\LocalTime::whereInDays($q, "c.{$dateColumn}", (string) $from, null);
             })
             ->when($filters['date_to'] ?? $filters['to'] ?? null, function ($q, $to) use ($dateColumn) {
-                $q->where("c.{$dateColumn}", '<=', Carbon::parse($to)->endOfDay());
+                \App\Support\LocalTime::whereInDays($q, "c.{$dateColumn}", null, (string) $to);
             })
             // Per-patient view (Patient Profile) reuses this exact ITR field set
             // by scoping to one patient's consultations. Additive — the report

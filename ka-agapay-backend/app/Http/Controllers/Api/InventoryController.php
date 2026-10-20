@@ -725,7 +725,12 @@ class InventoryController extends Controller
             ->where('event_type', '!=', 'announcement')
             ->where(function ($query) use ($from, $until) {
                 $query->whereBetween('starts_at', [$from, $until])
-                    ->orWhere(fn ($dated) => $dated->whereNull('starts_at')->whereBetween('event_date', [$from, $until]));
+                    // event_date is a calendar date: compare dates, not the
+                    // UTC instants above (which read as the day before).
+                    ->orWhere(fn ($dated) => $dated->whereNull('starts_at')->whereBetween('event_date', [
+                        LocalTime::today()->subDays(7)->toDateString(),
+                        LocalTime::today()->addDays(7)->toDateString(),
+                    ]));
             })
             ->orderByRaw('COALESCE(starts_at, event_date) DESC')
             ->limit(50)

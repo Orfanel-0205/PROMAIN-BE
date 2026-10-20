@@ -88,13 +88,8 @@ class TelemedicineController extends Controller
         $from = trim((string) $request->query('from', ''));
         $to = trim((string) $request->query('to', ''));
 
-        if ($from !== '') {
-            $query->whereDate('created_at', '>=', $from);
-        }
-
-        if ($to !== '') {
-            $query->whereDate('created_at', '<=', $to);
-        }
+        // Philippine days; created_at is stored in UTC.
+        \App\Support\LocalTime::whereInDays($query, 'created_at', $from !== '' ? $from : null, $to !== '' ? $to : null);
 
         $this->applyTelemedicineBoardFilter($query, $request);
 

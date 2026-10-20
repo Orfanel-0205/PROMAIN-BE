@@ -26,8 +26,8 @@ class HeatmapAnalyticsService
     }
 
     $days = $range === 'month' ? 30 : 7;
-    $from = now()->subDays($days)->startOfDay();
-    $to = now()->endOfDay();
+    $from = Carbon::parse(\App\Support\LocalTime::today()->subDays($days)->toDateString())->startOfDay();
+    $to = Carbon::parse(\App\Support\LocalTime::todayDate())->endOfDay();
 
     $rhuId = Rhu::normalizeRhuId($rhuId);
     $barangays = $this->barangays();
@@ -257,7 +257,7 @@ class HeatmapAnalyticsService
             ->selectRaw("{$barangayExpr} as barangay_id")
             ->selectRaw("{$textExpr} as case_type")
             ->selectRaw("'{$source}' as source")
-            ->whereBetween("{$alias}.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "{$alias}.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             ->when(trim((string) $diseaseFilter) !== '', function ($q) use ($textExpr, $like, $diseaseFilter) {
                 $q->whereRaw("{$textExpr} {$like} ?", ['%' . trim((string) $diseaseFilter) . '%']);
             })
@@ -361,7 +361,7 @@ class HeatmapAnalyticsService
             ->selectRaw("{$barangayExpr} as barangay_id")
             ->selectRaw("{$textExpr} as case_type")
             ->selectRaw("'chatbot' as source")
-            ->whereBetween("cm.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "cm.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             ->when($roleColumn, function ($q) use ($roleColumn) {
                 $q->where(function ($inner) use ($roleColumn) {
                     $inner->whereNull("cm.{$roleColumn}")

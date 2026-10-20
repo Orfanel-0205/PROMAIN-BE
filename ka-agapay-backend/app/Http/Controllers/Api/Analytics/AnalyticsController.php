@@ -234,7 +234,7 @@ class AnalyticsController extends Controller
 
         $rows = DB::table('ai_triage_scores')
             ->selectRaw('recommended_urgency, COUNT(*) as total, AVG(confidence) as avg_confidence')
-            ->whereBetween('created_at', [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()))
             ->groupBy('recommended_urgency')
             ->get();
 
@@ -265,7 +265,7 @@ class AnalyticsController extends Controller
 
         $rows = DB::table('event_registrations')
             ->selectRaw("COALESCE(status, 'registered') as status, COUNT(*) as count")
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->groupByRaw("COALESCE(status, 'registered')")
             ->orderByDesc('count')
             ->get()
@@ -293,7 +293,7 @@ class AnalyticsController extends Controller
             return 0;
         }
 
-        $query = DB::table('chat_messages')->whereBetween('created_at', [$from, $to]);
+        $query = DB::table('chat_messages')->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()));
 
         if (
             Schema::hasColumn('chat_messages', 'chat_session_id') &&
@@ -332,7 +332,7 @@ class AnalyticsController extends Controller
             ? 'content'
             : (Schema::hasColumn($messagesTable, 'message') ? 'message' : null);
 
-        $query = DB::table($messagesTable)->whereBetween('created_at', [$from, $to]);
+        $query = DB::table($messagesTable)->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()));
 
         // Chatbot reports collect RESIDENT chats/prompts ONLY. Staff/admin
         // assistant conversations (audience = 'staff' on the session) must
@@ -355,8 +355,8 @@ class AnalyticsController extends Controller
         }
 
         $byDay = (clone $query)
-            ->selectRaw('DATE(created_at) as date, COUNT(*) as total')
-            ->groupByRaw('DATE(created_at)')
+            ->selectRaw(\App\Support\LocalTime::sqlDate('created_at') . ' as date, COUNT(*) as total')
+            ->groupByRaw(\App\Support\LocalTime::sqlDate('created_at'))
             ->orderBy('date')
             ->get();
 
@@ -551,11 +551,11 @@ class AnalyticsController extends Controller
     {
         $to = $request->filled('to')
             ? Carbon::parse($request->query('to'))->endOfDay()
-            : now()->endOfDay();
+            : Carbon::parse(\App\Support\LocalTime::todayDate())->endOfDay();
 
         $from = $request->filled('from')
             ? Carbon::parse($request->query('from'))->startOfDay()
-            : now()->subDays(30)->startOfDay();
+            : Carbon::parse(\App\Support\LocalTime::today()->subDays(30)->toDateString())->startOfDay();
 
         return [$from, $to];
     }
@@ -752,7 +752,9 @@ class AnalyticsController extends Controller
             }
 
             try {
-                $date = Carbon::parse($raw);
+                // On the Philippine clock: a visit at 7:30 AM belongs to that
+                // day, not the previous one (timestamps are stored in UTC).
+                $date = \App\Support\LocalTime::fromStored($raw);
             } catch (\Throwable) {
                 continue;
             }
@@ -816,7 +818,7 @@ class AnalyticsController extends Controller
             : (Schema::hasColumn('consultations', 'consultation_date') ? 'consultation_date' : 'created_at');
 
         $query = DB::table('consultations as c')
-            ->whereBetween("c.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "c.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn('consultations', 'status'), function ($q) {
                 $q->whereIn('c.status', ['completed', 'done', 'served']);
             });
@@ -857,7 +859,7 @@ class AnalyticsController extends Controller
         }
 
         return DB::table($table)
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->when($statuses && Schema::hasColumn($table, 'status'), fn ($q) => $q->whereIn('status', $statuses))
             ->pluck($dateColumn);
@@ -900,7 +902,7 @@ class AnalyticsController extends Controller
         }
 
         $base = DB::table('queue_tickets')
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('deleted_at'));
 
@@ -912,7 +914,8 @@ class AnalyticsController extends Controller
 
         foreach ($timestamps as $raw) {
             try {
-                $hour = (int) Carbon::parse($raw)->format('G');
+                // The Philippine hour: 01:00 UTC is a 9 AM ticket, not 1 AM.
+                $hour = (int) \App\Support\LocalTime::fromStored($raw)->format('G');
                 $byHour[$hour] += 1;
             } catch (\Throwable) {
                 continue;
@@ -996,7 +999,7 @@ class AnalyticsController extends Controller
 
         $rawRows = DB::table($table)
             ->selectRaw("COALESCE(status, 'unknown') as raw_status, COUNT(*) as count")
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn($table, 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->groupByRaw("COALESCE(status, 'unknown')")
             ->get();
@@ -1073,7 +1076,7 @@ class AnalyticsController extends Controller
         }
 
         $query = DB::table('event_registrations as er')
-            ->whereBetween("er.{$dateColumn}", [$from, $to]);
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "er.{$dateColumn}", $from->toDateString(), $to->toDateString()));
 
         $eventLabelExpr = "CONCAT('Event #', er.event_id)";
         $eventTypeExpr = "'event'";
@@ -1174,7 +1177,7 @@ class AnalyticsController extends Controller
             if ($levelColumn) {
                 $stored = DB::table('ai_triage_scores')
                     ->selectRaw("COALESCE({$levelColumn}, 'low') as triage_level, COUNT(*) as count")
-                    ->whereBetween('created_at', [$from, $to])
+                    ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()))
                     ->groupByRaw("COALESCE({$levelColumn}, 'low')")
                     ->get();
 
@@ -1205,7 +1208,7 @@ class AnalyticsController extends Controller
         }
 
         $query = DB::table('queue_tickets as q')
-            ->whereBetween("q.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "q.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'q.rhu_id'))
             ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('q.deleted_at'));
 
@@ -1305,7 +1308,7 @@ class AnalyticsController extends Controller
         }
 
         $rows = DB::table('queue_counters')
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn('queue_counters', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->get();
 
@@ -1388,7 +1391,7 @@ class AnalyticsController extends Controller
         }
 
         $query = DB::table('queue_tickets as q')
-            ->whereBetween("q.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "q.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             ->when(Schema::hasColumn('queue_tickets', 'rhu_id'), fn ($q) => $this->scopeRhu($q, $rhuId, 'q.rhu_id'))
             ->when(Schema::hasColumn('queue_tickets', 'deleted_at'), fn ($q) => $q->whereNull('q.deleted_at'));
 
@@ -1627,7 +1630,7 @@ class AnalyticsController extends Controller
 
             $count = (int) DB::table($table)
                 ->whereNotNull($column)
-                ->whereBetween($column, [$from, $to])
+                ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $column, $from->toDateString(), $to->toDateString()))
                 ->count();
 
             if ($count > 0) {
@@ -1747,7 +1750,7 @@ class AnalyticsController extends Controller
         }
 
         return (int) DB::table($table)
-            ->whereBetween($column, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $column, $from->toDateString(), $to->toDateString()))
             ->when($scoped, fn ($q) => $this->scopeRhu($q, $rhuId, 'rhu_id'))
             ->count();
     }
@@ -1803,7 +1806,7 @@ class AnalyticsController extends Controller
             ->selectRaw("{$barangayExpr} as barangay")
             ->selectRaw("COUNT(*) as total_cases")
             ->selectRaw("{$complaintExpr} as top_complaint")
-            ->whereBetween("c.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "c.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             /*
              * Which barangays this facility serves.
              *
@@ -1923,7 +1926,7 @@ class AnalyticsController extends Controller
         return DB::table('consultations')
             ->selectRaw("{$complaintExpr} as complaint")
             ->selectRaw("COUNT(*) as total")
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             // Coverage, as in barangayCases above.
             ->when(
                 $rhuId !== null
@@ -1974,7 +1977,7 @@ class AnalyticsController extends Controller
         }
 
         $total = DB::table('telemedicine_sessions')
-            ->whereBetween('created_at', [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()))
             ->count();
 
         if ($total === 0) {
@@ -1982,7 +1985,7 @@ class AnalyticsController extends Controller
         }
 
         $completed = DB::table('telemedicine_sessions')
-            ->whereBetween('created_at', [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()))
             ->whereIn('status', ['ended', 'completed'])
             ->count();
 

@@ -132,6 +132,71 @@ final class LocalTime
     }
 
     /**
+     * A calendar-date column (appointment_date, consultation_date, valid_until,
+     * ...) rather than a UTC timestamp (created_at, issued_at, ...). Reports
+     * pick their column at run time, so they ask.
+     */
+    public static function isDateColumn(string $column): bool
+    {
+        $name = str_contains($column, '.') ? substr((string) strrchr($column, '.'), 1) : $column;
+
+        return $name === 'date' || $name === 'valid_until' || str_ends_with($name, '_date');
+    }
+
+    /**
+     * Keep rows from one Philippine date to another, both included, whichever
+     * kind of column it is. Either bound may be left out. Dates are "Y-m-d".
+     *
+     * Replaces whereBetween($column, [$from, $to]) with UTC-midnight bounds,
+     * which put everything from midnight to 8:00 AM in Manila on the
+     * previous day.
+     *
+     * @template TQuery of EloquentBuilder|QueryBuilder
+     * @param  TQuery  $query
+     * @return TQuery
+     */
+    public static function whereInDays(EloquentBuilder|QueryBuilder $query, string $column, ?string $from, ?string $to): EloquentBuilder|QueryBuilder
+    {
+        if (self::isDateColumn($column)) {
+            if ($from !== null && $from !== '') {
+                $query->whereDate($column, '>=', Carbon::parse($from)->toDateString());
+            }
+            if ($to !== null && $to !== '') {
+                $query->whereDate($column, '<=', Carbon::parse($to)->toDateString());
+            }
+
+            return $query;
+        }
+
+        if ($from !== null && $from !== '') {
+            $query->where($column, '>=', self::dayRange($from)[0]);
+        }
+        if ($to !== null && $to !== '') {
+            $query->where($column, '<', self::dayRange($to)[1]);
+        }
+
+        return $query;
+    }
+
+    /**
+     * A value read straight from the database, on the Philippine clock. A
+     * date ("2026-10-21") is that date; a timestamp is UTC and is converted,
+     * so 01:00 UTC is 9:00 AM -- the hour a chart should show.
+     */
+    public static function fromStored(DateTimeInterface|string $value): CarbonImmutable
+    {
+        if ($value instanceof DateTimeInterface) {
+            return CarbonImmutable::instance($value)->setTimezone(self::zone());
+        }
+
+        $value = trim($value);
+
+        return strlen($value) <= 10
+            ? CarbonImmutable::parse($value, self::zone())
+            : CarbonImmutable::parse($value, 'UTC')->setTimezone(self::zone());
+    }
+
+    /**
      * SQL for the Philippine date of a timestamp column, for grouping by day.
      * The column holds UTC without a zone, so it is read as UTC first.
      */

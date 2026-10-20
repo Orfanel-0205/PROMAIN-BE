@@ -166,11 +166,11 @@ class DashboardController extends Controller
     {
         $to = $request->filled('to')
             ? Carbon::parse($request->query('to'))->endOfDay()
-            : now()->endOfDay();
+            : Carbon::parse(\App\Support\LocalTime::todayDate())->endOfDay();
 
         $from = $request->filled('from')
             ? Carbon::parse($request->query('from'))->startOfDay()
-            : now()->subDays(30)->startOfDay();
+            : Carbon::parse(\App\Support\LocalTime::today()->subDays(30)->toDateString())->startOfDay();
 
         return [$from, $to];
     }
@@ -344,7 +344,7 @@ class DashboardController extends Controller
         return DB::table('consultations')
             ->selectRaw("DATE({$dateColumn}) as date")
             ->selectRaw("COUNT(*) as total")
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->groupByRaw("DATE({$dateColumn})")
             ->orderBy('date')
             ->get()
@@ -388,7 +388,7 @@ class DashboardController extends Controller
         }
 
         $base = DB::table('telemedicine_sessions')
-            ->whereBetween('created_at', [$from, $to]);
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, 'created_at', $from->toDateString(), $to->toDateString()));
 
         return [
             'total' => (int) (clone $base)->count(),
@@ -440,7 +440,7 @@ class DashboardController extends Controller
         return $query
             ->selectRaw("{$barangayExpr} as barangay")
             ->selectRaw("COUNT(*) as total")
-            ->whereBetween("c.{$dateColumn}", [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, "c.{$dateColumn}", $from->toDateString(), $to->toDateString()))
             ->groupByRaw($barangayExpr)
             ->orderByDesc('total')
             ->limit(10)
@@ -483,7 +483,7 @@ class DashboardController extends Controller
         return DB::table('consultations')
             ->selectRaw("{$complaintExpr} as complaint")
             ->selectRaw("COUNT(*) as total")
-            ->whereBetween($dateColumn, [$from, $to])
+            ->tap(fn ($q) => \App\Support\LocalTime::whereInDays($q, $dateColumn, $from->toDateString(), $to->toDateString()))
             ->groupByRaw($complaintExpr)
             ->orderByDesc('total')
             ->limit(10)
