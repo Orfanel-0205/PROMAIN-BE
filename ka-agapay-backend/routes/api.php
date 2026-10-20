@@ -994,7 +994,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/system-stats', [AdminController::class, 'systemStats']);
 
 
-                Route::get('/events',                [EventController::class, 'adminIndex']);
+                // GET /events (the list) moved to the event-day group below.
                 Route::post('/events',               [EventController::class, 'store']);
                 Route::put('/events/{id}',           [EventController::class, 'update']);
                 Route::post('/events/{id}',          [EventController::class, 'update']);
@@ -1016,6 +1016,11 @@ Route::prefix('v1')->group(function () {
         Route::middleware('role:admin,staff,staff_admin,rhu_admin,super_admin,mho,doctor,nurse,midwife,bhw')
             ->prefix('admin')
             ->group(function () {
+                // The list, read-only, so the staff running an event can find
+                // it. It sat with the CMS routes above, which left a nurse able
+                // to check residents in and unable to reach the page that does
+                // it (Oct 2026). Posting and editing stay above.
+                Route::get('/events', [EventController::class, 'adminIndex']);
                 Route::get('/events/{id}/registrants', [EventController::class, 'registrants']);
                 Route::patch('/events/{id}/registrants/{registrationId}/attendance', [EventController::class, 'markAttendance']);
                 // Came without registering (a patient account, or a name and barangay).
