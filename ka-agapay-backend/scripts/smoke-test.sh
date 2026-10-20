@@ -22,7 +22,7 @@
 
 set -uo pipefail
 
-BASE_URL="${BASE_URL:-https://rhu-kaagapay.129-212-236-47.sslip.io}"
+BASE_URL="${BASE_URL:-https://rhukaagapaymsq.com}"
 ADMIN_URL="${ADMIN_URL:-$BASE_URL}"
 API="$BASE_URL/api/v1"
 APP_DIR="${APP_DIR:-/var/www/ka-agapay-backend/ka-agapay-backend}"
