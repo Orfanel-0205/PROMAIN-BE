@@ -28,5 +28,10 @@
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
+        <!-- Never the live keys from .env: tests once sent real SMS (Oct 2026). -->
+        <env name="SEMAPHORE_API_KEY" value="testing-no-sms" force="true"/>
+        <env name="SEMAPHORE_BASE_URL" value="http://127.0.0.1:9/api/v4" force="true"/>
+        <env name="GEMINI_API_KEY" value="testing-no-ai" force="true"/>
+        <env name="EXPO_ACCESS_TOKEN" value="" force="true"/>
     </php>
 </phpunit>
