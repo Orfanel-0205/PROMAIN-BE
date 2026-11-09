@@ -111,6 +111,19 @@ php artisan jitsi:doctor    # presence, path, permissions, validity — never pr
 
 ## 3. Deploying the backend
 
+> **The repository is private (Nov 2026), so the droplet needs its own key to
+> pull.** Anonymous `git pull` answers "could not read Username". Set up once,
+> as root on the droplet:
+> ```bash
+> ssh-keygen -t ed25519 -N "" -C "ka-agapay-server-deploy" -f /root/.ssh/promain_deploy
+> cat /root/.ssh/promain_deploy.pub   # paste into GitHub → PROMAIN-BE → Settings → Deploy keys, read-only
+> printf 'Host github-promain\n  HostName github.com\n  User git\n  IdentityFile /root/.ssh/promain_deploy\n  IdentitiesOnly yes\n' >> /root/.ssh/config
+> cd /var/www/ka-agapay-backend && git remote set-url origin git@github-promain:Orfanel-0205/PROMAIN-BE.git
+> git fetch   # must succeed before you rely on it
+> ```
+> A deploy key opens that one repository, read-only, and nothing else. To hand
+> over, delete it on GitHub and repeat with a new one.
+
 1. SSH to the droplet, `cd` into the directory containing `artisan`.
 2. **Take a database snapshot first** (§7) so a bad migration is recoverable.
 3. Pull and install:
@@ -711,6 +724,35 @@ cannot be switched off.
 
 ---
 
+## 9c. Signatures, offline saving and AI dictation (Nov 2026)
+
+**Signatures.** `staff_signatures` holds one row per saved version; the PNG is
+on the private disk under `storage/app/private/signatures/{user_id}/`. Rows and
+files are never deleted: a removed signature is only *revoked*, because
+documents issued while it was in force must keep showing it. A document shows
+the version in force at its `created_at` (prescriptions, lab requests) or the
+consultation's `completed_at` (ITR, signed by `consultations.completed_by`).
+Saving and removing are audited (`signature.saved`, `signature.removed`) and
+need the account password. Only the `mho` and `doctor` roles sign.
+Tests: `tests/Feature/Signature/StaffSignatureTest.php`.
+
+**Offline saving.** The admin and the app keep a save that got no answer and
+resend it with the same `Idempotency-Key` header. `IdempotentRequests` (api
+middleware group) stores the first answer per user and key in the cache for a
+day and replays it, so a resend is done once. It uses the default cache store
+(`file` in production); clearing the cache only forgets keys, it never
+duplicates anything already sent. CORS allows the header
+(`config/cors.php`). Tests: `tests/Feature/Offline/IdempotentRequestsTest.php`.
+
+**AI dictation.** `POST /api/v1/ai/transcribe` (staff roles, 20 a minute) sends
+a 16 kHz WAV to Gemini with the languages and barangays to expect and returns
+the words; nothing is stored. When it answers 503, Gemini is down or the key
+is wrong: `php artisan gemini:test`. The Google project must be on a paid tier
+before staff dictate patient notes (`HANDOVER-CHECKLIST.md` §5).
+Tests: `tests/Feature/Assistant/TranscriptionTest.php`.
+
+---
+
 ## 9b. Smoke test after every deploy
 
 One script answers "is it working right now", in two halves.
@@ -842,6 +884,7 @@ left implicit it is what stops happening the moment the original team graduates.
 
 ---
 
-*Last updated: 1 September 2026, during the pre-handover hardening pass.
+*Last updated: 8 November 2026 (signatures, offline saving, AI dictation, private
+repository). First written 1 September 2026, during the pre-handover hardening pass.
 Items still requiring a human at the droplet terminal are listed in
 `docs/HANDOVER-CHECKLIST.md`.*

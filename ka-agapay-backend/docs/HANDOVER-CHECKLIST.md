@@ -33,8 +33,11 @@ can access it — one of whom is a permanent staff member, not a student.
 
 ### Where the source code lives
 
-Three private repositories under the `Orfanel-0205` GitHub account. Anyone
-maintaining this system needs access to all three (see the GitHub row above).
+Three private repositories under the `Orfanel-0205` GitHub account (made
+private in Nov 2026). Anyone maintaining this system needs access to all three
+(see the GitHub row above). Because they are private, the server downloads the
+backend with its own read-only **deploy key** (GitHub → PROMAIN-BE → Settings →
+Deploy keys), not anonymously; `OPERATIONS.md` §3 says how to set it up or replace it.
 
 | Part of the system | Repository |
 |---|---|
@@ -59,7 +62,9 @@ maintaining this system needs access to all three (see the GitHub row above).
 >
 > Domain registration usually renews annually and is easy to forget. If it
 > lapses, the website and the mobile app both stop working and the HTTPS
-> certificate cannot renew. **Record the renewal date here:** `__________`
+> certificate cannot renew. **Record the renewal date here:** `20 October 2027`
+> (`rhukaagapaymsq.com`, registered 20 Oct 2026 at Spaceship, transfer-locked;
+> a move to another registrar is possible only after 19 Dec 2026)
 > — and set a calendar reminder 60 days before.
 
 ### Credentials
@@ -135,7 +140,9 @@ ones need people, not code.
       send. This is the single most commonly missed item.
 - [x] **The HTTPS certificate renews automatically**, and renewal has been tested
       *(8 Oct 2026: certbot.timer active; `certbot renew --dry-run` — "all simulated
-      renewals succeeded"; current certificate valid to 16 Nov 2026)*
+      renewals succeeded"; current certificate valid to 16 Nov 2026. Re-checked
+      7 Nov 2026 after the move to rhukaagapaymsq.com: certificate valid to
+      18 Jan 2027, timer active.)*
       — not just assumed. Certificates expire every 90 days and take down the
       website and mobile app together.
 - [ ] **Video calling has been tested on real devices** — a patient on a phone
@@ -158,7 +165,7 @@ the backups are unproven again.**
 | Date performed | Dump file restored | By whom | Row counts looked right? |
 |---|---|---|---|
 | 1 Oct 2026 | `kaagapay_db_2026-10-01_020002.sql.gz` | monthly drill (`kaagapay-restore-drill.sh`) | Yes — every table matched; "PASS" |
-| `__________` | `__________` | `__________` | `__________` |
+| 1 Nov 2026 | `kaagapay_db_2026-11-01_020002.sql.gz` | monthly drill (`kaagapay-restore-drill.sh`) | Yes — every table matched; "PASS" |
 | `__________` | `__________` | `__________` | `__________` |
 
 ### Should be scheduled, not just noted
@@ -189,9 +196,36 @@ Assign a **named person** to each row. "IT will handle it" is not an assignment.
 These are honest, current limits of the system. They are not faults to be
 reported; they are things to plan around.
 
-- **The system needs a working internet connection.** There is no offline mode.
-  BHWs doing barangay visits in low-coverage areas cannot record anything on the
-  spot — this is documented future work.
+- **Offline is partial (Nov 2026).** When the connection drops, these are kept on
+  the computer or phone and sent by themselves when it returns, done once even if
+  sent twice: in the admin, event walk-ins, walk-in queue tickets, follow-ups and
+  SOAP drafts (typed SOAP notes are also autosaved); in the app, bookings, event
+  sign-ups and health follow-ups. A banner shows what is waiting, and anything
+  the server refuses later is listed with the reason. Everything else -- signing
+  in, searching, completing a consultation, prescriptions, video calls -- still
+  needs a connection, and a queue number is only given once the request reaches
+  the server.
+- **Dr. Quack offline answers from a short book in the app**, not from the AI:
+  danger signs, first aid, fever, dengue, diarrhoea, bites, burns, pregnancy,
+  blood pressure, the RHUs and hotlines (`KaAgapay-mobile/services/offlineAnswers.ts`).
+  **A nurse or doctor should read that file before each app release.** Its
+  medical text is Tagalog and English; in Pangasinan mode a Pangasinan line
+  introduces the Tagalog text until a native speaker adds a checked translation.
+  The new short Pangasinan screen texts (`outbox_*` in `constants/i18n.ts`, and
+  the offline lines in `screens/ChatbotScreen.tsx`) also need that reading.
+- **AI dictation sends the recording to Google's Gemini service** (Pangasinan,
+  Ilocano and mixed-language dictation in the admin). The recording is not kept
+  by the system, but it may contain patient details. Make sure the Google AI
+  Studio project is on a **paid (billing-enabled) tier**: Google's terms let it
+  use free-tier prompts to improve its products. Filipino and English dictation
+  still uses the browser's own recogniser (also Google's, in Chrome).
+- **Signatures (Nov 2026).** The MHO and doctors save their own (draw it, or upload
+  a photo and the paper is removed) under My Profile → My Signature, with their
+  password. It prints on prescriptions, lab requests and ITRs issued after it was
+  saved, never on controlled-drug prescriptions (official DDB form), and old
+  versions are kept so issued documents never change. It is an image signature,
+  not a certified digital signature: confirm with the MHO which outside pharmacies
+  and laboratories accept it.
 - **SMS messages are summaries only** (schedules, reminders). They never contain
   medical detail, by design and by data-privacy policy.
 - **Telemedicine is for non-emergency consultations only.** It does not replace

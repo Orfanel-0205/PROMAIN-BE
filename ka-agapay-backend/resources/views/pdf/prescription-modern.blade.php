@@ -227,6 +227,19 @@
             margin-bottom: 5px;
         }
 
+        /* The prescriber's saved signature (StaffSignatures), resting on the line. */
+        .signature-image {
+            height: 44px;
+            max-width: 90%;
+            margin-top: 2px;
+        }
+
+        .signature-note {
+            font-size: 9px;
+            color: #b45309;
+            margin-top: 3px;
+        }
+
         .signature-name {
             font-weight: bold;
             color: #0f172a;
@@ -359,9 +372,16 @@
 
         <div class="signature-row">
             <div class="signature-box">
-                <div class="signature-space"></div>
+                <div class="signature-space">
+                    @if (!empty($signatureImage))
+                        <img src="{{ $signatureImage }}" class="signature-image" alt="">
+                    @endif
+                </div>
                 <div class="signature-name">{{ $doctorName }}</div>
                 <div class="signature-title">Authorized RHU Staff / Physician</div>
+                @if (!empty($controlledDrug))
+                    <div class="signature-note">Controlled drug: valid only on the official DDB prescription form with a wet signature.</div>
+                @endif
             </div>
 
             <div class="signature-box" style="float: right;">

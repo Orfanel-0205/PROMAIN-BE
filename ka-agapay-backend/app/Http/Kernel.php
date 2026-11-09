@@ -49,6 +49,11 @@ class Kernel extends HttpKernel
             \App\Http\Middleware\SecurityHeaders::class,
 
             \Illuminate\Routing\Middleware\ThrottleRequests::class . ':api',
+
+            // A save resent after a lost connection is done once, not twice
+            // (the admin's and the app's offline outbox).
+            \App\Http\Middleware\IdempotentRequests::class,
+
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
         ],
     ];

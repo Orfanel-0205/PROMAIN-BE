@@ -21,6 +21,7 @@ use App\Http\Controllers\Api\WebRtcController;
 use App\Http\Controllers\Api\OcrController;
 use App\Http\Controllers\Api\ApprovalController;
 use App\Http\Controllers\Api\Ai\AiController;
+use App\Http\Controllers\Api\Ai\TranscriptionController;
 use App\Http\Controllers\Api\Analytics\AnalyticsController;
 use App\Http\Controllers\Api\Analytics\AnalyticsInsightController;
 use App\Http\Controllers\Api\Queue\QueueController;
@@ -42,6 +43,7 @@ use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\AdminDeletedRecordController;
 use App\Http\Controllers\Api\ConsultationController;
+use App\Http\Controllers\Api\StaffSignatureController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\BiometricController;
 use App\Http\Controllers\Api\BarangayController;
@@ -233,6 +235,19 @@ Route::prefix('v1')->group(function () {
 
                 // One-time "Getting Started" tour flag for the current user.
                 Route::post('/admin/profile/onboarding-seen', [AdminProfileController::class, 'markOnboardingSeen']);
+            });
+
+        // My Signature: the MHO's and doctors' own, for the prescriptions,
+        // lab requests and ITRs they issue (StaffSignatures).
+        Route::middleware('role:mho,doctor')
+            ->group(function () {
+                Route::get('/admin/profile/signature', [StaffSignatureController::class, 'show']);
+                Route::post('/admin/profile/signature/preview', [StaffSignatureController::class, 'preview'])
+                    ->middleware('throttle:30,1');
+                Route::post('/admin/profile/signature', [StaffSignatureController::class, 'store'])
+                    ->middleware('throttle:10,1');
+                Route::delete('/admin/profile/signature', [StaffSignatureController::class, 'destroy'])
+                    ->middleware('throttle:10,1');
             });
 
         // =====================================================================
@@ -596,6 +611,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/consultations',      [ConsultationController::class, 'index']);
                 Route::post('/consultations',     [ConsultationController::class, 'store']);
                 Route::get('/consultations/{id}', [ConsultationController::class, 'show']);
+                Route::get('/consultations/{id}/signature', [StaffSignatureController::class, 'forConsultation']);
             });
 
         // Writing a SOAP, as on the MHO's Individual Treatment Record: nurses,
@@ -879,6 +895,10 @@ Route::prefix('v1')->group(function () {
         // =====================================================================
 
         Route::prefix('ai')->group(function () {
+            // Dictation in Pangasinan, Ilocano and mixed speech, for staff.
+            Route::post('/transcribe', [TranscriptionController::class, 'store'])
+                ->middleware(['role:admin,staff,rhu_admin,super_admin,mho,doctor,nurse,midwife,bhw', 'throttle:20,1']);
+
             Route::post('/triage',                   [AiController::class, 'triage']);
             Route::post('/triage/telemedicine/{id}', [AiController::class, 'triageTelemedicine']);
             Route::post('/triage/queue/{id}',        [AiController::class, 'triageQueue']);

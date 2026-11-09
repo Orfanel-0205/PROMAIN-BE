@@ -518,6 +518,7 @@ class ConsultationController extends Controller
                 $consultation->update($this->filterConsultationPayload([
                     'status' => 'completed',
                     'completed_at' => now(),
+                    'completed_by' => $this->currentUserId($request),
                     'attended_by' => $consultation->attended_by ?: $this->currentUserId($request),
                     'diagnosis' => $consultation->diagnosis ?: $consultation->assessment,
                     'treatment' => $consultation->treatment ?: $consultation->plan,
@@ -572,6 +573,7 @@ class ConsultationController extends Controller
             $completedAt = now();
 
             $updates['completed_at'] = $completedAt;
+            $updates['completed_by'] = $this->currentUserId($request);
 
             // 3-hour fresh heatmap signal window.
             // This is only for realtime/freshness visibility.

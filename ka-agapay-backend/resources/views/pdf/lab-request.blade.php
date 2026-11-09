@@ -105,6 +105,22 @@
             text-align: center;
             padding-top: 12px;
         }
+        /*
+            The requester's saved signature (StaffSignatures) sits in the
+            footer's top margin and overlaps its line, as a pen signature
+            would, so the request stays one page.
+        */
+        .footer.signed {
+            margin-top: 4px;
+        }
+        .signature-image-row {
+            text-align: center;
+            height: 30px;
+        }
+        .signature-image {
+            height: 40px;
+            max-width: 90%;
+        }
         .muted {
             color: #4B5563;
             font-size: 11px;
@@ -230,8 +246,11 @@
         <div class="notes">{{ $notes ?: ' ' }}</div>
     </div>
 
-    <div class="footer">
+    <div class="footer{{ !empty($signatureImage) ? ' signed' : '' }}">
         <div class="footer-cell">
+            @if (!empty($signatureImage))
+                <div class="signature-image-row"><img src="{{ $signatureImage }}" class="signature-image" alt=""></div>
+            @endif
             <div class="signature-line">{{ $requestedBy ?: ' ' }}</div>
             <div class="muted" style="text-align: center;">Requested by</div>
         </div>

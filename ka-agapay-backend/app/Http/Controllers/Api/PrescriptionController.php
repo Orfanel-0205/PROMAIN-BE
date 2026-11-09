@@ -11,6 +11,7 @@ use App\Services\Prescription\PrescriptionService;
 use App\Support\LabTestCatalogue;
 use App\Support\Rhu;
 use App\Support\SensitiveFiles;
+use App\Support\StaffSignatures;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -953,12 +954,21 @@ class PrescriptionController extends Controller
 
         $medications = $this->decodeMedications($row->medications ?? '[]');
 
+        // A dangerous drug is prescribed on the official DDB form with a wet
+        // signature (RA 9165), so this copy is never signed for one.
+        $controlledDrug = collect($medications)
+            ->contains(fn ($medication) => is_array($medication) && filter_var($medication['is_controlled'] ?? false, FILTER_VALIDATE_BOOLEAN));
+
         $data = [
             'prescriptionNo' => $row->prescription_number ?? ('RX-' . $row->id),
             'date' => $this->formatLongDate($row->prescription_date ?? \App\Support\LocalTime::todayDate()),
             'validUntil' => $this->formatLongDate($row->valid_until ?? \App\Support\LocalTime::today()->addDays(7)->toDateString()),
             'patientName' => $this->patientName((int) $row->resident_profile_id),
             'doctorName' => $this->prescriberName((int) ($row->prescribed_by ?? 0)),
+            'signatureImage' => $controlledDrug
+                ? null
+                : StaffSignatures::forDocument((int) ($row->prescribed_by ?? 0), $row->created_at ?? null),
+            'controlledDrug' => $controlledDrug,
             'diagnosis' => $row->diagnosis ?: 'For clinical management',
             'diagnosisCode' => $row->diagnosis_code ?? null,
             'medicines' => $this->normalizeMedicinesForPdf($medications),
@@ -988,6 +998,7 @@ class PrescriptionController extends Controller
             'clinicalImpression' => $row->clinical_impression ?: ($row->diagnosis ?: ''),
             'consultationId' => $row->consultation_id ?? null,
             'requestedBy' => $this->prescriberName((int) ($row->prescribed_by ?? 0)),
+            'signatureImage' => StaffSignatures::forDocument((int) ($row->prescribed_by ?? 0), $row->created_at ?? null),
             'licenseNumber' => $this->prescriberLicenseNumber((int) ($row->prescribed_by ?? 0)),
             'priority' => $row->priority ?: 'routine',
             'reason' => $row->request_reason ?? '',

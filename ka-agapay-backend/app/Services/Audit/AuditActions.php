@@ -74,6 +74,10 @@ class AuditActions
     public const PRESCRIPTION_CANCELLED = 'prescription.cancelled';
     public const PRESCRIPTION_EXPIRED = 'prescription.expired';
 
+    // My Profile → My Signature (MHO and doctors). The image is not recorded.
+    public const SIGNATURE_SAVED = 'signature.saved';
+    public const SIGNATURE_REMOVED = 'signature.removed';
+
     // Referrals
     public const REFERRAL_CREATED = 'referral.created';
     public const REFERRAL_ACKNOWLEDGED = 'referral.acknowledged';

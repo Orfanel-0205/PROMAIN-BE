@@ -26,6 +26,8 @@ class Consultation extends Model
         'notes',
         'started_at',
         'completed_at',
+        // Who completed it: the ITR's signer (StaffSignatures).
+        'completed_by',
 
         // Slice B1 — visit tracking (additive)
         'first_attended_at',

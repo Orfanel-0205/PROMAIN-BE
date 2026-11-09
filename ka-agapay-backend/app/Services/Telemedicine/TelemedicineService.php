@@ -676,6 +676,8 @@ class TelemedicineService
             if ($finalize) {
                 $consultationUpdates['status'] = 'completed';
                 $consultationUpdates['completed_at'] = $now;
+                // The doctor finalizing the call signs the ITR (StaffSignatures).
+                $consultationUpdates['completed_by'] = auth()->id() ?: $session->assigned_doctor_id;
 
                 if (Schema::hasColumn('consultations', 'heatmap_posted_at')) {
                     $consultationUpdates['heatmap_posted_at'] = $now;

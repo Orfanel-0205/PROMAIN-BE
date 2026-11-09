@@ -58,7 +58,8 @@ return [
 
     'allowed_origins_patterns' => [],
 
-    'allowed_headers' => ['Content-Type', 'Authorization', 'X-Requested-With'],
+    // Idempotency-Key: the offline outbox's resend marker (IdempotentRequests).
+    'allowed_headers' => ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key'],
 
     'exposed_headers' => [],
 

@@ -851,10 +851,21 @@ class GeminiService
 
         $lines = [];
 
+        /*
+         * Residents of Malasiqui speak Pangasinan first, often mixed with
+         * Tagalog, Ilocano and English in one sentence. Told to expect only
+         * one language, the model "heard" Pangasinan as garbled Tagalog. The
+         * one-line restatement lets a resident see at once that they were
+         * misheard and say it again, instead of acting on an answer to a
+         * question they never asked.
+         */
         if (in_array('audio', $kinds, true)) {
-            $lines[] = 'THE USER SENT A VOICE NOTE. Listen to it and answer the question in it. '
-                . 'Do not transcribe it back to them and do not comment on their voice or accent. '
-                . 'If it is unclear, say which part you could not make out and ask them to repeat just that.';
+            $lines[] = 'THE USER SENT A VOICE NOTE. In Malasiqui people speak Pangasinan, Tagalog, Ilocano and English, '
+                . 'often mixed in one sentence and with local accents; listen for all of them and do not assume only one. '
+                . 'Begin with one short line restating their question as you understood it, in the language they spoke '
+                . '(for example "Ang tanong mo: ..." or "Say tepet mo: ..."), then answer it. '
+                . 'Do not write out a full transcript and do not comment on their voice or accent. '
+                . 'If part of it is unclear, say which part you could not make out and ask them to repeat just that.';
         }
 
         if (in_array('image', $kinds, true)) {
@@ -1480,5 +1491,105 @@ class GeminiService
 
         return $this->containsAny($lower, $bodyParts)
             && $this->containsAny($lower, $complaints);
+    }
+
+    /**
+     * Dictation in the languages of Malasiqui, word for word (Nov 2026).
+     *
+     * The browser's own speech recognition knows exactly two Philippine
+     * tags, Filipino and English, one per session; Pangasinan and Ilocano
+     * are not in any browser. This sends the recording to the model with
+     * the languages and the local vocabulary it should expect -- medicines,
+     * the barangays -- and asks for exactly what was said, untranslated.
+     * The text goes into the box for the clinician to check and correct;
+     * nothing is saved from here.
+     *
+     * @param string $hint    auto|tl|pag|ilo|en: what the speaker said they will mostly use
+     * @param string $context soap|chat|telemedicine
+     * @return array{transcript: string, languages: array<int, string>}|null null when the model is unavailable
+     */
+    public function transcribe(string $audio, string $mime, string $hint = 'auto', string $context = 'soap'): ?array
+    {
+        if ($this->apiKey === '' || $audio === '') {
+            return null;
+        }
+
+        $setting = match ($context) {
+            'chat' => 'a health worker speaking a question to the staff assistant',
+            'telemedicine' => 'a doctor dictating notes during a telemedicine consultation',
+            default => 'a health worker dictating a consultation note (SOAP)',
+        };
+
+        $expect = match ($hint) {
+            'tl' => ' They said they will mostly speak Tagalog.',
+            'pag' => ' They said they will mostly speak Pangasinan.',
+            'ilo' => ' They said they will mostly speak Ilocano.',
+            'en' => ' They said they will mostly speak English.',
+            default => '',
+        };
+
+        $barangays = Cache::remember('gemini.transcribe.barangays', 3600, function () {
+            try {
+                return \Illuminate\Support\Facades\DB::table('barangays')->orderBy('name')->pluck('name')->filter()->implode(', ');
+            } catch (\Throwable) {
+                return '';
+            }
+        });
+
+        $prompt = "Transcribe this recording exactly as spoken. It is {$setting} at a Rural Health Unit in Malasiqui, Pangasinan, Philippines."
+            . ' The speaker may use Pangasinan, Tagalog, Ilocano or English, often mixed within one sentence.' . $expect
+            . ' Write every word in the language it was spoken in, with that language\'s usual spelling; never translate.'
+            . ' Spell medicines, diseases and medical terms correctly (for example Paracetamol, Amoxicillin, Losartan, hypertension, dengue, UTI).'
+            . ' Write measurements as numerals: BP 120/80, temp 38.5, RR 20, weight 54 kg.'
+            . ($barangays !== '' ? " Barangays of Malasiqui that may be named: {$barangays}." : '')
+            . ' Do not add, summarize or correct anything, and do not answer questions in the recording.'
+            . ' Write [unclear] for a word you cannot make out.'
+            . ' Reply with JSON only: {"transcript": "...", "languages": ["pangasinan" | "tagalog" | "ilocano" | "english", ...]}.';
+
+        $url = "{$this->baseUrl}/{$this->model}:generateContent?key={$this->apiKey}";
+
+        try {
+            $response = Http::timeout(45)
+                ->retry(2, 700, throw: false)
+                ->withHeaders(['Content-Type' => 'application/json'])
+                ->post($url, [
+                    'contents' => [[
+                        'role' => 'user',
+                        'parts' => [
+                            ['text' => $prompt],
+                            ['inline_data' => ['mime_type' => $mime, 'data' => base64_encode($audio)]],
+                        ],
+                    ]],
+                    'generationConfig' => [
+                        'temperature' => 0,
+                        'maxOutputTokens' => 4096,
+                        'responseMimeType' => 'application/json',
+                        'thinkingConfig' => ['thinkingBudget' => 0],
+                    ],
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('[GeminiService] Transcription failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        if (!$response->successful()) {
+            Log::warning('[GeminiService] Transcription refused', ['status' => $response->status()]);
+
+            return null;
+        }
+
+        $text = $this->textIn($response->json()['candidates'][0] ?? []);
+        $decoded = json_decode($text, true);
+
+        if (!is_array($decoded) || !is_string($decoded['transcript'] ?? null)) {
+            // Answered in plain text after all: that text is the transcript.
+            return $text !== '' ? ['transcript' => $text, 'languages' => []] : null;
+        }
+
+        return [
+            'transcript' => trim($decoded['transcript']),
+            'languages' => array_values(array_filter(array_map('strval', (array) ($decoded['languages'] ?? [])))),
+        ];
     }
 }
