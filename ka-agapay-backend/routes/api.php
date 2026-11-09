@@ -227,7 +227,9 @@ Route::prefix('v1')->group(function () {
         // PATCH /api/v1/admin/profile/password
         // =====================================================================
 
-        Route::middleware('role:admin,staff,staff_admin,rhu_admin,super_admin,superadmin,mho,mho_admin,it_staff,doctor,nurse,midwife')
+        // BHWs too (Nov 2026): they work in the admin, and without this their
+        // My Profile page and the first-sign-in tour flag were refused.
+        Route::middleware('role:admin,staff,staff_admin,rhu_admin,super_admin,superadmin,mho,mho_admin,it_staff,doctor,nurse,midwife,bhw')
             ->group(function () {
                 Route::get('/admin/me', [AdminProfileController::class, 'show']);
                 Route::patch('/admin/profile', [AdminProfileController::class, 'update']);
