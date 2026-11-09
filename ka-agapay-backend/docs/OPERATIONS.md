@@ -751,6 +751,19 @@ is wrong: `php artisan gemini:test`. The Google project must be on a paid tier
 before staff dictate patient notes (`HANDOVER-CHECKLIST.md` §5).
 Tests: `tests/Feature/Assistant/TranscriptionTest.php`.
 
+**The staff assistant follows each role.** `app/Services/Ai/RoleGuide.php` lists,
+for every screen and for the actions only some roles may do (issuing
+prescriptions, completing consultations, signing, SMS, settings...), which
+roles may use it -- copied from the route middleware, the controllers and the
+policies. Each staff question tells the model who is asking; a screen their
+role cannot open is answered with who can, never its steps, both by the model
+and by the quick rule-based answers; data lookups and "open this page" actions
+are offered only to roles that may see them; and a resident cannot ask for the
+staff assistant. **When a route's roles change, change RoleGuide too**:
+`tests/Feature/Assistant/RoleAwareAssistantTest.php` compares the important
+ones with the routes and fails if RoleGuide lets in a role the route refuses.
+The admin's starter questions per role are in `src/lib/rolePrompts.ts`.
+
 ---
 
 ## 9b. Smoke test after every deploy

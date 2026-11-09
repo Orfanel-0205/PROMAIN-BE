@@ -10,6 +10,7 @@ use App\Models\ChatSession;
 use App\Services\Ai\CmsDraftParser;
 use App\Services\Ai\FormDraftParser;
 use App\Services\Ai\GeminiService;
+use App\Services\Ai\RoleGuide;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -153,6 +154,13 @@ class ChatController extends Controller
             $suggestedAction = $filterRequest['action'];
         } elseif ($countQuestion !== null) {
             $suggestedAction = $countQuestion['action'];
+        }
+
+        // Never open a page this staff member's role cannot use: the model
+        // answers instead, told who the page belongs to (RoleGuide).
+        if ($audience === 'staff' && !RoleGuide::allowsAction($user, $suggestedAction)) {
+            $suggestedAction = null;
+            $searchRequest = $filterRequest = $countQuestion = null;
         }
 
         $session = $this->resolveSession($request, $audience, $language);
@@ -404,6 +412,13 @@ class ChatController extends Controller
             $suggestedAction = $countQuestion['action'];
         }
 
+        // Never open a page this staff member's role cannot use: the model
+        // answers instead, told who the page belongs to (RoleGuide).
+        if ($audience === 'staff' && !RoleGuide::allowsAction($user, $suggestedAction)) {
+            $suggestedAction = null;
+            $searchRequest = $filterRequest = $countQuestion = null;
+        }
+
         $session = $this->resolveSession($request, $audience, $language);
 
         $userMessage = ChatMessage::create([
@@ -471,7 +486,8 @@ class ChatController extends Controller
                         $context,
                         function (string $piece) use ($send, &$reply) {
                             $send('chunk', ['text' => $piece]);
-                        }
+                        },
+                        $user
                     );
                 }
 
@@ -877,6 +893,14 @@ class ChatController extends Controller
     private function resolveAudience(Request $request): string
     {
         $audience = (string) $request->input('audience', '');
+
+        // A resident's phone asking for the staff assistant gets the
+        // resident one: the staff side reads RHU figures (Nov 2026).
+        $role = strtolower((string) optional($request->user()?->role)->name);
+
+        if ($audience === 'staff' && in_array($role, ['resident', 'patient'], true)) {
+            return 'resident';
+        }
 
         if (in_array($audience, ['resident', 'staff'], true)) {
             return $audience;

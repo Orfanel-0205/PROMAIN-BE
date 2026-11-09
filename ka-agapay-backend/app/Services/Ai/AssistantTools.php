@@ -23,6 +23,9 @@
 //      (super admin, MHO) see across facilities.
 //   4. STAFF ONLY. Residents never reach these; their assistant answers from
 //      their own records through the mobile app instead.
+//   5. THE CALLER'S OWN ROLE (Nov 2026). A lookup is offered only to roles
+//      that can open the screen it describes (RoleGuide::TOOL_SCREENS): a
+//      BHW is not told stock levels the Inventory screen would refuse them.
 
 namespace App\Services\Ai;
 
@@ -34,11 +37,22 @@ use Illuminate\Support\Facades\Schema;
 class AssistantTools
 {
     /**
-     * Tool definitions in Gemini's functionDeclarations shape.
+     * Tool definitions in Gemini's functionDeclarations shape, only those the
+     * staff member's role may use when one is given.
      *
      * @return array<int, array<string, mixed>>
      */
-    public function declarations(): array
+    public function declarations(?User $user = null): array
+    {
+        $all = $this->allDeclarations();
+
+        return $user === null
+            ? $all
+            : array_values(array_filter($all, fn ($declaration) => RoleGuide::canUseTool($user, $declaration['name'])));
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function allDeclarations(): array
     {
         $rhuProperty = [
             'rhu_id' => [
@@ -109,6 +123,11 @@ class AssistantTools
      */
     public function run(string $name, array $arguments, User $user): array
     {
+        // The model was not offered it; refuse it anyway if it asks.
+        if (!RoleGuide::canUseTool($user, $name)) {
+            return ['error' => 'This staff member\'s role cannot see that information.'];
+        }
+
         $requested = isset($arguments['rhu_id']) ? (int) $arguments['rhu_id'] : null;
 
         // null here means "every facility", which only global-scope accounts get.

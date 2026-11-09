@@ -30,6 +30,9 @@ class GeminiService
 
     /** This turn carries a photo (set in chat()). */
     private bool $photoInTurn = false;
+
+    /** The staff member asking this turn, whose role shapes the answer (RoleGuide). */
+    private ?User $actor = null;
     private string $model;
     private string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -70,6 +73,7 @@ class GeminiService
         array $attachments = []
     ): string {
         $message = trim($message);
+        $this->actor = $actor;
 
         // Whether this turn carries a photo, for an honest reply if the model
         // cannot be reached (fallbackResponse).
@@ -188,7 +192,7 @@ class GeminiService
         // guessed at: counts, stock levels, follow-ups. Read-only, aggregate
         // only, and scoped to the staff member's RHU — see AssistantTools.
         $tools = $audience === 'staff' && $actor !== null
-            ? [['functionDeclarations' => $this->tools->declarations()]]
+            ? [['functionDeclarations' => $this->tools->declarations($actor)]]
             : [];
 
         // gemini-2.5-flash is a THINKING model: its internal "thoughts" tokens are
@@ -324,9 +328,12 @@ class GeminiService
         array $history,
         string $audience,
         array $context,
-        callable $onChunk
+        callable $onChunk,
+        ?User $actor = null
     ): string {
         $message = trim($message);
+        $this->actor = $actor;
+        $this->photoInTurn = false;
 
         if ($message === '' || $this->apiKey === '') {
             return $this->fallbackResponse($message, $audience);
@@ -786,16 +793,23 @@ class GeminiService
         // at conversation and bad at remembering which buttons THIS system has,
         // so where the answer book covers a screen, it wins.
         $reference = '';
+        $roleText = '';
 
         if ($audience === 'staff') {
+            $role = RoleGuide::roleOf($this->actor);
+            $roleText = RoleGuide::promptFor($this->actor);
             $entry = $this->answers->find($message);
 
             if ($entry !== null) {
-                $reference = "\n\n" . $this->answers->brief($entry);
+                // A screen this person's role cannot open is answered with who
+                // can, never with steps the server would then refuse.
+                $reference = "\n\n" . ($role !== '' && !RoleGuide::canOpen($role, $entry['key'])
+                    ? RoleGuide::closedScreenBrief($role, $entry['key'], $entry['title'])
+                    : $this->answers->brief($entry));
             }
         }
 
-        return "{$audienceText}{$dateText}{$preferenceText}{$reference}{$contextText}{$screenText}{$attachmentText}\n\nUser message:\n{$message}";
+        return "{$audienceText}{$dateText}{$preferenceText}{$roleText}{$reference}{$contextText}{$screenText}{$attachmentText}\n\nUser message:\n{$message}";
     }
 
     /**
@@ -1089,7 +1103,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['report', 'reports', 'ulat', 'pinamigay', 'dispensed', 'export', 'csv'])) {
-                return
+                return $this->closedFor('reports') ??
                     "Para gumawa ng report sa mga pinamigay na gamot:\n\n" .
                     "1. I-click ang **Reports** button sa sidebar.\n" .
                     "2. Piliin ang report type para sa medicine dispensing, prescriptions, o inventory usage.\n" .
@@ -1113,7 +1127,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['queue', 'pila'])) {
-                return
+                return $this->closedFor('queue') ??
                 // Button names here must match the admin exactly. They
                 // did not: this described a station picker, Serving and
                 // Done, none of which exist, and never mentioned Add
@@ -1129,7 +1143,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['appointment', 'appointments', 'booking'])) {
-                return
+                return $this->closedFor('appointments') ??
                     "Para mag-manage ng appointments:\n\n" .
                     "1. I-click ang **Appointments** button.\n" .
                     "2. Buksan ang pending requests.\n" .
@@ -1139,7 +1153,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['announcement', 'event', 'cms', 'post', 'program'])) {
-                return
+                return $this->closedFor('cms') ??
                     "Para mag-post ng announcement o event:\n\n" .
                     "1. I-click ang **CMS** button o **Events** button, depende sa screen ninyo.\n" .
                     "2. I-click ang **New Announcement** o **New Event**.\n" .
@@ -1150,7 +1164,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['sms', 'semaphore', 'text blast', 'notification'])) {
-                return
+                return $this->closedFor('sms') ??
                     "Para mag-send ng SMS campaign:\n\n" .
                     "1. I-click ang **SMS** button.\n" .
                     "2. Piliin ang target demographics: barangay, age group, sex, program, o account status.\n" .
@@ -1161,7 +1175,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['user', 'approve', 'verify', 'account', 'ocr'])) {
-                return
+                return (str_contains($lower, 'password') ? null : $this->closedFor('users')) ??
                     "Para mag-approve o mag-check ng users:\n\n" .
                     "1. I-click ang **Users** button.\n" .
                     "2. Piliin ang pending, active, o rejected accounts.\n" .
@@ -1171,7 +1185,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['inventory', 'stock', 'medicine', 'gamot', 'vaccine'])) {
-                return
+                return $this->closedFor('inventory') ??
                     "Para sa gamot o vaccine stock:\n\n" .
                     "1. I-click ang **Inventory** button.\n" .
                     "2. Hanapin ang medicine/vaccine item.\n" .
@@ -1181,7 +1195,7 @@ class GeminiService
             }
 
             if ($this->containsAny($lower, ['analytics', 'dashboard', 'heatmap', 'trend'])) {
-                return
+                return $this->closedFor('analytics') ??
                     "Para sa analytics:\n\n" .
                     "1. I-click ang **Dashboard** button para sa daily operational summary.\n" .
                     "2. I-click ang **Analytics** button para sa trends, totals, at service performance.\n" .
@@ -1241,6 +1255,22 @@ class GeminiService
      * staff member asking about a screen still gets the right steps, straight
      * from the answer book, instead of an apology.
      */
+    /**
+     * For a staff member whose role cannot open a screen, the answer that
+     * names who can, instead of the canned walkthrough (RoleGuide). Null when
+     * they can open it, or when no one is signed in.
+     */
+    private function closedFor(string $screen): ?string
+    {
+        $role = RoleGuide::roleOf($this->actor);
+
+        if ($role === '' || RoleGuide::canOpen($role, $screen)) {
+            return null;
+        }
+
+        return RoleGuide::closedScreenAnswer($role, $screen, RoleGuide::title($screen));
+    }
+
     private function fallbackResponse(string $message, string $audience): string
     {
         // A resident who sent a photo and got "Nandito ako para tumulong…"
@@ -1256,7 +1286,11 @@ class GeminiService
             $entry = $this->answers->find($message);
 
             if ($entry !== null) {
-                return $this->answers->plainAnswer($entry);
+                $role = RoleGuide::roleOf($this->actor);
+
+                return $role !== '' && !RoleGuide::canOpen($role, $entry['key'])
+                    ? RoleGuide::closedScreenAnswer($role, $entry['key'], $entry['title'])
+                    : $this->answers->plainAnswer($entry);
             }
         }
 

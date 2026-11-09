@@ -332,6 +332,16 @@ class AnswerBook
         return self::ENTRIES;
     }
 
+    /**
+     * Every screen the book covers, key => title (RoleGuide lists them by role).
+     *
+     * @return array<string, string>
+     */
+    public static function titles(): array
+    {
+        return array_map(fn (array $entry) => $entry['title'], self::ENTRIES);
+    }
+
     public function find(string $message): ?array
     {
         $lower = mb_strtolower($message);

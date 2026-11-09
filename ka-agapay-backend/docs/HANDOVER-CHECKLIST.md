@@ -75,6 +75,13 @@ Deploy keys), not anonymously; `OPERATIONS.md` §3 says how to set it up or repl
   administrator.
 - **Where are the credentials kept?** `__________`
 - **Who can open that?** `__________`
+- **No account has a password in the code (9 Nov 2026).** The demo MHO account
+  that the seeder used to create with a written-down password (09000000000,
+  "Example MHO", user #1) was deleted on production: switched off, password
+  scrambled, sessions ended, kept in Delete History for its June test records.
+  The seeder now refuses to run its demo accounts in production and gives them
+  random passwords on a developer's computer. The old password is still in the
+  repository history, but it opens nothing.
 
 ---
 
