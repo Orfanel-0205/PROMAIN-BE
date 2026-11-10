@@ -23,8 +23,13 @@ use InvalidArgumentException;
 
 final class StaffSignatures
 {
-    /** Whoever's name prints as the prescriber or the requesting physician. */
-    public const SIGNING_ROLES = ['mho', 'doctor'];
+    /**
+     * Whoever's name prints as the prescriber or the requesting physician.
+     * The Super Admin too (Nov 2026): it already issues prescriptions and
+     * completes consultations, and the account handed over to the RHU is
+     * used to show the MHO the doctor's side of the system.
+     */
+    public const SIGNING_ROLES = ['mho', 'doctor', 'super_admin', 'superadmin'];
 
     private const DIRECTORY = 'signatures';
 

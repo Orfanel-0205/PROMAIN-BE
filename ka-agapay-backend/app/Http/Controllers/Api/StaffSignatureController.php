@@ -18,7 +18,7 @@ use InvalidArgumentException;
 /**
  * My Profile → My Signature, and the signature on a printed ITR.
  *
- * Only the MHO and doctors sign (StaffSignatures::SIGNING_ROLES; the routes
+ * Only the MHO, doctors and the Super Admin sign (StaffSignatures::SIGNING_ROLES; the routes
  * enforce it). Saving or removing a signature asks for the account password
  * again, so nobody can put a signature on an unattended, signed-in computer.
  */

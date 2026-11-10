@@ -239,9 +239,9 @@ Route::prefix('v1')->group(function () {
                 Route::post('/admin/profile/onboarding-seen', [AdminProfileController::class, 'markOnboardingSeen']);
             });
 
-        // My Signature: the MHO's and doctors' own, for the prescriptions,
-        // lab requests and ITRs they issue (StaffSignatures).
-        Route::middleware('role:mho,doctor')
+        // My Signature: the MHO's, doctors' and Super Admin's own, for the
+        // prescriptions, lab requests and ITRs they issue (StaffSignatures).
+        Route::middleware('role:mho,doctor,super_admin,superadmin')
             ->group(function () {
                 Route::get('/admin/profile/signature', [StaffSignatureController::class, 'show']);
                 Route::post('/admin/profile/signature/preview', [StaffSignatureController::class, 'preview'])

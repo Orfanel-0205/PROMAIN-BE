@@ -120,7 +120,7 @@ final class RoleGuide
             // routes: PATCH admin/consultations/{id}/complete
             'complete_consultation' => ['label' => 'completing a consultation (the diagnosis and drugs)', 'roles' => ['doctor', 'mho', 'mho_admin', 'super_admin']],
             // StaffSignatures::SIGNING_ROLES
-            'sign_documents' => ['label' => 'saving a signature for prescriptions and ITRs (My Profile)', 'roles' => ['doctor', 'mho']],
+            'sign_documents' => ['label' => 'saving a signature for prescriptions and ITRs (My Profile)', 'roles' => ['doctor', 'mho', 'super_admin', 'superadmin']],
             'edit_events' => ['label' => 'creating, editing or publishing events and announcements', 'roles' => ['admin', 'staff', 'rhu_admin', 'super_admin', 'mho']],
             'adjust_stock' => ['label' => 'adjusting inventory stock counts', 'roles' => ['mho', 'super_admin']],
             'send_sms' => ['label' => 'sending SMS blasts and checking SMS credits', 'roles' => ['super_admin', 'mho', 'rhu_admin']],
@@ -168,7 +168,7 @@ final class RoleGuide
         'staff' => 'the front desk: queue, appointments, events and announcements, reports',
         'staff_admin' => 'the front desk and staff accounts',
         'rhu_admin' => 'running the RHU: queue, appointments, events, reports, users, SMS and settings',
-        'super_admin' => 'the whole system: RHU facilities, users and roles, settings and API keys',
+        'super_admin' => 'the whole system: RHU facilities, users and roles, settings and API keys; it can also do a doctor\'s work: consultations, prescriptions and its own signature',
         'superadmin' => 'the whole system: RHU facilities, users and roles, settings and API keys',
     ];
 

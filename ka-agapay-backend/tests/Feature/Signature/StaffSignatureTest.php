@@ -85,9 +85,10 @@ class StaffSignatureTest extends TestCase
         );
     }
 
-    public function test_a_doctor_can_save_one_and_a_nurse_cannot(): void
+    public function test_a_doctor_and_the_super_admin_can_save_one_and_a_nurse_cannot(): void
     {
         $this->saveAs($this->doctor, $this->drawnSignature())->assertCreated();
+        $this->saveAs($this->makeUser('super_admin'), $this->drawnSignature())->assertCreated();
         $this->saveAs($this->nurse, $this->drawnSignature())->assertForbidden();
 
         $this->assertSame(0, DB::table('staff_signatures')->where('user_id', $this->nurse->user_id)->count());

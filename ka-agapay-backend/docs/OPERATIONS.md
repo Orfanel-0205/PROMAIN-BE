@@ -733,7 +733,7 @@ documents issued while it was in force must keep showing it. A document shows
 the version in force at its `created_at` (prescriptions, lab requests) or the
 consultation's `completed_at` (ITR, signed by `consultations.completed_by`).
 Saving and removing are audited (`signature.saved`, `signature.removed`) and
-need the account password. Only the `mho` and `doctor` roles sign.
+need the account password. The `mho`, `doctor` and `super_admin` roles sign.
 Tests: `tests/Feature/Signature/StaffSignatureTest.php`.
 
 **Offline saving.** The admin and the app keep a save that got no answer and

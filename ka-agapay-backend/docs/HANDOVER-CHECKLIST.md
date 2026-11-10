@@ -226,7 +226,7 @@ reported; they are things to plan around.
   Studio project is on a **paid (billing-enabled) tier**: Google's terms let it
   use free-tier prompts to improve its products. Filipino and English dictation
   still uses the browser's own recogniser (also Google's, in Chrome).
-- **Signatures (Nov 2026).** The MHO and doctors save their own (draw it, or upload
+- **Signatures (Nov 2026).** The MHO, doctors and the Super Admin save their own (draw it, or upload
   a photo and the paper is removed) under My Profile → My Signature, with their
   password. It prints on prescriptions, lab requests and ITRs issued after it was
   saved, never on controlled-drug prescriptions (official DDB form), and old
