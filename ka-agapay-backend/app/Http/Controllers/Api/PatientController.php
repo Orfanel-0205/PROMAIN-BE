@@ -71,6 +71,10 @@ class PatientController extends Controller
         $query = DB::table('users as u')
             ->join('user_roles as ur', 'ur.role_id', '=', 'u.role_id')
             ->whereIn(DB::raw('LOWER(ur.name)'), User::RESIDENT_ROLES)
+            // Accounts deleted in Users stayed in this search (Nov 2026): the
+            // prescription form offered every deleted test account and
+            // duplicate, and a prescription could be issued to one.
+            ->whereNull('u.deleted_at')
             ->leftJoin('resident_profiles as rp', 'rp.user_id', '=', 'u.user_id');
 
         if (Schema::hasTable('barangays')) {

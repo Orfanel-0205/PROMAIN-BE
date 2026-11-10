@@ -179,6 +179,18 @@ class ResidentAccessTest extends TestCase
         );
     }
 
+    public function test_patient_search_leaves_out_accounts_deleted_in_users(): void
+    {
+        $this->otherResident->delete();
+
+        $found = $this->actingAs($this->nurse)
+            ->getJson('/api/v1/patients/search?search=0917&limit=20')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame([$this->patient->user_id], array_column($found, 'user_id'));
+    }
+
     // ------------------------------------------------------ 5. follow-ups
 
     public function test_follow_ups_are_staff_only(): void
