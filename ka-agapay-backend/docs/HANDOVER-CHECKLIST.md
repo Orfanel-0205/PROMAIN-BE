@@ -233,6 +233,19 @@ reported; they are things to plan around.
   versions are kept so issued documents never change. It is an image signature,
   not a certified digital signature: confirm with the MHO which outside pharmacies
   and laboratories accept it.
+- **Who can see a patient's data (checked 13 Nov 2026,
+  `tests/Feature/Security/PatientDataAccessTest.php`).** A resident sees only
+  their own profile and records, and cannot give themselves a role, a status
+  or an RHU. Staff see the registry and a patient's profile (not BHWs), and a
+  profile shows only the viewing RHU's visits; the MHO and the Super Admin see
+  every RHU. A consultation or prescription can be opened, written or
+  cancelled only by its RHU's staff, the clinician named on it, the MHO or the
+  Super Admin -- anyone else gets "not found", never a hint it exists. Every
+  opening of a patient's profile is on the audit log. A sign-in token stops
+  working when the account is disabled, suspended, locked, deleted or signed
+  out, and after seven days. Backups are NOT encrypted: the nightly dump and
+  the copy in the off-site bucket hold residents' records as plain SQL, so
+  the bucket's keys and the server are the protection.
 - **SMS messages are summaries only** (schedules, reminders). They never contain
   medical detail, by design and by data-privacy policy.
 - **Telemedicine is for non-emergency consultations only.** It does not replace

@@ -163,7 +163,7 @@ class ConsultationController extends Controller
     {
         $relations = $this->consultationRelations();
 
-        $consultation = Consultation::with($relations)->findOrFail($id);
+        $consultation = $this->findViewable($request, $id, $relations);
 
         // Onsite "first attended" capture: the moment RHU staff opens an ACTIVE
         // chart at the desk. Sets the timestamp + ITR snapshot once; never on a
@@ -270,6 +270,45 @@ class ConsultationController extends Controller
      * a doctor, or the Super Admin -- writes Remarks & Diagnosis, Treatment and
      * Prescribe Drug/s, completes the record, and issues the e-prescription.
      */
+    /**
+     * Who may READ a consultation (13 Nov 2026): the staff of its RHU, the
+     * MHO and the Super Admin (every RHU), and the clinicians named on it.
+     * The list was already scoped this way; opening one by its number was
+     * not, so a link from another RHU opened the chart and even recorded the
+     * reader as its first attender.
+     */
+    public static function viewableBy(?\App\Models\User $user, Consultation $consultation): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $userId = (int) ($user->user_id ?? $user->getKey());
+
+        foreach (['attended_by', 'first_attended_by', 'completed_by'] as $column) {
+            if ((int) ($consultation->{$column} ?? 0) === $userId) {
+                return true;
+            }
+        }
+
+        // The same rule as the list (index): global roles see every RHU; a
+        // staffer with no assignment counts as the default RHU.
+        $viewerRhu = Rhu::filterRhuId($user, null);
+
+        return $viewerRhu === null
+            || $viewerRhu === self::writableRhuId($consultation->rhu_id ? (int) $consultation->rhu_id : null);
+    }
+
+    /** The consultation, or 404 -- never a hint that it exists at another RHU. */
+    private function findViewable(Request $request, int $id, array $relations = []): Consultation
+    {
+        $consultation = Consultation::with($relations)->find($id);
+
+        abort_unless($consultation && self::viewableBy($request->user(), $consultation), 404, 'Consultation not found.');
+
+        return $consultation;
+    }
+
     public const DOCTOR_ROLES = ['doctor', 'mho', 'mho_admin', 'super_admin', 'superadmin'];
 
     /** The doctor's sections of the form. */

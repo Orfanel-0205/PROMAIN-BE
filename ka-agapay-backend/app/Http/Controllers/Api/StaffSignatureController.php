@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Api\ConsultationController;
 use App\Models\Consultation;
 use App\Models\User;
 use App\Services\Audit\AuditActions;
@@ -134,7 +135,13 @@ class StaffSignatureController extends Controller
      */
     public function forConsultation(Request $request, int $id): JsonResponse
     {
-        $consultation = Consultation::query()->findOrFail($id);
+        $consultation = Consultation::query()->find($id);
+
+        abort_unless(
+            $consultation && ConsultationController::viewableBy($request->user(), $consultation),
+            404,
+            'Consultation not found.'
+        );
 
         if (strtolower((string) $consultation->status) !== 'completed' || !$consultation->completed_at) {
             return response()->json(['signature' => null]);

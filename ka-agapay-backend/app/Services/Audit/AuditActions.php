@@ -75,6 +75,7 @@ class AuditActions
     public const PRESCRIPTION_EXPIRED = 'prescription.expired';
 
     // My Profile → My Signature (MHO and doctors). The image is not recorded.
+    public const PATIENT_PROFILE_VIEWED = 'patient.profile_viewed';
     public const SIGNATURE_SAVED = 'signature.saved';
     public const SIGNATURE_REMOVED = 'signature.removed';
 

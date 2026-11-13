@@ -527,6 +527,7 @@ class PrescriptionController extends Controller
         $this->authorizePrescriber($request);
 
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        $this->findViewable($request, $id); // 404 for another RHU's prescription (13 Nov 2026)
 
         $validated = $request->validate([
             'status'                  => ['nullable', 'string', 'max:30'],
@@ -567,6 +568,7 @@ class PrescriptionController extends Controller
     {
         $this->authorizePrescriber($request);
         abort_unless(Schema::hasTable('prescriptions'), 404, 'Prescriptions table not found.');
+        $this->findViewable($request, $id); // 404 for another RHU's prescription (13 Nov 2026)
 
         DB::table('prescriptions')->where('id', $id)->update([
             'status' => 'cancelled',

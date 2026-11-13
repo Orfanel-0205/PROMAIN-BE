@@ -270,6 +270,15 @@ class PatientController extends Controller
             return response()->json(['message' => 'Patient not found.'], 404);
         }
 
+        // Every look at a patient's profile is on the audit log (Data Privacy
+        // Act: who opened whose record, when), 13 Nov 2026.
+        app(\App\Services\Audit\AuditService::class)->info(
+            'patients',
+            \App\Services\Audit\AuditActions::PATIENT_PROFILE_VIEWED,
+            ['patient_user_id' => (int) $userId],
+            $request
+        );
+
         // Any RHU's staff may open any resident (see registry()); the visit
         // rows above are still only the viewer's RHU's own.
         $patientRhu = Rhu::lastVisitedRhuId($userId);
