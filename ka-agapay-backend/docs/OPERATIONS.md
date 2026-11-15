@@ -68,6 +68,22 @@ start failing after a PHP upgrade, check these three values first; the
 previous file is kept at `/root/php.ini.before-upload-limits-2026-11-15`.
 After editing: `php-fpm8.3 -t && systemctl reload php8.3-fpm`.
 
+### Capacity (checked 16 Nov 2026)
+
+The droplet has 2 vCPU and 4 GB RAM. Busiest minute seen in two days of
+logs: 238 requests; a typical day is about 850 API calls; load average
+0.1; no 5xx. A PHP-FPM worker uses about 42 MB, so the pool was raised from
+the Ubuntu default of 5 to `pm.max_children = 12` (start 3, spare 2-6):
+twelve requests at once is roughly 500 MB, leaving PostgreSQL, Redis and
+nginx comfortable. The previous pool file is at
+`/root/www.conf.before-pool-2026-11-16`. The queue board and team chat poll
+every few seconds per open browser tab, so the practical ceiling is about
+40 staff browsers open at once, far beyond two RHUs; residents' phones poll
+only while a queue or telemedicine screen is open (10-30 s). If FPM ever
+logs "server reached pm.max_children", raise the number (up to about 24 on
+this RAM) or move SMS/push sending to a queue worker (`QUEUE_CONNECTION` is
+`sync`: those calls run inside the request that triggers them).
+
 ## 2. Environment variables
 
 **`.env.example` is the authoritative list** and is kept in sync with the code.
