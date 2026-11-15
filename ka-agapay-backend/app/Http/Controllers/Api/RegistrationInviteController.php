@@ -44,10 +44,24 @@ class RegistrationInviteController extends Controller
             'intended_for' => ['nullable', 'string', 'max:150'],
             'mobile_number' => ['nullable', 'regex:/^(\+?63|0)9\d{9}$/'],
             'expires_in_minutes' => ['nullable', 'integer', Rule::in(RegistrationInviteService::ALLOWED_LIFETIMES)],
+            // Text the link to the locked number as the link is made: the
+            // plain token is never stored, so this is the only moment the
+            // system can send it (16 Nov 2026). A 230-character link pasted
+            // into a messaging app by hand arrived broken.
+            'send_sms' => ['nullable', 'boolean'],
         ], [
             'mobile_number.regex' => 'Use a valid PH mobile number (09XXXXXXXXX) or leave it blank.',
             'expires_in_minutes.in' => 'Link lifetime must be 30 minutes, 1 day, or 7 days.',
         ]);
+
+        $sendSms = (bool) ($validated['send_sms'] ?? false);
+
+        if ($sendSms && empty($validated['mobile_number'])) {
+            return response()->json([
+                'message' => 'Enter the mobile number to text the link to, or untick "Send by SMS".',
+                'errors' => ['mobile_number' => ['Enter the mobile number to text the link to.']],
+            ], 422);
+        }
 
         $result = $this->invites->generate(
             (int) ($request->user()->user_id ?? $request->user()->getKey()),
@@ -59,6 +73,8 @@ class RegistrationInviteController extends Controller
         /** @var RegistrationInvite $invite */
         $invite = $result['invite'];
 
+        $sms = $sendSms ? $this->textTheLink($invite, $result['url']) : null;
+
         $this->audit->log(
             $request,
             'registration_invite_generated',
@@ -69,6 +85,7 @@ class RegistrationInviteController extends Controller
                 'intended_for' => $invite->intended_for,
                 'mobile_locked' => $invite->mobile_number !== null,
                 'expires_at' => $invite->expires_at?->toIso8601String(),
+                'sms' => $sms ? ($sms['sent'] ? 'sent' : 'failed') : 'not requested',
             ],
             ['token_hash' => $invite->token_hash],
             'info',
@@ -87,8 +104,45 @@ class RegistrationInviteController extends Controller
                 'mobile_number' => $invite->mobile_number,
                 'expires_at' => $invite->expires_at?->toIso8601String(),
                 'status' => $invite->statusLabel(),
+                'sms' => $sms,
             ],
         ], 201);
+    }
+
+    /**
+     * Text the registration link to the number the invite is locked to, through
+     * the same SMS service every other message uses (it keeps the SMS Center
+     * log). Never throws: the link is still returned for copying by hand.
+     *
+     * @return array{sent: bool, status: string, mobile: ?string, error: ?string}
+     */
+    private function textTheLink(RegistrationInvite $invite, string $url): array
+    {
+        $mobile = (string) $invite->mobile_number;
+        $until = $invite->expires_at
+            ? $invite->expires_at->copy()->setTimezone(\App\Support\LocalTime::zone())->format('M j, g:i A')
+            : null;
+
+        $message = 'Ka-Agapay RHU staff registration'
+            . ($invite->intended_for ? ' for ' . $invite->intended_for : '')
+            . '. Open this link on your phone' . ($until ? ' before ' . $until : '') . ': '
+            . $url
+            . ' Register with this mobile number. Do not share the link.';
+
+        try {
+            $log = app(\App\Services\Notification\SmsService::class)->send($mobile, $message, 'registration_invite');
+
+            return [
+                'sent' => $log->status === 'sent',
+                'status' => (string) $log->status,
+                'mobile' => $mobile,
+                'error' => $log->status === 'sent' ? null : ($log->error_message ?: 'The SMS provider did not accept the message.'),
+            ];
+        } catch (\Throwable $e) {
+            report($e);
+
+            return ['sent' => false, 'status' => 'failed', 'mobile' => $mobile, 'error' => 'The SMS could not be sent right now.'];
+        }
     }
 
     /**
