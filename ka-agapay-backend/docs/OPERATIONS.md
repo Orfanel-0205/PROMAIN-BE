@@ -55,6 +55,19 @@ Nginx from a separate web root.
 
 ---
 
+### PHP limits on the server (set 15 Nov 2026)
+
+`/etc/php/8.3/fpm/php.ini` carries `upload_max_filesize = 32M`,
+`post_max_size = 40M` and `max_execution_time = 120`; nginx already allows
+64M. The Ubuntu defaults (2M / 8M / 30s) were still in force until the
+pre-handover inspection: anything the code accepts above 2 MB -- an ID photo
+from a phone, a scanned SOAP sheet (up to 25 MB), a dictation longer than a
+minute (16 kHz WAV is about 1.9 MB a minute, up to 8 MB) -- was refused by
+PHP before Laravel saw it, with an unhelpful validation error. If uploads
+start failing after a PHP upgrade, check these three values first; the
+previous file is kept at `/root/php.ini.before-upload-limits-2026-11-15`.
+After editing: `php-fpm8.3 -t && systemctl reload php8.3-fpm`.
+
 ## 2. Environment variables
 
 **`.env.example` is the authoritative list** and is kept in sync with the code.

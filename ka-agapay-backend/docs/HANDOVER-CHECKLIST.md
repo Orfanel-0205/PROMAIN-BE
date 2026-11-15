@@ -220,6 +220,10 @@ reported; they are things to plan around.
   introduces the Tagalog text until a native speaker adds a checked translation.
   The new short Pangasinan screen texts (`outbox_*` in `constants/i18n.ts`, and
   the offline lines in `screens/ChatbotScreen.tsx`) also need that reading.
+  **30 of the app's 143 screen strings still show the Tagalog text in
+  Pangasinan mode** (listed in `KaAgapay-mobile/docs/pangasinan-review.tsv`
+  and on the USB as `4-Documentation/Pangasinan-Review.tsv`); a native speaker
+  fills the second column and a developer pastes it into `constants/i18n.ts`.
 - **AI dictation sends the recording to Google's Gemini service** (Pangasinan,
   Ilocano and mixed-language dictation in the admin). The recording is not kept
   by the system, but it may contain patient details. Make sure the Google AI
