@@ -180,6 +180,19 @@ php artisan jitsi:doctor    # presence, path, permissions, validity — never pr
 
 ---
 
+### If `composer install` prints "Update of <package> failed" (16 Nov 2026)
+
+The `vendor/` tree was first installed by root in August 2026, so thousands of
+package folders were still root-owned and www-data could not replace them:
+Composer extracted the new packages, failed on the first root-owned one,
+rolled everything back and left the old framework in place -- while the site
+kept answering 200, so nothing looked wrong. Fix, once:
+`chown -R www-data:www-data /var/www/ka-agapay-backend/ka-agapay-backend/vendor`
+then run the install again. Always confirm a dependency deploy with
+`php artisan about | grep "Laravel Version"` against the version in
+`composer.lock`, and never pipe the install's output into `head`: when `head`
+closes the pipe, Composer is killed mid-install.
+
 ## 4. Deploying the web admin
 
 > ### ✅ Use the script
