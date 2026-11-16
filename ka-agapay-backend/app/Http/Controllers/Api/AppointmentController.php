@@ -1493,7 +1493,10 @@ class AppointmentController extends Controller
                 return 'Appointment time must be within RHU clinic hours, 08:00 AM to 05:00 PM.';
             }
 
-            $dateTime = Carbon::parse($day->toDateString() . ' ' . $time);
+            // The clock times residents pick are Malasiqui times; the server
+            // runs on UTC, so read them in the local zone (16 Nov 2026). As UTC,
+            // 09:00 meant 5 PM here and a slot already gone by was accepted.
+            $dateTime = Carbon::parse($day->toDateString() . ' ' . $time, LocalTime::zone());
 
             if (!$adminAction && $dateTime->lt(now())) {
                 return 'Appointment schedule cannot be in the past.';
