@@ -68,6 +68,20 @@ start failing after a PHP upgrade, check these three values first; the
 previous file is kept at `/root/php.ini.before-upload-limits-2026-11-15`.
 After editing: `php-fpm8.3 -t && systemctl reload php8.3-fpm`.
 
+### The old address still answers the app (17 Nov 2026)
+
+`rhu-kaagapay.129-212-236-47.sslip.io` was the system's address until the
+move to `rhukaagapaymsq.com`. Phones that installed the app before then
+(September builds) still call it. Its nginx block **answers `/api/` and
+`/storage/` directly** and redirects only pages. Do not turn it back into a
+plain redirect: Android follows a redirect by turning a sign-in POST into a
+GET (405) and drops the sign-in token on a redirect to another host (401), so
+every old install is locked out with no message. This happened on 17 Nov
+2026 and showed in the nginx log as `POST /api/v1/login 301` followed by
+`GET /api/v1/login 405`. The sslip.io certificate must keep renewing (it is
+on the same certbot timer). The block before the change is kept at
+`/root/nginx-ka-agapay.before-old-host-api-2026-11-17`.
+
 ### Capacity (checked 16 Nov 2026)
 
 The droplet has 2 vCPU and 4 GB RAM. Busiest minute seen in two days of
