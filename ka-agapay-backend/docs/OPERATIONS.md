@@ -68,6 +68,34 @@ start failing after a PHP upgrade, check these three values first; the
 previous file is kept at `/root/php.ini.before-upload-limits-2026-11-15`.
 After editing: `php-fpm8.3 -t && systemctl reload php8.3-fpm`.
 
+### The resident app in a browser: /resident/ (17 Nov 2026)
+
+iPhone users (there is no iPhone build) and anyone on a computer use the
+resident app at **https://rhukaagapaymsq.com/resident/**. It is the same
+Expo app as the Android APK, built for the web; the staff sign-in page links
+to it. On an iPhone, Safari's Share -> *Add to Home Screen* gives it an icon
+and full-screen launch.
+
+- **Build** (in `KaAgapay-mobile`): `npm run build:web` -> `dist-web/`. The
+  script builds for `/resident/` against the live API, adds the Home Screen
+  icon and manifest, and stops if the bundle calls the wrong server.
+- **Deploy:** copy the contents of `dist-web/` to
+  `/var/www/ka-agapay-resident-web/resident/` (owner www-data); keep the old
+  folder as `resident.prev-<date>` to roll back by renaming. No nginx reload
+  is needed for an update. Hard-refresh to see it.
+- **nginx** (main server block): `/resident/_expo/` is cached for a year
+  (file names change every build), everything else under `/resident/` is
+  `no-cache` and falls back to `index.html`; `/resident` and `/app` forward to
+  `/resident/`.
+- **Never move it to /app.** Expo Router removes the base path with a plain
+  "starts with" test, so under `/app` the screen `/appointments` became
+  `/app/ointments`. And never put `experiments.baseUrl` in `app.json`: it
+  breaks the Android app's launch (see `KaAgapay-mobile/app.config.js`).
+- **What the browser version does not have:** push notifications (residents
+  see the Notifications screen and still get SMS), fingerprint/Face ID
+  sign-in, and the phone's keystore (the sign-in token is kept in the
+  browser's storage for this site; signing out removes it).
+
 ### The old address still answers the app (17 Nov 2026)
 
 `rhu-kaagapay.129-212-236-47.sslip.io` was the system's address until the

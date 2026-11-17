@@ -250,13 +250,14 @@ reported; they are things to plan around.
   out, and after seven days. Backups are NOT encrypted: the nightly dump and
   the copy in the off-site bucket hold residents' records as plain SQL, so
   the bucket's keys and the server are the protection.
-- **Android only (Nov 2026).** The resident app is built for Android (APK on
-  the USB). There is no iPhone build and no web version: a September 2026 web
-  export was retired because the app project no longer supports the browser.
-  Residents with an iPhone are served at the RHU desk (walk-in queue numbers,
-  bookings entered by staff). Adding an iPhone build needs an Apple developer
-  account (USD 99 a year); a web version needs the app's screens reworked for
-  the browser. Both are future work.
+- **Android app plus a browser version (Nov 2026).** Android phones use the
+  APK on the USB. iPhones and computers use the same app in the browser at
+  https://rhukaagapaymsq.com/resident/ (Safari: Share -> Add to Home Screen);
+  the staff sign-in page links to it. The browser version has no push
+  notifications (residents still get SMS and see the Notifications screen)
+  and no fingerprint/Face ID sign-in. There is no App Store app: that needs an
+  Apple developer account (USD 99 a year). Build and deploy steps:
+  `OPERATIONS.md`, "The resident app in a browser".
 - **SMS messages are summaries only** (schedules, reminders). They never contain
   medical detail, by design and by data-privacy policy.
 - **Telemedicine is for non-emergency consultations only.** It does not replace
