@@ -135,6 +135,27 @@ class ProfileController extends Controller
             'pregnancy_history' => ['nullable', 'string', 'max:2000'],
         ]);
 
+        // The app's booking form sends "Male" / "Female"; the database accepts
+        // only male / female / other (users_sex_check), so a resident who
+        // tapped Sex while booking got a server error and could not book
+        // (found 17 Nov 2026). Stored lower-case; anything else is refused
+        // with a message instead of a crash.
+        if (array_key_exists('sex', $validated) && $validated['sex'] !== null) {
+            $sex = strtolower(trim((string) $validated['sex']));
+            $sex = ['m' => 'male', 'f' => 'female', 'lalaki' => 'male', 'babae' => 'female'][$sex] ?? $sex;
+
+            if ($sex === '') {
+                $validated['sex'] = null;
+            } elseif (in_array($sex, ['male', 'female', 'other'], true)) {
+                $validated['sex'] = $sex;
+            } else {
+                return response()->json([
+                    'message' => 'Please choose Male or Female.',
+                    'errors' => ['sex' => ['Please choose Male or Female.']],
+                ], 422);
+            }
+        }
+
         $updates = [];
 
         if (!empty($validated['name']) && empty($validated['first_name']) && empty($validated['last_name'])) {

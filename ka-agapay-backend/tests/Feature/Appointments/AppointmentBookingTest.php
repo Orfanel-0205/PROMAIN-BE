@@ -140,6 +140,19 @@ class AppointmentBookingTest extends TestCase
         $this->book($this->maria, '2026-11-17', '10:00')->assertCreated();
     }
 
+    public function test_the_booking_forms_profile_save_accepts_male_and_female_buttons(): void
+    {
+        // The form sends the button labels; the database stores lower case.
+        $this->actingAs($this->maria)->patchJson('/api/v1/profile', ['sex' => 'Female', 'civil_status' => 'Single'])->assertOk();
+        $this->assertSame('female', DB::table('users')->where('user_id', $this->maria->user_id)->value('sex'));
+
+        $this->actingAs($this->maria)->patchJson('/api/v1/profile', ['sex' => 'M'])->assertOk();
+        $this->assertSame('male', DB::table('users')->where('user_id', $this->maria->user_id)->value('sex'));
+
+        $this->actingAs($this->maria)->patchJson('/api/v1/profile', ['sex' => 'banana'])
+            ->assertStatus(422)->assertJsonValidationErrors(['sex']);
+    }
+
     // ------------------------------------------------------------ helpers
 
     /** The body services/api/appointments.ts appointmentRequestBody() sends. */
